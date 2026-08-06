@@ -344,33 +344,40 @@ class Manager(periodic_task.PeriodicTasks):
                                                registry=container.registry)
             image_pull_policy = utils.get_image_pull_policy(
                 container.image_pull_policy, tag)
-            try:
-                # TODO(hongbin): move image pulling logic to docker driver
-                image, image_loaded = self.driver.pull_image(
-                    context, repo, tag, image_pull_policy, image_driver_name,
-                    registry=container.registry)
-                image['repo'], image['tag'] = repo, tag
-                if not image_loaded:
-                    self.driver.load_image(image['path'])
-            except exception.ImageNotFound as e:
-                with excutils.save_and_reraise_exception():
-                    LOG.error(str(e))
-                    self._fail_container(context, container, str(e))
-            except exception.DockerError as e:
-                with excutils.save_and_reraise_exception():
-                    LOG.error("Error occurred while calling Docker image "
-                              "API: %s", str(e))
-                    self._fail_container(context, container, str(e))
-            except Exception as e:
-                with excutils.save_and_reraise_exception():
-                    LOG.exception("Unexpected exception: %s",
-                                  str(e))
-                    self._fail_container(context, container, str(e))
+            if hasattr(self.driver, 'pull_image'):
+                try:
+                    # TODO(hongbin): move image pulling logic to docker driver
+                    image, image_loaded = self.driver.pull_image(
+                        context, repo, tag, image_pull_policy,
+                        image_driver_name, registry=container.registry)
+                    image['repo'], image['tag'] = repo, tag
+                    if not image_loaded:
+                        self.driver.load_image(image['path'])
+                except exception.ImageNotFound as e:
+                    with excutils.save_and_reraise_exception():
+                        LOG.error(str(e))
+                        self._fail_container(context, container, str(e))
+                except exception.DockerError as e:
+                    with excutils.save_and_reraise_exception():
+                        LOG.error("Error occurred while calling Docker image "
+                                  "API: %s", str(e))
+                        self._fail_container(context, container, str(e))
+                except Exception as e:
+                    with excutils.save_and_reraise_exception():
+                        LOG.exception("Unexpected exception: %s",
+                                      str(e))
+                        self._fail_container(context, container, str(e))
+            else:
+                # This driver pulls images itself while creating the container
+                # (the CRI driver does so per container), so there is nothing
+                # to pre-pull here and no local image path to hand over.
+                image = {'driver': image_driver_name, 'path': None,
+                         'repo': repo, 'tag': tag}
 
             container.image_driver = image.get('driver')
             container.save(context)
             try:
-                if image['driver'] == 'glance':
+                if image['driver'] == 'glance' and image.get('path'):
                     self.driver.read_tar_image(image)
                 if image['tag'] != tag:
                     LOG.warning("The input tag is different from the tag in "
