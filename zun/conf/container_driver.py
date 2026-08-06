@@ -20,6 +20,8 @@ driver_opts = [
 Possible values:
 
 * ``docker``
+* ``cri`` (capsule-only compute node: the Container API is not served on this
+  host, but resource reporting works and no docker daemon is required)
 
 Services which consume this:
 
