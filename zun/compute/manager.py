@@ -61,6 +61,11 @@ class Manager(periodic_task.PeriodicTasks):
                 isinstance(container, objects.CapsuleInitContainer)):
             return self.capsule_driver
         elif isinstance(container, objects.Container):
+            if not isinstance(self.driver, driver_module.ContainerDriver):
+                raise exception.ZunException(
+                    'This host serves capsules only; the Container API is '
+                    'unavailable because container_driver is %(driver)s.'
+                    % {'driver': CONF.container_driver})
             return self.driver
         else:
             raise exception.ZunException('Unexpected container type: %(type)s.'
@@ -78,6 +83,10 @@ class Manager(periodic_task.PeriodicTasks):
             self.container_start(context, container)
 
     def init_containers(self, context):
+        if not isinstance(self.driver, driver_module.ContainerDriver):
+            # Capsule-only host: no container was ever started through the
+            # Container API here, so there is nothing to reconcile.
+            return
         containers = objects.Container.list_by_host(context, self.host)
         # TODO(hongbin): init capsules as well
         local_containers, _ = self.driver.list(context)
