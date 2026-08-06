@@ -74,8 +74,14 @@ def load_container_driver(container_driver=None):
                 invoke_on_load=True).driver
 
         if not isinstance(driver, ContainerDriver):
-            raise Exception(_('Expected driver of type: %s') %
-                            str(ContainerDriver))
+            if not isinstance(driver, BaseDriver):
+                raise Exception(_('Expected driver of type: %s') %
+                                str(ContainerDriver))
+            # Capsule-only host: the driver still reports resources through
+            # BaseDriver, but it does not serve the Container API.
+            LOG.warning("Container driver '%s' does not implement the "
+                        "Container API; this host serves capsules only.",
+                        container_driver)
 
         return driver
     except ImportError:
