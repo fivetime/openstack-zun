@@ -1246,11 +1246,20 @@ class Manager(periodic_task.PeriodicTasks):
     def sync_container_state(self, ctx):
         LOG.debug('Start syncing container states.')
 
-        containers = objects.Container.list(ctx)
-        self.driver.update_containers_states(ctx, containers, self)
         capsules = objects.Capsule.list(ctx)
-        # TODO(hongbin): use capsule driver to update capsules status
-        self.driver.update_containers_states(ctx, capsules, self)
+        if isinstance(self.driver, driver_module.ContainerDriver):
+            containers = objects.Container.list(ctx)
+            self.driver.update_containers_states(ctx, containers, self)
+            # TODO(hongbin): use capsule driver to update capsules status
+            self.driver.update_containers_states(ctx, capsules, self)
+        elif hasattr(self.capsule_driver, 'update_containers_states'):
+            self.capsule_driver.update_containers_states(ctx, capsules, self)
+        else:
+            # Capsule-only host whose capsule driver cannot report state yet:
+            # capsule status stays as recorded at the end of the last
+            # operation until the driver implements this.
+            LOG.debug('State sync is not implemented by capsule driver %s',
+                      type(self.capsule_driver).__name__)
 
     def network_detach(self, context, container, network):
         @utils.synchronized(container.uuid)
