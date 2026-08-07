@@ -435,12 +435,15 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         readiness = probes.get('readinessProbe')
         if readiness:
             ready = self._probe_passed(container, readiness, state, 'readiness')
-            was_ready = state.get('ready', True)
-            if ready != was_ready:
-                state['ready'] = ready
+            # Recorded on every pass, not only on a change: the reader treats a
+            # missing value as "never answered" and keeps traffic away, so a
+            # probe that passes first time and never changes would leave the
+            # container permanently unready.
+            if state.get('ready') != ready:
                 LOG.info("Container %(id)s readiness changed to %(ready)s",
                          {'id': container.container_id, 'ready': ready})
                 changed = True
+            state['ready'] = ready
 
         liveness = probes.get('livenessProbe')
         if liveness:
