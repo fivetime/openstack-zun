@@ -282,6 +282,63 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             container.status = consts.UNKNOWN
             container.status_reason = "container state unknown"
 
+    def update_containers_states(self, context, capsules, manager):
+        """Refresh capsule state from what the runtime actually reports.
+
+        Without this a capsule keeps the status it had when the last operation
+        finished: a container that died is still reported Running, so nothing
+        above -- neither Zun nor a virtual-kubelet reading these statuses --
+        ever learns the workload is gone.
+        """
+        for capsule in capsules:
+            if capsule.status in (consts.CREATING, consts.DELETING,
+                                  consts.DELETED):
+                # Mid-operation; the operation itself owns the status.
+                continue
+
+            changed = False
+            running = 0
+            counted = 0
+            for container in capsule.containers:
+                old_status = container.status
+                try:
+                    self._show_container(context, container)
+                except exception.ZunException:
+                    # Gone from the runtime while Zun still has a record of it.
+                    container.status = consts.DELETED
+                except Exception as e:
+                    LOG.warning("Could not read state of container %(id)s: "
+                                "%(err)s",
+                                {'id': container.container_id, 'err': e})
+                    continue
+
+                counted += 1
+                if container.status == consts.RUNNING:
+                    running += 1
+                if container.status != old_status:
+                    LOG.info("Container %(id)s changed from %(old)s to "
+                             "%(new)s",
+                             {'id': container.container_id,
+                              'old': old_status, 'new': container.status})
+                    container.save(context)
+                    changed = True
+
+            if not counted:
+                continue
+
+            # The capsule is only running while all of its containers are: a
+            # capsule reported Running with a dead container inside it is the
+            # failure this method exists to surface.
+            status = consts.RUNNING if running == counted else consts.STOPPED
+            if capsule.status != status:
+                LOG.info("Capsule %(uuid)s changed from %(old)s to %(new)s",
+                         {'uuid': capsule.uuid, 'old': capsule.status,
+                          'new': status})
+                capsule.status = status
+                changed = True
+            if changed:
+                capsule.save(context)
+
     def delete_capsule(self, context, capsule, force):
         pod_id = capsule.container_id
         if not pod_id:
