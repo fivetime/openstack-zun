@@ -282,6 +282,56 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             container.status = consts.UNKNOWN
             container.status_reason = "container state unknown"
 
+    def _exec_in_container(self, container, cmd, timeout):
+        """Run a command inside a container and return its exit code.
+
+        This is the only way to observe a capsule from the outside. Nothing on
+        the compute host can reach a capsule's address -- it lives on the
+        tenant's OVN network, and a kata sandbox's namespace holds only a tap
+        device -- so a probe has to run where the application is.
+        """
+        response = self.runtime_stub.ExecSync(
+            api_pb2.ExecSyncRequest(
+                container_id=container.container_id,
+                cmd=cmd,
+                timeout=timeout,
+            )
+        )
+        return response.exit_code, response.stdout, response.stderr
+
+    def _run_probe(self, container, probe):
+        """Run one probe. Returns True when it succeeds.
+
+        Only exec probes arrive here: the caller rewrites httpGet, tcpSocket
+        and gRPC into an exec against the container itself, because a probe
+        cannot reach the container from anywhere else.
+        """
+        exec_action = (probe or {}).get('exec') or {}
+        cmd = exec_action.get('command')
+        if not cmd:
+            LOG.warning("Probe for container %s has no exec command; "
+                        "treating it as failed rather than healthy",
+                        container.container_id)
+            return False
+
+        timeout = int(probe.get('timeoutSeconds') or 1)
+        try:
+            exit_code, _out, err = self._exec_in_container(
+                container, list(cmd), timeout)
+        except Exception as e:
+            # An unreadable probe is a failed probe: reporting healthy here
+            # would hide exactly the failure the probe exists to catch.
+            LOG.debug("Probe for container %(id)s could not run: %(err)s",
+                      {'id': container.container_id, 'err': e})
+            return False
+
+        if exit_code != 0:
+            LOG.debug("Probe for container %(id)s failed with %(code)s: "
+                      "%(err)s",
+                      {'id': container.container_id, 'code': exit_code,
+                       'err': err[:200] if err else ''})
+        return exit_code == 0
+
     def update_containers_states(self, context, capsules, manager):
         """Refresh capsule state from what the runtime actually reports.
 
@@ -315,6 +365,8 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                 counted += 1
                 if container.status == consts.RUNNING:
                     running += 1
+                    if self._check_probes(context, capsule, container):
+                        changed = True
                 if container.status != old_status:
                     LOG.info("Container %(id)s changed from %(old)s to "
                              "%(new)s",
@@ -338,6 +390,110 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                 changed = True
             if changed:
                 capsule.save(context)
+
+    def _check_probes(self, context, capsule, container):
+        """Run a running container's probes and act on the result.
+
+        Returns True when something about the container changed.
+
+        Probe state is kept in the container's healthcheck field alongside the
+        probe definitions, so a restart of zun-compute loses only the counters
+        -- a probe that is still failing simply fails again.
+        """
+        probes = (container.healthcheck or {}).get('k8s_probes') or {}
+        if not probes:
+            return False
+
+        state = (container.healthcheck or {}).get('k8s_probe_state') or {}
+        changed = False
+
+        # A startup probe gates the other two: until it passes, a slow-starting
+        # application must not be restarted for failing a liveness check it was
+        # never given time to satisfy.
+        startup = probes.get('startupProbe')
+        if startup and not state.get('startup_passed'):
+            if self._probe_passed(container, startup, state, 'startup'):
+                state['startup_passed'] = True
+            else:
+                if self._probe_failed_enough(startup, state, 'startup'):
+                    LOG.info("Startup probe for container %s never passed; "
+                             "restarting it", container.container_id)
+                    self._restart_container(container)
+                    state = {}
+                self._save_probe_state(context, container, state)
+                return True
+
+        readiness = probes.get('readinessProbe')
+        if readiness:
+            ready = self._probe_passed(container, readiness, state, 'readiness')
+            was_ready = state.get('ready', True)
+            if ready != was_ready:
+                state['ready'] = ready
+                LOG.info("Container %(id)s readiness changed to %(ready)s",
+                         {'id': container.container_id, 'ready': ready})
+                changed = True
+
+        liveness = probes.get('livenessProbe')
+        if liveness:
+            if self._probe_passed(container, liveness, state, 'liveness'):
+                pass
+            elif self._probe_failed_enough(liveness, state, 'liveness'):
+                LOG.info("Liveness probe for container %s failed; restarting "
+                         "it", container.container_id)
+                self._restart_container(container)
+                state = {}
+                changed = True
+
+        self._save_probe_state(context, container, state)
+        return changed
+
+    def _probe_passed(self, container, probe, state, kind):
+        """Run one probe and track consecutive results in state."""
+        ok = self._run_probe(container, probe)
+        fail_key, ok_key = kind + '_failures', kind + '_successes'
+        if ok:
+            state[fail_key] = 0
+            state[ok_key] = state.get(ok_key, 0) + 1
+            threshold = int(probe.get('successThreshold') or 1)
+            return state[ok_key] >= threshold
+        state[ok_key] = 0
+        state[fail_key] = state.get(fail_key, 0) + 1
+        return False
+
+    def _probe_failed_enough(self, probe, state, kind):
+        """Whether a probe has failed the number of times it is allowed to.
+
+        Acting on a single failure would restart a container for one dropped
+        connection, which is why Kubernetes has failureThreshold at all.
+        """
+        threshold = int(probe.get('failureThreshold') or 3)
+        return state.get(kind + '_failures', 0) >= threshold
+
+    def _save_probe_state(self, context, container, state):
+        healthcheck = dict(container.healthcheck or {})
+        if healthcheck.get('k8s_probe_state') == state:
+            return
+        healthcheck['k8s_probe_state'] = state
+        container.healthcheck = healthcheck
+        container.save(context)
+
+    def _restart_container(self, container):
+        """Stop a container so its restart policy brings it back.
+
+        The sandbox and its network are left alone: restarting a container must
+        not change the capsule's address, or every client would have to
+        rediscover it.
+        """
+        try:
+            self.runtime_stub.StopContainer(
+                api_pb2.StopContainerRequest(
+                    container_id=container.container_id, timeout=10))
+            self.runtime_stub.StartContainer(
+                api_pb2.StartContainerRequest(
+                    container_id=container.container_id))
+        except Exception as e:
+            LOG.warning("Could not restart container %(id)s: %(err)s",
+                        {'id': container.container_id, 'err': e})
 
     def delete_capsule(self, context, capsule, force):
         pod_id = capsule.container_id
