@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import shlex
+
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import strutils
@@ -112,6 +114,7 @@ class CapsuleController(base.Controller):
 
     _custom_actions = {
         'logs': ['GET'],
+        'execute': ['POST'],
     }
 
     @base.Controller.api_version("1.1", "1.31")
@@ -455,6 +458,43 @@ class CapsuleController(base.Controller):
         compute_api = pecan.request.compute_api
         return compute_api.container_logs(context, target, stdout, stderr,
                                           timestamps, tail, since)
+
+    @pecan.expose('json')
+    @exception.wrap_pecan_controller_exception
+    def execute(self, capsule_ident, container=None, run=True, **kwargs):
+        """Run a command in a container of the given capsule.
+
+        :param capsule_ident: UUID or Name of a capsule.
+        :param container: Name or UUID of a container within the capsule.
+        :param run: Run the command immediately and return its output.
+        """
+        capsule = api_utils.get_resource('Capsule', capsule_ident)
+        check_policy_on_capsule(capsule.as_dict(), "capsule:execute")
+        utils.validate_container_state(capsule, 'execute')
+
+        target = self._find_container(capsule, container)
+        command = kwargs.get('command')
+        if not command:
+            raise exception.Invalid(_('command is required'))
+        if isinstance(command, str):
+            command = shlex.split(command)
+
+        try:
+            run = strutils.bool_from_string(run, strict=True)
+        except ValueError:
+            bools = ', '.join(strutils.TRUE_STRINGS + strutils.FALSE_STRINGS)
+            raise exception.InvalidValue(_('Valid run values are: %s') % bools)
+
+        if not capsule.host:
+            raise exception.Invalid(
+                _('Capsule is not running on any host yet'))
+        # Same reason as logs: only the capsule records its host, and an
+        # undirected call would run the command on whichever node answered.
+        target.host = capsule.host
+
+        context = pecan.request.context
+        compute_api = pecan.request.compute_api
+        return compute_api.container_exec(context, target, command, run, False)
 
     @staticmethod
     def _find_container(capsule, ident):

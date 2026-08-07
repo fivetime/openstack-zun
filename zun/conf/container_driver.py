@@ -97,6 +97,13 @@ Interdependencies to other options:
                  '(will be used if user do not specify '
                  'a container\'s cpus). This value should be '
                  'in range [minimum_cpus, maximum_cpus]'),
+    cfg.IntOpt('cri_exec_timeout',
+               default=30,
+               help='Seconds a command run through the capsule exec endpoint '
+                    'may take before the runtime kills it. Keep it below '
+                    '[DEFAULT] rpc_response_timeout: a command that outlives '
+                    'that never sends a reply, so the caller sees a server '
+                    'error instead of the timeout that actually happened.'),
     cfg.StrOpt('cri_log_root',
                default='/var/log/zun/capsules',
                help='Directory the runtime writes capsule container logs to. '

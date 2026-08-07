@@ -397,7 +397,7 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             container.status = consts.UNKNOWN
             container.status_reason = "container state unknown"
 
-    def _exec_in_container(self, container, cmd, timeout):
+    def _exec_in_container(self, container_id, cmd, timeout):
         """Run a command inside a container and return its exit code.
 
         This is the only way to observe a capsule from the outside. Nothing on
@@ -407,12 +407,47 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         """
         response = self.runtime_stub.ExecSync(
             api_pb2.ExecSyncRequest(
-                container_id=container.container_id,
+                container_id=container_id,
                 cmd=cmd,
                 timeout=timeout,
             )
         )
         return response.exit_code, response.stdout, response.stderr
+
+    def execute_create(self, context, container, command, interactive=False):
+        """Prepare an exec. The CRI has no separate create step.
+
+        The runtime's synchronous exec takes the command and the container in
+        one call, so there is nothing to create and nothing to keep; the
+        container id is handed back as the handle execute_run expects.
+        """
+        if interactive:
+            # An interactive session needs the runtime's streaming Exec and a
+            # URL to attach to, which is a different endpoint from the one used
+            # here. Refused rather than run non-interactively, which would hang
+            # a caller waiting to type.
+            raise exception.Invalid(
+                _('Interactive exec is not supported on a capsule'))
+        return container.container_id
+
+    def execute_run(self, exec_id, command):
+        # Bounded well below the RPC reply timeout. A command that outlives
+        # that — `sh` with nothing on stdin is enough — leaves the caller with
+        # a server error sixty seconds later instead of being told it ran too
+        # long.
+        timeout = CONF.cri_exec_timeout
+        try:
+            exit_code, out, err = self._exec_in_container(
+                exec_id, command, timeout)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                raise exception.Invalid(
+                    _('Command did not finish within %d seconds') % timeout)
+            raise
+        # stderr is included because a caller running a command wants to see
+        # why it failed, and there is no second stream to send it down.
+        output = (out or b'') + (err or b'')
+        return output, exit_code
 
     def _run_probe(self, container, probe):
         """Run one probe. Returns True when it succeeds.
@@ -432,7 +467,7 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         timeout = int(probe.get('timeoutSeconds') or 1)
         try:
             exit_code, _out, err = self._exec_in_container(
-                container, list(cmd), timeout)
+                container.container_id, list(cmd), timeout)
         except Exception as e:
             # An unreadable probe is a failed probe: reporting healthy here
             # would hide exactly the failure the probe exists to catch.

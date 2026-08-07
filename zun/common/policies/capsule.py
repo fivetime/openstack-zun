@@ -88,6 +88,17 @@ rules = [
         ]
     ),
     policy.DocumentedRuleDefault(
+        name=CAPSULE % 'execute',
+        check_str=base.RULE_ADMIN_OR_OWNER,
+        description='Run a command in a container of a capsule.',
+        operations=[
+            {
+                'path': '/v1/capsules/{capsule_ident}/execute',
+                'method': 'POST'
+            }
+        ]
+    ),
+    policy.DocumentedRuleDefault(
         name=CAPSULE % 'get:host',
         check_str=base.RULE_ADMIN_API,
         description='Retrieve the host field of a capsule.',
