@@ -1229,9 +1229,12 @@ class Manager(periodic_task.PeriodicTasks):
             'auto_remove': True,
             'status': consts.DELETED,
             'task_state': None,
+            # This node's only: every compute node runs this task, and an
+            # unfiltered list has each of them trying to delete containers that
+            # live somewhere else.
+            'host': self.host,
         }
-        containers = objects.Container.list(context,
-                                            filters=filters)
+        containers = objects.Container.list(context, filters=filters)
 
         if containers:
             for container in containers:

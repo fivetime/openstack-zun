@@ -17,20 +17,36 @@ import functools
 from zun.api import servicegroup
 from zun.common import exception
 from zun.common import profiler
+from zun.common.i18n import _
 from zun.common import rpc_service
 import zun.conf
 from zun import objects
 
 
 def check_container_host(func):
-    """Verify the state of container host"""
+    """Verify that the container names a compute host, and that it is up.
+
+    Everything wearing this decorator acts on one existing container, so it has
+    to reach the node holding it. A container with no host reaches none: the
+    message goes to the shared topic and whichever node picks it up runs it,
+    against a container it does not have. That fails in whatever way the
+    operation fails when its target is missing, which is rarely an error the
+    caller can read -- an empty answer, or a command that ran nowhere.
+
+    A capsule's containers are the case that finds this: only the capsule
+    records its host.
+    """
     @functools.wraps(func)
     def wrap(self, context, container, *args, **kwargs):
+        if container.host is None:
+            raise exception.Invalid(
+                _('Container %s is not on any host, so there is nowhere to '
+                  'send this request') % container.uuid)
         services = objects.ZunService.list_by_binary(context, 'zun-compute')
         api_servicegroup = servicegroup.ServiceGroup()
         up_hosts = [service.host for service in services
                     if api_servicegroup.service_is_up(service)]
-        if container.host is not None and container.host not in up_hosts:
+        if container.host not in up_hosts:
             raise exception.ContainerHostNotUp(container=container.uuid,
                                                host=container.host)
         return func(self, context, container, *args, **kwargs)
