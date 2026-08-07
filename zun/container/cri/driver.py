@@ -11,8 +11,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
+import os
+
 import grpc
 from oslo_log import log as logging
+from oslo_utils import fileutils
+from oslo_utils import timeutils
 import tenacity
 
 from zun.common import consts
@@ -91,11 +96,30 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         config = api_pb2.PodSandboxConfig(
             metadata=api_pb2.PodSandboxMetadata(
                 name=capsule.uuid, namespace="default", uid=capsule.uuid
-            )
+            ),
+            # Without a log directory the runtime discards a container's output
+            # entirely: there is no stream to attach to after the fact and
+            # nothing on disk, so the logs API has nothing to serve.
+            log_directory=self._log_directory(),
         )
         if dns_servers:
             config.dns_config.servers.extend(dns_servers)
         return config
+
+    @staticmethod
+    def _log_directory():
+        # Flat rather than a directory per capsule: a container's log is then
+        # named by the container alone, so reading it back needs nothing but
+        # the container — no lookup from a capsule id, which the object layer
+        # has no getter for.
+        root = CONF.cri_log_root
+        fileutils.ensure_tree(root)
+        return root
+
+    @staticmethod
+    def _log_path(container):
+        # Relative to the sandbox's log directory; the runtime joins the two.
+        return '%s.log' % container.uuid
 
     def _write_cni_metadata(self, context, capsule, requested_networks):
         neutron_api = neutron.NeutronAPI(context)
@@ -205,7 +229,98 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             labels=labels,
             mounts=mounts,
             linux=linux_config,
+            log_path=self._log_path(container),
         )
+
+    def show_logs(self, context, container, stdout=True, stderr=True,
+                  timestamps=False, tail='all', since=None):
+        """Read a capsule container's logs from the file the runtime writes.
+
+        The runtime has no API to read them back — it only writes the file it
+        was told to — so this parses the CRI log format directly:
+
+            <RFC3339Nano> <stdout|stderr> <P|F> <line>
+
+        A partial line (P) is a line the runtime split because it was longer
+        than its buffer; joining those back is what stops a long log line from
+        arriving as several.
+        """
+        path = self._container_log_file(container)
+        if not os.path.exists(path):
+            # A container that has not started yet has no file, and empty
+            # output says that better than an error would. Logged because the
+            # other way to reach this is a request that landed on the wrong
+            # node, which otherwise looks exactly like a container that printed
+            # nothing.
+            LOG.info("No log file %s for container %s", path, container.uuid)
+            return b''
+
+        try:
+            tail = int(tail)
+        except (TypeError, ValueError):
+            tail = None
+        since = self._parse_since(since)
+
+        lines = []
+        partial = []
+        with open(path, 'rb') as fd:
+            for raw in fd:
+                parsed = self._parse_log_line(raw)
+                if parsed is None:
+                    continue
+                stamp, stream, is_partial, text = parsed
+                if stream == 'stdout' and not stdout:
+                    continue
+                if stream == 'stderr' and not stderr:
+                    continue
+                if since is not None and stamp is not None and stamp < since:
+                    continue
+                partial.append(text)
+                if is_partial:
+                    continue
+                line = b''.join(partial)
+                partial = []
+                if timestamps and stamp is not None:
+                    line = raw.split(b' ', 1)[0] + b' ' + line
+                lines.append(line)
+        if partial:
+            lines.append(b''.join(partial))
+
+        if tail is not None and tail >= 0:
+            lines = lines[-tail:] if tail else []
+        return b''.join(lines)
+
+    @staticmethod
+    def _container_log_file(container):
+        return os.path.join(CONF.cri_log_root, '%s.log' % container.uuid)
+
+    @staticmethod
+    def _parse_log_line(raw):
+        """Split one CRI log line, or None if it is not one."""
+        parts = raw.split(b' ', 3)
+        if len(parts) < 4:
+            return None
+        stamp_raw, stream, tag, text = parts
+        try:
+            stamp = timeutils.parse_isotime(stamp_raw.decode())
+        except (ValueError, UnicodeDecodeError):
+            stamp = None
+        return stamp, stream.decode(errors='replace'), tag.startswith(b'P'), text
+
+    @staticmethod
+    def _parse_since(since):
+        if since is None or since == 'None':
+            return None
+        try:
+            return datetime.datetime.fromtimestamp(
+                int(since), tz=datetime.timezone.utc)
+        except (TypeError, ValueError):
+            pass
+        try:
+            return timeutils.parse_isotime(since)
+        except ValueError:
+            raise exception.InvalidValue(
+                _('since must be an epoch second or an ISO 8601 time'))
 
     def _pull_image(self, context, container):
         # TODO(hongbin): add support for private registry

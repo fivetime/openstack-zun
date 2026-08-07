@@ -77,6 +77,17 @@ rules = [
     # reference:
     # https://docs.openstack.org/api-ref/application-container/
     policy.DocumentedRuleDefault(
+        name=CAPSULE % 'logs',
+        check_str=base.RULE_ADMIN_OR_OWNER,
+        description='Read the logs of a container in a capsule.',
+        operations=[
+            {
+                'path': '/v1/capsules/{capsule_ident}/logs',
+                'method': 'GET'
+            }
+        ]
+    ),
+    policy.DocumentedRuleDefault(
         name=CAPSULE % 'get:host',
         check_str=base.RULE_ADMIN_API,
         description='Retrieve the host field of a capsule.',

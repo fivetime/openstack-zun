@@ -97,6 +97,11 @@ Interdependencies to other options:
                  '(will be used if user do not specify '
                  'a container\'s cpus). This value should be '
                  'in range [minimum_cpus, maximum_cpus]'),
+    cfg.StrOpt('cri_log_root',
+               default='/var/log/zun/capsules',
+               help='Directory the runtime writes capsule container logs to. '
+                    'Nothing prunes it, so on a busy compute node give it a '
+                    'filesystem that can be rotated independently.'),
     cfg.IntOpt('default_disk',
                default=10,
                help='The default disk size a container can use '

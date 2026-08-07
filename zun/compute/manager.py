@@ -825,8 +825,9 @@ class Manager(periodic_task.PeriodicTasks):
                        timestamps, tail, since):
         LOG.debug('Showing container logs: %s', container.uuid)
         try:
-            # NOTE(hongbin): capsule shouldn't reach here
-            return self.driver.show_logs(context, container,
+            # A capsule's container is served by the capsule driver, which on a
+            # host running docker for containers is a different one.
+            return self._get_driver(container).show_logs(context, container,
                                          stdout=stdout, stderr=stderr,
                                          timestamps=timestamps, tail=tail,
                                          since=since)

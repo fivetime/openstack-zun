@@ -14,6 +14,7 @@
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
+from oslo_utils import strutils
 import pecan
 
 from zun.api.controllers import base
@@ -110,7 +111,7 @@ class CapsuleController(base.Controller):
     """Controller for Capsules"""
 
     _custom_actions = {
-
+        'logs': ['GET'],
     }
 
     @base.Controller.api_version("1.1", "1.31")
@@ -406,6 +407,70 @@ class CapsuleController(base.Controller):
         check_policy_on_capsule(capsule.as_dict(), "capsule:get")
         return view.format_capsule(pecan.request.host_url, capsule, context,
                                    legacy_api_version=legacy_api_version)
+
+    @pecan.expose('json')
+    @exception.wrap_pecan_controller_exception
+    def logs(self, capsule_ident, container=None, stdout=True, stderr=True,
+             timestamps=False, tail='all', since=None):
+        """Get the logs of a container in the given capsule.
+
+        A capsule holds several containers, so which one is being asked for has
+        to be named; without it the only sensible answer would be the first,
+        and a caller that meant another would silently read the wrong one.
+
+        :param capsule_ident: UUID or Name of a capsule.
+        :param container: Name or UUID of a container within the capsule.
+        :param stdout: Get standard output if True.
+        :param stderr: Get standard error if True.
+        :param timestamps: Prefix every line with its timestamp.
+        :param tail: Number of lines to show from the end of the logs.
+        :param since: Show logs since an epoch second or ISO 8601 time.
+        """
+        capsule = api_utils.get_resource('Capsule', capsule_ident)
+        check_policy_on_capsule(capsule.as_dict(), "capsule:logs")
+
+        target = self._find_container(capsule, container)
+        try:
+            stdout = strutils.bool_from_string(stdout, strict=True)
+            stderr = strutils.bool_from_string(stderr, strict=True)
+            timestamps = strutils.bool_from_string(timestamps, strict=True)
+        except ValueError:
+            bools = ', '.join(strutils.TRUE_STRINGS + strutils.FALSE_STRINGS)
+            raise exception.InvalidValue(_('Valid stdout, stderr and '
+                                           'timestamps values are: %s')
+                                         % bools)
+
+        if not capsule.host:
+            # Not placed yet, so there is no node holding a log file. Saying so
+            # beats an empty answer, which reads as "ran and printed nothing".
+            raise exception.Invalid(
+                _('Capsule is not running on any host yet'))
+        # Only the capsule records its host; its containers do not. Without
+        # this the RPC goes to the shared topic and any compute node answers —
+        # and every node but the right one has no log file, so the call returns
+        # empty roughly as often as the deployment has nodes.
+        target.host = capsule.host
+
+        context = pecan.request.context
+        compute_api = pecan.request.compute_api
+        return compute_api.container_logs(context, target, stdout, stderr,
+                                          timestamps, tail, since)
+
+    @staticmethod
+    def _find_container(capsule, ident):
+        containers = capsule.containers + capsule.init_containers
+        if not containers:
+            raise exception.Invalid(_('Capsule has no containers'))
+        if ident is None:
+            if len(containers) > 1:
+                raise exception.Invalid(
+                    _('Capsule has more than one container; name the one to '
+                      'read with the container parameter'))
+            return containers[0]
+        for c in containers:
+            if ident in (c.name, c.uuid):
+                return c
+        raise exception.ContainerNotFound(container=ident)
 
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception
