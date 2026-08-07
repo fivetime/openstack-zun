@@ -39,6 +39,20 @@ CONF = zun.conf.CONF
 LOG = logging.getLogger(__name__)
 
 
+# DNS_SEARCHES_ANNOTATION carries the resolver search list from whoever created
+# the capsule. It is an annotation rather than a field because only the creator
+# knows it — for a Kubernetes provider it is derived from the pod's namespace,
+# which means nothing here.
+DNS_SEARCHES_ANNOTATION = 'knaas.io/dns-searches'
+
+
+def _dns_searches(capsule):
+    raw = (capsule.annotations or {}).get(DNS_SEARCHES_ANNOTATION)
+    if not raw:
+        return []
+    return [s for s in (part.strip() for part in raw.split(',')) if s]
+
+
 def _restart_count(container):
     """How many times a probe has had this container replaced."""
     state = (container.healthcheck or {}).get('k8s_probe_state') or {}
@@ -90,7 +104,8 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
 
         dns_servers = self._write_cni_metadata(context, capsule,
                                                requested_networks)
-        sandbox_config = self._get_sandbox_config(capsule, dns_servers)
+        sandbox_config = self._get_sandbox_config(
+            capsule, dns_servers, _dns_searches(capsule))
         sandbox_resp = self.runtime_stub.RunPodSandbox(
             api_pb2.RunPodSandboxRequest(
                 config=sandbox_config,
@@ -100,7 +115,8 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         LOG.debug("podsandbox is created: %s", sandbox_resp)
         capsule.container_id = sandbox_resp.pod_sandbox_id
 
-    def _get_sandbox_config(self, capsule, dns_servers=None):
+    def _get_sandbox_config(self, capsule, dns_servers=None,
+                            dns_searches=None):
         config = api_pb2.PodSandboxConfig(
             metadata=api_pb2.PodSandboxMetadata(
                 name=capsule.uuid, namespace="default", uid=capsule.uuid
@@ -112,6 +128,13 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         )
         if dns_servers:
             config.dns_config.servers.extend(dns_servers)
+        if dns_searches:
+            # Without these a container resolves only fully qualified names.
+            # Applications written for Kubernetes routinely use the short form
+            # of a service name and rely on the search list to complete it, so
+            # leaving it out breaks them in a way that looks like the service
+            # is missing rather than like a resolver setting.
+            config.dns_config.searches.extend(dns_searches)
         return config
 
     @staticmethod
