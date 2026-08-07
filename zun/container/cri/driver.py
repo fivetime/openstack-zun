@@ -13,6 +13,7 @@
 
 import datetime
 import os
+import time
 
 import grpc
 from oslo_log import log as logging
@@ -538,8 +539,6 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                 counted += 1
                 if container.status == consts.RUNNING:
                     running += 1
-                    if self._check_probes(context, capsule, container):
-                        changed = True
                 if container.status != old_status:
                     LOG.info("Container %(id)s changed from %(old)s to "
                              "%(new)s",
@@ -564,6 +563,29 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             if changed:
                 capsule.save(context)
 
+    def check_probes(self, context, capsules):
+        """Run any probe that is due.
+
+        Separate from the state sync because the two answer to different
+        clocks: state is reconciled on the service's own interval, while a
+        probe has the period its author asked for. Riding the state sync meant
+        every probe ran at that interval whatever periodSeconds said, so a
+        five-second liveness check took a minute to notice anything.
+        """
+        for capsule in capsules:
+            if capsule.status != consts.RUNNING:
+                continue
+            for container in capsule.containers:
+                if container.status != consts.RUNNING:
+                    continue
+                try:
+                    self._check_probes(context, capsule, container)
+                except Exception as e:
+                    # One container's probe must not stop the rest from running.
+                    LOG.warning("Probes for container %(id)s failed to run: "
+                                "%(err)s",
+                                {'id': container.container_id, 'err': e})
+
     def _check_probes(self, context, capsule, container):
         """Run a running container's probes and act on the result.
 
@@ -586,8 +608,13 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         # A startup probe gates the other two: until it passes, a slow-starting
         # application must not be restarted for failing a liveness check it was
         # never given time to satisfy.
+        now = time.time()
+
         startup = probes.get('startupProbe')
         if startup and not state.get('startup_passed'):
+            if not self._probe_due(state, 'startup', startup, container, now):
+                return False
+            self._schedule_next(state, 'startup', startup, now)
             if self._probe_passed(container, startup, state, 'startup'):
                 state['startup_passed'] = True
             else:
@@ -603,7 +630,9 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                 return True
 
         readiness = probes.get('readinessProbe')
-        if readiness:
+        if readiness and self._probe_due(state, 'readiness', readiness,
+                                         container, now):
+            self._schedule_next(state, 'readiness', readiness, now)
             ready = self._probe_passed(container, readiness, state, 'readiness')
             # Recorded on every pass, not only on a change: the reader treats a
             # missing value as "never answered" and keeps traffic away, so a
@@ -616,7 +645,9 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             state['ready'] = ready
 
         liveness = probes.get('livenessProbe')
-        if liveness:
+        if liveness and self._probe_due(state, 'liveness', liveness,
+                                        container, now):
+            self._schedule_next(state, 'liveness', liveness, now)
             if self._probe_passed(container, liveness, state, 'liveness'):
                 pass
             elif self._probe_failed_enough(liveness, state, 'liveness'):
@@ -631,6 +662,29 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
 
         self._save_probe_state(context, container, state)
         return changed
+
+    @staticmethod
+    def _probe_due(state, kind, probe, container, now):
+        """Whether this probe should run yet.
+
+        Before its first run the container's own start time plus
+        initialDelaySeconds decides, which is what stops a slow-starting
+        application from being killed for failing a check it was never given
+        time to satisfy.
+        """
+        due = state.get(kind + '_next')
+        if due is not None:
+            return now >= due
+        delay = int(probe.get('initialDelaySeconds') or 0)
+        started = getattr(container, 'started_at', None)
+        if started is None:
+            return delay == 0
+        return now >= started.timestamp() + delay
+
+    @staticmethod
+    def _schedule_next(state, kind, probe, now):
+        period = int(probe.get('periodSeconds') or 10)
+        state[kind + '_next'] = now + max(period, 1)
 
     def _probe_passed(self, container, probe, state, kind):
         """Run one probe and track consecutive results in state."""

@@ -1248,6 +1248,20 @@ class Manager(periodic_task.PeriodicTasks):
                 except Exception:
                     return
 
+    @periodic_task.periodic_task(spacing=CONF.probe_check_interval,
+                                 run_immediately=True)
+    @context.set_context
+    def check_container_probes(self, ctx):
+        """Run probes that are due.
+
+        On its own clock rather than the state sync's: a probe has the period
+        its author asked for, and sharing the sync interval made every probe
+        run at that interval however short a period was declared.
+        """
+        if not hasattr(self.capsule_driver, 'check_probes'):
+            return
+        self.capsule_driver.check_probes(ctx, objects.Capsule.list(ctx))
+
     @periodic_task.periodic_task(spacing=CONF.sync_container_state_interval,
                                  run_immediately=True)
     @context.set_context

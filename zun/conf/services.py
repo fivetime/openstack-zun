@@ -26,6 +26,11 @@ periodic_opts = [
                default=180,
                help='Max interval size between periodic tasks execution in '
                     'seconds.'),
+    cfg.IntOpt('probe_check_interval',
+               default=2,
+               help='Seconds between checks for probes that are due. This is '
+                    'the resolution of periodSeconds, not a period itself: a '
+                    'probe asking for less than this gets this instead.'),
     cfg.IntOpt('sync_container_state_interval',
                default=60,
                help="""
