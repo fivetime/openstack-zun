@@ -413,7 +413,10 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         if not probes:
             return False
 
-        state = (container.healthcheck or {}).get('k8s_probe_state') or {}
+        # Copied, not referenced: mutating the dict inside healthcheck would
+        # make the save below compare a value against itself, find no change,
+        # and never persist anything.
+        state = dict((container.healthcheck or {}).get('k8s_probe_state') or {})
         changed = False
 
         # A startup probe gates the other two: until it passes, a slow-starting
