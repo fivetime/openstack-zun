@@ -458,6 +458,58 @@ capsule_container_volume_list = {
     }
 }
 
+
+# A Kubernetes probe as it arrives in a capsule template. The shape follows
+# core/v1.Probe so a caller can pass the pod's probe through unchanged; what a
+# capsule can actually execute is decided by the driver, not here.
+capsule_probe = {
+    'type': ['object', 'null'],
+    'properties': {
+        'exec': {
+            'type': 'object',
+            'properties': {
+                'command': {'type': 'array', 'items': {'type': 'string'}},
+            },
+            'additionalProperties': False,
+        },
+        'httpGet': {
+            'type': 'object',
+            'properties': {
+                'path': {'type': ['string', 'null']},
+                'port': {'type': ['integer', 'string']},
+                'host': {'type': ['string', 'null']},
+                'scheme': {'type': ['string', 'null'],
+                           'enum': ['HTTP', 'HTTPS', None]},
+                'httpHeaders': {'type': ['array', 'null']},
+            },
+            'additionalProperties': False,
+        },
+        'tcpSocket': {
+            'type': 'object',
+            'properties': {
+                'port': {'type': ['integer', 'string']},
+                'host': {'type': ['string', 'null']},
+            },
+            'additionalProperties': False,
+        },
+        'grpc': {
+            'type': 'object',
+            'properties': {
+                'port': {'type': ['integer']},
+                'service': {'type': ['string', 'null']},
+            },
+            'additionalProperties': False,
+        },
+        'initialDelaySeconds': {'type': ['integer', 'null']},
+        'periodSeconds': {'type': ['integer', 'null']},
+        'timeoutSeconds': {'type': ['integer', 'null']},
+        'successThreshold': {'type': ['integer', 'null']},
+        'failureThreshold': {'type': ['integer', 'null']},
+        'terminationGracePeriodSeconds': {'type': ['integer', 'null']},
+    },
+    'additionalProperties': False,
+}
+
 capsule_containers_list = {
     'type': ['array'],
     'items': {
@@ -475,6 +527,9 @@ capsule_containers_list = {
             'imagePullPolicy': image_pull_policy,
             'stdin': boolean,
             'tty': boolean,
+            'livenessProbe': capsule_probe,
+            'readinessProbe': capsule_probe,
+            'startupProbe': capsule_probe,
         },
         'additionalProperties': False,
         'required': ['image']

@@ -302,6 +302,20 @@ class CapsuleController(base.Controller):
                     container_dict['memory'] = str(allocation['memory'])
                 container_dict.pop('resources')
 
+            # Probes ride in the existing healthcheck column rather than a
+            # new one: adding a column means a migration and an object version
+            # bump, and nothing else writes this key. The docker driver reads
+            # its own keys ('test', 'interval', ...) and is unaffected.
+            probes = {}
+            for field in ('livenessProbe', 'readinessProbe', 'startupProbe'):
+                probe = container_dict.pop(field, None)
+                if probe:
+                    probes[field] = probe
+            if probes:
+                healthcheck = container_dict.get('healthcheck') or {}
+                healthcheck['k8s_probes'] = probes
+                container_dict['healthcheck'] = healthcheck
+
             container_dict['image_pull_policy'] = (
                 container_dict.get('image_pull_policy', 'always').lower())
             container_dict['status'] = consts.CREATING
