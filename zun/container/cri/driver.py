@@ -70,13 +70,14 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         return capsule
 
     def _create_pod_sandbox(self, context, capsule, requested_networks):
-        sandbox_config = self._get_sandbox_config(capsule)
         runtime = capsule.runtime or CONF.container_runtime
         if runtime == "runc":
             # pass "" to specify the default runtime which is runc
             runtime = ""
 
-        self._write_cni_metadata(context, capsule, requested_networks)
+        dns_servers = self._write_cni_metadata(context, capsule,
+                                               requested_networks)
+        sandbox_config = self._get_sandbox_config(capsule, dns_servers)
         sandbox_resp = self.runtime_stub.RunPodSandbox(
             api_pb2.RunPodSandboxRequest(
                 config=sandbox_config,
@@ -86,12 +87,15 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         LOG.debug("podsandbox is created: %s", sandbox_resp)
         capsule.container_id = sandbox_resp.pod_sandbox_id
 
-    def _get_sandbox_config(self, capsule):
-        return api_pb2.PodSandboxConfig(
+    def _get_sandbox_config(self, capsule, dns_servers=None):
+        config = api_pb2.PodSandboxConfig(
             metadata=api_pb2.PodSandboxMetadata(
                 name=capsule.uuid, namespace="default", uid=capsule.uuid
             )
         )
+        if dns_servers:
+            config.dns_config.servers.extend(dns_servers)
+        return config
 
     def _write_cni_metadata(self, context, capsule, requested_networks):
         neutron_api = neutron.NeutronAPI(context)
@@ -118,6 +122,15 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         state_dict = state.obj_to_primitive()
         capsule.cni_metadata = {consts.CNI_METADATA_VIF: state_dict}
         capsule.save(context)
+
+        # The sandbox otherwise inherits the host's resolv.conf, which resolves
+        # nothing the tenant network knows about.
+        dns_servers = []
+        for subnet in subnets.values():
+            for nameserver in subnet.get('dns_nameservers') or []:
+                if nameserver not in dns_servers:
+                    dns_servers.append(nameserver)
+        return dns_servers
 
     def _create_container(self, context, capsule, container,
                           requested_networks, requested_volumes):
