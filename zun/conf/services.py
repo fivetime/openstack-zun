@@ -26,6 +26,13 @@ periodic_opts = [
                default=180,
                help='Max interval size between periodic tasks execution in '
                     'seconds.'),
+    cfg.IntOpt('probe_exec_overhead',
+               default=2,
+               help='Seconds allowed on top of a probe timeoutSeconds for '
+                    'getting into the container and back. The probe timeout '
+                    'bounds the command itself; without this margin an exec '
+                    'is cut off at the same moment the command is, and a '
+                    'healthy container reports failures at random.'),
     cfg.IntOpt('probe_check_interval',
                default=2,
                help='Seconds between checks for probes that are due. This is '

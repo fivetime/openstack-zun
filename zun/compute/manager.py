@@ -1260,7 +1260,13 @@ class Manager(periodic_task.PeriodicTasks):
         """
         if not hasattr(self.capsule_driver, 'check_probes'):
             return
-        self.capsule_driver.check_probes(ctx, objects.Capsule.list(ctx))
+        # Only this node's capsules. Every compute node runs this task, and an
+        # unfiltered list has each of them probing every capsule in the
+        # deployment — the ones they do not host have no container to exec
+        # into, so those probes fail and overwrite the result of the node that
+        # actually ran them.
+        self.capsule_driver.check_probes(
+            ctx, objects.Capsule.list_by_host(ctx, self.host))
 
     @periodic_task.periodic_task(spacing=CONF.sync_container_state_interval,
                                  run_immediately=True)
@@ -1268,9 +1274,9 @@ class Manager(periodic_task.PeriodicTasks):
     def sync_container_state(self, ctx):
         LOG.debug('Start syncing container states.')
 
-        capsules = objects.Capsule.list(ctx)
+        capsules = objects.Capsule.list_by_host(ctx, self.host)
         if isinstance(self.driver, driver_module.ContainerDriver):
-            containers = objects.Container.list(ctx)
+            containers = objects.Container.list_by_host(ctx, self.host)
             self.driver.update_containers_states(ctx, containers, self)
             # TODO(hongbin): use capsule driver to update capsules status
             self.driver.update_containers_states(ctx, capsules, self)

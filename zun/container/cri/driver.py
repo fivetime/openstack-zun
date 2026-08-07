@@ -479,7 +479,13 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                         container.container_id)
             return False
 
-        timeout = int(probe.get('timeoutSeconds') or 1)
+        # The probe's own timeout bounds the tenant's command; the deadline on
+        # the exec has to be larger, or the two race. A rewritten network probe
+        # already tells its tool to wait timeoutSeconds, so an exec cut off at
+        # exactly that leaves no room for the shell to start and reports a
+        # failure for a container that answered — intermittently, which is
+        # worse than never.
+        timeout = int(probe.get('timeoutSeconds') or 1) + CONF.probe_exec_overhead
         try:
             exit_code, _out, err = self._exec_in_container(
                 container.container_id, list(cmd), timeout)
