@@ -444,39 +444,48 @@ class CapsuleController(base.Controller):
 
     def _build_requested_volumes(self, context, volume_spec,
                                  volume_mounts, capsule):
-        # NOTE(hongbin): We assume cinder is the only volume provider here.
-        # The logic needs to be re-visited if a second volume provider
-        # (i.e. Manila) is introduced.
         # NOTE(kevinz): We assume the volume_mounts has been pretreated,
         # there won't occur that volume multiple attach and no untapped
         # volume.
         cinder_api = cinder.CinderAPI(context)
-        volume_driver = "cinder"
         requested_volumes = {}
         volume_created = []
         try:
             for mount in volume_spec:
-                mount_driver = mount[volume_driver]
                 auto_remove = False
-                if mount_driver.get("volumeID"):
-                    uuid = mount_driver.get("volumeID")
-                    volume = cinder_api.search_volume(uuid)
-                    cinder_api.ensure_volume_usable(volume)
+                contents = None
+                volume = None
+                if 'file' in mount:
+                    # A file carried with the capsule: its content is written
+                    # to the compute node and bind-mounted in, so a container
+                    # can read configuration from disk rather than only from
+                    # its environment.
+                    volume_driver = 'local'
+                    contents = mount['file']['contents']
+                    auto_remove = True
                 else:
-                    size = mount_driver.get("size")
-                    volume = cinder_api.create_volume(size)
-                    volume_created.append(volume)
-                    if "autoRemove" in mount_driver.keys() \
-                            and mount_driver.get("autoRemove", False):
-                        auto_remove = True
+                    volume_driver = 'cinder'
+                    mount_driver = mount[volume_driver]
+                    if mount_driver.get("volumeID"):
+                        uuid = mount_driver.get("volumeID")
+                        volume = cinder_api.search_volume(uuid)
+                        cinder_api.ensure_volume_usable(volume)
+                    else:
+                        size = mount_driver.get("size")
+                        volume = cinder_api.create_volume(size)
+                        volume_created.append(volume)
+                        if "autoRemove" in mount_driver.keys() \
+                                and mount_driver.get("autoRemove", False):
+                            auto_remove = True
 
                 mount_destination = None
                 container_uuid = None
 
                 volume_object = objects.Volume(
                     context,
-                    cinder_volume_id=volume.id,
+                    cinder_volume_id=volume.id if volume else None,
                     volume_provider=volume_driver,
+                    contents=contents,
                     user_id=context.user_id,
                     project_id=context.project_id,
                     auto_remove=auto_remove)
@@ -489,6 +498,8 @@ class CapsuleController(base.Controller):
                         volmapp = objects.VolumeMapping(
                             context,
                             container_path=mount_destination,
+                            contents=contents,
+                            volume_provider=volume_driver,
                             user_id=context.user_id,
                             project_id=context.project_id,
                             volume_id=volume_object.id)

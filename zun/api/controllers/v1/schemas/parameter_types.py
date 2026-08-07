@@ -562,6 +562,21 @@ capsule_cinder_volume = {
     'additionalProperties': False,
 }
 
+# A file whose content travels with the capsule, for configuration a container
+# reads from disk rather than from its environment. The content is base64 so it
+# survives binary data and newlines intact.
+capsule_file_volume = {
+    'type': 'object',
+    'properties': {
+        'contents': {
+            'type': 'string',
+            'maxLength': 1048576,
+        },
+    },
+    'additionalProperties': False,
+    'required': ['contents'],
+}
+
 capsule_volumes_list = {
     'type': ['array', 'null'],
     'items': {
@@ -569,9 +584,16 @@ capsule_volumes_list = {
         'properties': {
             'name': volume_name,
             'cinder': capsule_cinder_volume,
+            'file': capsule_file_volume,
         },
         'additionalProperties': True,
-        'required': ['name', 'cinder']
+        # Exactly one source. Neither would mount nothing while looking valid;
+        # both would leave which one wins up to the order the code happens to
+        # check them in.
+        'oneOf': [
+            {'required': ['name', 'cinder']},
+            {'required': ['name', 'file']},
+        ],
     }
 }
 

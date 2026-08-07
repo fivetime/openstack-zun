@@ -425,9 +425,14 @@ def capsule_get_volume_spec(spec_field):
                 raise exception.InvalidCapsuleTemplate("Volume size and uuid "
                                                        "could not be set at "
                                                        "the same time")
+        elif volumes_spec[i].get('file'):
+            # A file carried with the capsule; its content is the whole spec,
+            # so there is nothing further to check here.
+            pass
         else:
-            raise exception.InvalidCapsuleTemplate("Zun now Only support "
-                                                   "Cinder volume driver")
+            raise exception.InvalidCapsuleTemplate("A capsule volume needs "
+                                                   "either a cinder or a file "
+                                                   "source")
 
     return volumes_spec
 
