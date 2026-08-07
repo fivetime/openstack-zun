@@ -38,6 +38,15 @@ CONF = zun.conf.CONF
 LOG = logging.getLogger(__name__)
 
 
+def _restart_count(container):
+    """How many times a probe has had this container replaced."""
+    state = (container.healthcheck or {}).get('k8s_probe_state') or {}
+    try:
+        return int(state.get('restarts') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
     """Implementation of container drivers for CRI runtime."""
 
@@ -59,14 +68,12 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         # TODO(hongbin): handle init containers
         for container in capsule.init_containers:
             self._create_container(context, capsule, container,
-                                   requested_networks,
                                    requested_volumes)
             self._wait_for_init_container(context, container)
             container.save(context)
 
         for container in capsule.containers:
             self._create_container(context, capsule, container,
-                                   requested_networks,
                                    requested_volumes)
             container.status = consts.RUNNING
             container.save(context)
@@ -157,7 +164,7 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         return dns_servers
 
     def _create_container(self, context, capsule, container,
-                          requested_networks, requested_volumes):
+                          requested_volumes):
         # pull image
         self._pull_image(context, container)
 
@@ -217,9 +224,16 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             }
         )
 
+        # The attempt number is what distinguishes one incarnation of a
+        # container from the next, both in the runtime's own naming and in what
+        # crictl shows, so a restarted container does not look like the
+        # original still running.
+        attempt = _restart_count(container)
+
         # TODO(hongbin): add support for entrypoint
         return api_pb2.ContainerConfig(
-            metadata=api_pb2.ContainerMetadata(name=container.name),
+            metadata=api_pb2.ContainerMetadata(name=container.name,
+                                               attempt=attempt),
             image=api_pb2.ImageSpec(image=container.image),
             tty=container.tty,
             stdin=container.interactive,
@@ -580,8 +594,11 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                 if self._probe_failed_enough(startup, state, 'startup'):
                     LOG.info("Startup probe for container %s never passed; "
                              "restarting it", container.container_id)
-                    self._restart_container(container)
-                    state = {}
+                    if self._restart_container(context, capsule, container):
+                        # Counters cleared so the new container is judged on
+                        # its own results; the restart tally is kept by the
+                        # restart itself.
+                        state = {'restarts': _restart_count(container)}
                 self._save_probe_state(context, container, state)
                 return True
 
@@ -605,8 +622,11 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             elif self._probe_failed_enough(liveness, state, 'liveness'):
                 LOG.info("Liveness probe for container %s failed; restarting "
                          "it", container.container_id)
-                self._restart_container(container)
-                state = {}
+                if self._restart_container(context, capsule, container):
+                    # Counters cleared so the new container is judged on its
+                    # own results; the restart tally is what tells anyone above
+                    # that this keeps happening.
+                    state = {'restarts': _restart_count(container)}
                 changed = True
 
         self._save_probe_state(context, container, state)
@@ -642,23 +662,62 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         container.healthcheck = healthcheck
         container.save(context)
 
-    def _restart_container(self, container):
-        """Stop a container so its restart policy brings it back.
+    def _restart_container(self, context, capsule, container):
+        """Replace a container in place, keeping its sandbox.
 
-        The sandbox and its network are left alone: restarting a container must
-        not change the capsule's address, or every client would have to
-        rediscover it.
+        A CRI container runs once: after it stops, the runtime refuses to start
+        it again ("container is in CONTAINER_EXITED state"), so a restart means
+        creating a new one. That was the whole gap behind a liveness probe --
+        it fired, the start was rejected, and the pod went on reporting healthy
+        with a dead application inside it.
+
+        The sandbox is reused rather than recreated, so the capsule keeps its
+        address. Losing it would send every client of this pod to look the
+        service up again, which a container restart has no business causing.
+
+        Returns True when the container was replaced.
         """
+        old_id = container.container_id
+        # Recorded before the replacement is created: the runtime is told the
+        # attempt number, and it reads it back off the container.
+        restarts = _restart_count(container) + 1
+        healthcheck = dict(container.healthcheck or {})
+        state = dict(healthcheck.get('k8s_probe_state') or {})
+        state['restarts'] = restarts
+        healthcheck['k8s_probe_state'] = state
+        container.healthcheck = healthcheck
+
         try:
-            self.runtime_stub.StopContainer(
-                api_pb2.StopContainerRequest(
-                    container_id=container.container_id, timeout=10))
-            self.runtime_stub.StartContainer(
-                api_pb2.StartContainerRequest(
-                    container_id=container.container_id))
+            try:
+                self.runtime_stub.StopContainer(
+                    api_pb2.StopContainerRequest(
+                        container_id=old_id, timeout=10))
+            except grpc.RpcError as e:
+                # Already gone or already stopped, which is where a failing
+                # liveness probe usually finds it.
+                LOG.debug("Container %(id)s did not need stopping: %(err)s",
+                          {'id': old_id, 'err': e})
+
+            volumes = {container.uuid: objects.VolumeMapping.list_by_container(
+                context, container.uuid)}
+            self._create_container(context, capsule, container, volumes)
+
+            try:
+                self.runtime_stub.RemoveContainer(
+                    api_pb2.RemoveContainerRequest(container_id=old_id))
+            except grpc.RpcError as e:
+                # The replacement is already running; a leftover record costs
+                # disk, not correctness.
+                LOG.warning("Could not remove replaced container %(id)s: "
+                            "%(err)s", {'id': old_id, 'err': e})
+            return True
         except Exception as e:
-            LOG.warning("Could not restart container %(id)s: %(err)s",
-                        {'id': container.container_id, 'err': e})
+            # Left visible rather than swallowed: a restart that silently fails
+            # is the failure the probe existed to catch, now hidden one level
+            # deeper.
+            LOG.error("Could not restart container %(id)s: %(err)s",
+                      {'id': old_id, 'err': e})
+            return False
 
     def delete_capsule(self, context, capsule, force):
         pod_id = capsule.container_id
