@@ -354,8 +354,17 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                 try:
                     self._show_container(context, container)
                 except exception.ZunException:
-                    # Gone from the runtime while Zun still has a record of it.
-                    container.status = consts.DELETED
+                    # The runtime does not know this container. That reads as
+                    # "gone", but it is also what a container mid-creation and
+                    # a runtime still recovering look like, and calling it gone
+                    # marks the capsule stopped, terminates the pod and has the
+                    # workload rebuilt for nothing. A container that really has
+                    # gone is caught by capsule deletion and by the orphan
+                    # sweep, both of which check against Kubernetes rather than
+                    # against one runtime query.
+                    LOG.debug("Runtime does not report container %s; leaving "
+                              "its status alone", container.container_id)
+                    continue
                 except Exception as e:
                     LOG.warning("Could not read state of container %(id)s: "
                                 "%(err)s",
