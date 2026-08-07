@@ -165,7 +165,10 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             args = [str(c) for c in container.command]
         envs = []
         if container.environment:
-            envs = [api_pb2.KeyValue(key=str(k), value=str(v))
+            # KeyValue.value is bytes in the v1 runtime API, unlike the
+            # v1alpha2 message this code was written against, and protobuf
+            # refuses a str for it.
+            envs = [api_pb2.KeyValue(key=str(k), value=str(v).encode())
                     for k, v in container.environment.items()]
         mounts = []
         if container.uuid in requested_volumes:
