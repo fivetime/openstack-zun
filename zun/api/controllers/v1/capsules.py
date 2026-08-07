@@ -32,6 +32,7 @@ from zun.common import name_generator
 from zun.common import policy
 from zun.common import utils
 import zun.conf
+from zun.container import driver
 from zun import objects
 from zun.volume import cinder_api as cinder
 
@@ -234,6 +235,20 @@ class CapsuleController(base.Controller):
         az_info = template_json.get('availabilityZone')
         if az_info:
             extra_spec['availability_zone'] = az_info
+
+        # An image built for one architecture cannot run on another, and
+        # nothing downstream would catch it: the capsule would be placed
+        # anywhere and only fail when the container tried to execute. Asking
+        # Placement for the matching architecture trait refuses the wrong host
+        # while it is still a scheduling decision.
+        arch = template_json.get('architecture')
+        if arch:
+            arch = driver.ARCH_ALIASES.get(arch.lower(), arch.lower())
+            trait = driver.ARCH_TRAITS.get(arch)
+            if not trait:
+                raise exception.InvalidCapsuleTemplate(
+                    "unsupported architecture %s" % arch)
+            extra_spec['trait:%s' % trait] = 'required' 
 
         new_capsule.image = CONF.sandbox_image
         new_capsule.image_driver = CONF.sandbox_image_driver

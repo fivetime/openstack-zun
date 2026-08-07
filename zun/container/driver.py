@@ -12,6 +12,7 @@
 # limitations under the License.
 
 import copy
+import platform
 import sys
 
 import os_resource_classes as orc
@@ -36,6 +37,32 @@ CONF = zun.conf.CONF
 
 # TODO(hongbin): define a list of standard traits keyed by capabilities
 CAPABILITY_TRAITS_MAP = {}
+
+# Placement's standard architecture traits, keyed by the normalised machine
+# name. A host whose architecture is not listed reports no trait at all, which
+# leaves it schedulable only by requests that ask for no architecture.
+ARCH_TRAITS = {
+    'x86_64': 'COMPUTE_ARCH_X86_64',
+    'aarch64': 'COMPUTE_ARCH_AARCH64',
+    'ppc64le': 'COMPUTE_ARCH_PPC64LE',
+    's390x': 'COMPUTE_ARCH_S390X',
+    'riscv64': 'COMPUTE_ARCH_RISCV64',
+}
+
+# Spellings that mean the same machine, so a caller writing arm64 (the
+# Kubernetes spelling) and one writing aarch64 (the Linux one) reach the same
+# host. Shared with the API layer so both ends normalise identically.
+ARCH_ALIASES = {
+    'amd64': 'x86_64',
+    'x86-64': 'x86_64',
+    'arm64': 'aarch64',
+}
+
+
+def host_architecture():
+    """Return this host's architecture under its canonical name."""
+    machine = platform.machine().lower()
+    return ARCH_ALIASES.get(machine, machine)
 
 
 def load_container_driver(container_driver=None):
@@ -193,6 +220,12 @@ class BaseDriver(object):
         disk_quota_supported = self.node_support_disk_quota()
         data['disk_quota_supported'] = disk_quota_supported
         data['enable_cpu_pinning'] = CONF.compute.enable_cpu_pinning
+        # Reported here rather than left to each driver: without them a
+        # capsule-only host shows zero CPUs and no architecture at all, which
+        # misleads anyone reading `zun host show` and leaves a mixed-platform
+        # deployment with nothing to place workloads by.
+        data['cpus'] = psutil.cpu_count() or 0
+        data['architecture'] = host_architecture()
 
         return data
 
@@ -341,6 +374,13 @@ class BaseDriver(object):
 
         """
         traits = {}
+        # The architecture trait is what lets Placement refuse a host that
+        # cannot run the image at all. Without it a request for one platform
+        # is happily scheduled onto another, and the failure only surfaces when
+        # the container tries to execute.
+        arch_trait = ARCH_TRAITS.get(host_architecture())
+        if arch_trait:
+            traits[arch_trait] = True
         for capability, supported in self.capabilities.items():
             if capability in CAPABILITY_TRAITS_MAP:
                 traits[CAPABILITY_TRAITS_MAP[capability]] = supported

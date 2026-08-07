@@ -586,6 +586,12 @@ capsule_spec = {
     "required": ['containers']
 }
 
+capsule_architecture = {
+    'type': ['string', 'null'],
+    'enum': ['x86_64', 'aarch64', 'ppc64le', 's390x', 'riscv64',
+             'amd64', 'arm64', None],
+}
+
 capsule_template = {
     'type': ['object', 'string', 'unicode'],
     "properties": {
@@ -598,6 +604,7 @@ capsule_template = {
         "restartPolicy": capsule_restart_policy,
         "spec": capsule_spec,
         "availabilityZone": availability_zone,
+        "architecture": capsule_architecture,
         "nets": nets,
     },
     "additionalProperties": False,
