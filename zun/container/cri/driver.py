@@ -763,9 +763,21 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         if due is not None:
             return now >= due
         delay = int(probe.get('initialDelaySeconds') or 0)
-        started = getattr(container, 'started_at', None)
+        # ⚠️ created_at is the fallback, and it has to be one. started_at is
+        # not always set, and `return delay == 0` for that case was a deadlock:
+        # a probe with initialDelaySeconds above zero was never due, so it
+        # never ran, so _schedule_next never wrote the _next it would have
+        # been judged by afterwards, so it was never due again. The container
+        # stayed unready for its whole life with nothing logged, because a
+        # probe that does not run cannot fail.
+        #
+        # It hit exactly the pods we ask tenants to write: docs/tenant-guide
+        # tells them to set initialDelaySeconds because a Kata guest is slow
+        # to start.
+        started = (getattr(container, 'started_at', None) or
+                   getattr(container, 'created_at', None))
         if started is None:
-            return delay == 0
+            return True
         return now >= started.timestamp() + delay
 
     @staticmethod
