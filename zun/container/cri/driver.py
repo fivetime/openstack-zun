@@ -45,12 +45,26 @@ LOG = logging.getLogger(__name__)
 # which means nothing here.
 DNS_SEARCHES_ANNOTATION = 'knaas.io/dns-searches'
 
+# DNS_SERVERS_ANNOTATION lets the creator name the resolver, overriding the
+# subnet's. A Kubernetes provider needs this: the tenant's own resolver is the
+# only one that answers with the names their manifests use, and it is not the
+# subnet-wide one.
+DNS_SERVERS_ANNOTATION = 'knaas.io/dns-nameservers'
 
-def _dns_searches(capsule):
-    raw = (capsule.annotations or {}).get(DNS_SEARCHES_ANNOTATION)
+
+def _annotation_list(capsule, key):
+    raw = (capsule.annotations or {}).get(key)
     if not raw:
         return []
     return [s for s in (part.strip() for part in raw.split(',')) if s]
+
+
+def _dns_searches(capsule):
+    return _annotation_list(capsule, DNS_SEARCHES_ANNOTATION)
+
+
+def _dns_servers(capsule):
+    return _annotation_list(capsule, DNS_SERVERS_ANNOTATION)
 
 
 def _restart_count(container):
@@ -104,8 +118,12 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
 
         dns_servers = self._write_cni_metadata(context, capsule,
                                                requested_networks)
+        # What the creator asked for wins over the subnet's: the subnet serves
+        # every capsule on it, while this is the resolver for one capsule's
+        # tenant.
+        servers = _dns_servers(capsule) or dns_servers
         sandbox_config = self._get_sandbox_config(
-            capsule, dns_servers, _dns_searches(capsule))
+            capsule, servers, _dns_searches(capsule))
         sandbox_resp = self.runtime_stub.RunPodSandbox(
             api_pb2.RunPodSandboxRequest(
                 config=sandbox_config,
