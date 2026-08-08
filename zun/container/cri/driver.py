@@ -410,8 +410,8 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         """
         if not CONF.probe_helper_path:
             return None
-        if not (getattr(container, 'liveness_probe', None) or
-                getattr(container, 'readiness_probe', None)):
+        probes = (container.healthcheck or {}).get('k8s_probes') or {}
+        if not probes:
             return None
         if not os.path.isdir(CONF.probe_helper_path):
             # Said loudly and once per container rather than failing the
