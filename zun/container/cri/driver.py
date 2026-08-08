@@ -247,6 +247,9 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         if container.uuid in requested_volumes:
             req_volume = requested_volumes[container.uuid]
             mounts = self._get_mounts(context, req_volume)
+        probe_mount = self._probe_helper_mount(container)
+        if probe_mount is not None:
+            mounts.append(probe_mount)
         working_dir = container.workdir or ""
         labels = container.labels or []
 
@@ -386,6 +389,43 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             )
         )
         LOG.debug("image is pulled: %s", response)
+
+    def _probe_helper_mount(self, container):
+        """Mount the probe helper for a container that has probes.
+
+        A probe has to run inside the container: nothing outside reaches it,
+        because the address is on the tenant network and lives inside the VM
+        rather than in the sandbox's namespace on this host. So a rewritten
+        httpGet becomes an exec, and an exec needs something to execute --
+        which a distroless image does not have. No shell, no curl, no wget.
+
+        Mounting the helper from this host rather than building it into the
+        image or shipping it inside each capsule keeps it out of the tenant's
+        way entirely: the image is untouched, the capsule carries nothing, and
+        the tool is versioned with the compute node.
+
+        Read-only, and only for containers that actually declare a probe --
+        every mount is a virtiofs device to a Kata guest, so one nobody uses is
+        a device nobody uses.
+        """
+        if not CONF.probe_helper_path:
+            return None
+        if not (getattr(container, 'liveness_probe', None) or
+                getattr(container, 'readiness_probe', None)):
+            return None
+        if not os.path.isdir(CONF.probe_helper_path):
+            # Said loudly and once per container rather than failing the
+            # create: a node missing the helper still runs everything whose
+            # probes are plain exec, and a create refused here would read to
+            # the tenant as their image being wrong.
+            LOG.warning("probe_helper_path %s does not exist on this host; "
+                        "containers with httpGet or tcpSocket probes will "
+                        "fail them until it does",
+                        CONF.probe_helper_path)
+            return None
+        return api_pb2.Mount(container_path=CONF.probe_helper_mount,
+                             host_path=CONF.probe_helper_path,
+                             readonly=True)
 
     def _get_mounts(self, context, volmaps):
         mounts = []

@@ -85,6 +85,20 @@ Interdependencies to other options:
                default=160,
                help='The maximum disk size in GB that user can set '
                     'when run/create container.'),
+    cfg.StrOpt('probe_helper_path',
+               default='/opt/kubezun/probe',
+               help='Directory on this host holding the probe helper, mounted '
+                    'read-only into any container that declares a probe. A '
+                    'probe must run inside the container -- nothing outside '
+                    'can reach it -- and a distroless image has no shell, curl '
+                    'or wget to run, so without this a container that is '
+                    'answering perfectly well reports as unhealthy. Empty '
+                    'disables the mount.'),
+    cfg.StrOpt('probe_helper_mount',
+               default='/.kubezun',
+               help='Where the probe helper appears inside the container. '
+                    'Chosen to be somewhere no image is likely to use; the '
+                    'rewritten probe command has to agree with it.'),
     cfg.IntOpt('default_memory',
                default=512,
                help='The default memory in MB a container can use '
