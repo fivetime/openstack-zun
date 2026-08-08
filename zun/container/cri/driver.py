@@ -51,6 +51,69 @@ DNS_SEARCHES_ANNOTATION = 'knaas.io/dns-searches'
 # subnet-wide one.
 DNS_SERVERS_ANNOTATION = 'knaas.io/dns-nameservers'
 
+def _security_context(container):
+    """The securityContext this container was created with.
+
+    Carried in the healthcheck column beside the probes, which is where the API
+    puts it (capsules.py) — the same column, for the same reason: a new one
+    means a migration.
+
+    ⚠️ Not the capsule's annotations keyed by container name, which was the
+    first attempt. The API overwrites a capsule container's name with a
+    generated one, so the key never matched and every container ran as root
+    with a writable root filesystem, silently.
+    """
+    return (container.healthcheck or {}).get('k8s_security_context') or {}
+
+
+def _linux_security_context(container):
+    """Build the CRI security context for one container.
+
+    Only what was asked for is set. A field left out means "whatever the
+    runtime does by default", which is what an unset securityContext field
+    means in Kubernetes too.
+    """
+    sc = _security_context(container)
+    kwargs = {'privileged': container.privileged}
+
+    if sc.get('runAsUser') is not None:
+        kwargs['run_as_user'] = api_pb2.Int64Value(value=int(sc['runAsUser']))
+    if sc.get('runAsGroup') is not None:
+        kwargs['run_as_group'] = api_pb2.Int64Value(value=int(sc['runAsGroup']))
+    if sc.get('readOnlyRootFilesystem'):
+        kwargs['readonly_rootfs'] = True
+    # allowPrivilegeEscalation: false is no_new_privs: true. Named the other way
+    # round in each system, which is worth stating rather than trusting.
+    if sc.get('allowPrivilegeEscalation') is False:
+        kwargs['no_new_privs'] = True
+
+    caps = sc.get('capabilities') or {}
+    if caps.get('add') or caps.get('drop'):
+        kwargs['capabilities'] = api_pb2.Capability(
+            add_capabilities=list(caps.get('add') or []),
+            drop_capabilities=list(caps.get('drop') or []))
+
+    profile = sc.get('seccompProfile')
+    if profile:
+        kwargs['seccomp'] = _seccomp_profile(profile)
+
+    return api_pb2.LinuxContainerSecurityContext(**kwargs)
+
+
+def _seccomp_profile(profile):
+    kind = profile.get('type')
+    if kind == 'RuntimeDefault':
+        return api_pb2.SecurityProfile(
+            profile_type=api_pb2.SecurityProfile.RuntimeDefault)
+    if kind == 'Localhost':
+        return api_pb2.SecurityProfile(
+            profile_type=api_pb2.SecurityProfile.Localhost,
+            localhost_ref=profile.get('localhostProfile') or '')
+    # Unconfined, or anything unrecognised: say so rather than guessing at a
+    # stricter profile the workload was not built for.
+    return api_pb2.SecurityProfile(
+        profile_type=api_pb2.SecurityProfile.Unconfined)
+
 
 def _annotation_list(capsule, key):
     raw = (capsule.annotations or {}).get(key)
@@ -211,7 +274,7 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         self._pull_image(context, container)
 
         sandbox_config = self._get_sandbox_config(capsule)
-        container_config = self._get_container_config(context, container,
+        container_config = self._get_container_config(context, capsule, container,
                                                       requested_volumes)
         response = self.runtime_stub.CreateContainer(
             api_pb2.CreateContainerRequest(
@@ -232,7 +295,7 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         )
         LOG.debug("container is started: %s", response)
 
-    def _get_container_config(self, context, container, requested_volumes):
+    def _get_container_config(self, context, capsule, container, requested_volumes):
         args = []
         if container.command:
             args = [str(c) for c in container.command]
@@ -260,9 +323,7 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         if container.memory is not None:
             memory = int(container.memory) * 1024 * 1024
         linux_config = api_pb2.LinuxContainerConfig(
-            security_context=api_pb2.LinuxContainerSecurityContext(
-                privileged=container.privileged
-            ),
+            security_context=_linux_security_context(container),
             resources={
                 'cpu_shares': cpu,
                 'memory_limit_in_bytes': memory,

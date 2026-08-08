@@ -510,6 +510,37 @@ capsule_probe = {
     'additionalProperties': False,
 }
 
+# What of a Kubernetes securityContext the CRI runtime can be told. Anything
+# outside this is refused rather than dropped: the field that goes missing is
+# always the one that made the container safer.
+capsule_security_context = {
+    'type': ['object'],
+    'properties': {
+        'runAsUser': non_negative_integer,
+        'runAsGroup': non_negative_integer,
+        'readOnlyRootFilesystem': boolean,
+        'allowPrivilegeEscalation': boolean,
+        'capabilities': {
+            'type': ['object'],
+            'properties': {
+                'add': {'type': ['array'], 'items': {'type': 'string'}},
+                'drop': {'type': ['array'], 'items': {'type': 'string'}},
+            },
+            'additionalProperties': False,
+        },
+        'seccompProfile': {
+            'type': ['object'],
+            'properties': {
+                'type': {'type': ['string'],
+                         'enum': ['RuntimeDefault', 'Unconfined', 'Localhost']},
+                'localhostProfile': {'type': ['string']},
+            },
+            'additionalProperties': False,
+        },
+    },
+    'additionalProperties': False,
+}
+
 capsule_containers_list = {
     'type': ['array'],
     'items': {
@@ -530,6 +561,7 @@ capsule_containers_list = {
             'livenessProbe': capsule_probe,
             'readinessProbe': capsule_probe,
             'startupProbe': capsule_probe,
+            'securityContext': capsule_security_context,
         },
         'additionalProperties': False,
         'required': ['image']

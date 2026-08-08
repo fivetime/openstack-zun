@@ -335,6 +335,22 @@ class CapsuleController(base.Controller):
                 healthcheck['k8s_probes'] = probes
                 container_dict['healthcheck'] = healthcheck
 
+            # The security context rides the same column, for the same reason,
+            # and per container because that is where Kubernetes puts it.
+            #
+            # ⚠️ It cannot travel in the capsule's annotations keyed by container
+            # name, which was the first attempt: the name in the spec is
+            # overwritten a few lines above with a generated one, so by the time
+            # the driver looks, the key it was given no longer names anything.
+            # The container ran as root with a writable root filesystem and
+            # nothing reported it, which is the failure this whole field exists
+            # to prevent.
+            security_context = container_dict.pop('securityContext', None)
+            if security_context:
+                healthcheck = container_dict.get('healthcheck') or {}
+                healthcheck['k8s_security_context'] = security_context
+                container_dict['healthcheck'] = healthcheck
+
             container_dict['image_pull_policy'] = (
                 container_dict.get('image_pull_policy', 'always').lower())
             container_dict['status'] = consts.CREATING
