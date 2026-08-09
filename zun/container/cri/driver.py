@@ -89,8 +89,20 @@ def _linux_security_context(container):
 
     caps = sc.get('capabilities') or {}
     if caps.get('add') or caps.get('drop'):
+        # Second line of defence behind the API's validation: even if a
+        # forbidden capability reached the stored spec (a direct DB write, a
+        # future regression in the API check), it does not reach the runtime.
+        # Dropping is never restricted.
+        allowed = {c.upper() for c in CONF.allowed_capabilities}
+        add = [c for c in (caps.get('add') or []) if str(c).upper() in allowed]
+        dropped = [c for c in (caps.get('add') or []) if str(c).upper() not in allowed]
+        if dropped:
+            LOG.warning("refusing capabilities %s on container %s; this host "
+                        "allows adding only %s",
+                        dropped, container.container_id,
+                        sorted(allowed) or '(none)')
         kwargs['capabilities'] = api_pb2.Capability(
-            add_capabilities=list(caps.get('add') or []),
+            add_capabilities=add,
             drop_capabilities=list(caps.get('drop') or []))
 
     profile = sc.get('seccompProfile')
@@ -106,9 +118,13 @@ def _seccomp_profile(profile):
         return api_pb2.SecurityProfile(
             profile_type=api_pb2.SecurityProfile.RuntimeDefault)
     if kind == 'Localhost':
+        # Refused at the API; should never arrive. If it does (direct DB
+        # write), do not hand the runtime a tenant-named host path -- fall
+        # back to the runtime default, the stricter of the two.
+        LOG.warning("ignoring unsupported Localhost seccomp profile; "
+                    "using the runtime default")
         return api_pb2.SecurityProfile(
-            profile_type=api_pb2.SecurityProfile.Localhost,
-            localhost_ref=profile.get('localhostProfile') or '')
+            profile_type=api_pb2.SecurityProfile.RuntimeDefault)
     # Unconfined, or anything unrecognised: say so rather than guessing at a
     # stricter profile the workload was not built for.
     return api_pb2.SecurityProfile(

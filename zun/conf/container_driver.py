@@ -99,6 +99,19 @@ Interdependencies to other options:
                help='Where the probe helper appears inside the container. '
                     'Chosen to be somewhere no image is likely to use; the '
                     'rewritten probe command has to agree with it.'),
+    cfg.ListOpt('allowed_capabilities',
+                default=['NET_BIND_SERVICE'],
+                help='Linux capabilities a capsule container may ADD through '
+                     'its securityContext. Anything outside this list is '
+                     'refused rather than silently dropped. The default is the '
+                     'one capability Kubernetes PodSecurity "restricted" itself '
+                     'allows -- binding a privileged port -- because a tenant '
+                     'that can add arbitrary capabilities (SYS_ADMIN, '
+                     'NET_ADMIN, ...) has, inside its Kata guest, most of what '
+                     '"privileged" would have granted, which this platform '
+                     'refuses outright. Dropping capabilities is never '
+                     'restricted. Widen this only for a trusted tenant on a '
+                     'dedicated compute host.'),
     cfg.IntOpt('default_memory',
                default=512,
                help='The default memory in MB a container can use '

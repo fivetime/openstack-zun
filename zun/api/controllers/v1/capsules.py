@@ -49,6 +49,48 @@ def check_policy_on_capsule(capsule, action):
     policy.enforce(context, action, capsule, action=action)
 
 
+def _validate_security_context(sc):
+    """Refuse the parts of a securityContext this platform will not grant.
+
+    The rest of a securityContext only makes a container SAFER -- a non-root
+    user, a read-only root filesystem, dropped capabilities, a seccomp profile
+    -- and is honoured as written. Two parts can make it MORE powerful, and are
+    bounded here rather than passed through:
+
+      capabilities.add  A tenant that can add SYS_ADMIN, NET_ADMIN and the like
+                        has, inside its Kata guest, most of what "privileged"
+                        would grant -- and privileged is refused outright. Only
+                        the capabilities in [container_driver] allowed_capabilities
+                        (by default the single one PodSecurity "restricted"
+                        permits) may be added. Dropping is never restricted.
+
+      seccompProfile: Localhost  Names a profile FILE on the compute host. A
+                        tenant cannot install one, so it has no legitimate use,
+                        and the reference is an arbitrary host path -- exactly
+                        what a capsule must not be able to name. Only
+                        RuntimeDefault and Unconfined are accepted.
+    """
+    caps = (sc.get('capabilities') or {})
+    add = caps.get('add') or []
+    if add:
+        allowed = {c.upper() for c in CONF.allowed_capabilities}
+        asked = {str(c).upper() for c in add}
+        forbidden = sorted(asked - allowed)
+        if forbidden:
+            raise exception.Invalid(
+                "securityContext.capabilities.add may not include %s; this "
+                "host allows adding only %s" % (
+                    ', '.join(forbidden),
+                    ', '.join(sorted(allowed)) or '(none)'))
+
+    profile = sc.get('seccompProfile') or {}
+    if profile.get('type') == 'Localhost':
+        raise exception.Invalid(
+            "securityContext.seccompProfile type Localhost is not supported: "
+            "it names a profile file on the compute host, which a tenant "
+            "cannot install; use RuntimeDefault")
+
+
 def check_capsule_template(tpl):
     # TODO(kevinz): add volume spec check
     tpl_json = tpl
@@ -347,6 +389,7 @@ class CapsuleController(base.Controller):
             # to prevent.
             security_context = container_dict.pop('securityContext', None)
             if security_context:
+                _validate_security_context(security_context)
                 healthcheck = container_dict.get('healthcheck') or {}
                 healthcheck['k8s_security_context'] = security_context
                 container_dict['healthcheck'] = healthcheck
