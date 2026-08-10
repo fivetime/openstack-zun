@@ -178,6 +178,10 @@ class API(rpc_service.API):
                           container=container)
 
     @check_container_host
+    def capsule_stats(self, context, capsule):
+        return self._call(capsule.host, 'capsule_stats', capsule=capsule)
+
+    @check_container_host
     def container_commit(self, context, container, repository, tag):
         return self._call(container.host, 'container_commit',
                           container=container, repository=repository, tag=tag)

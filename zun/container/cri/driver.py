@@ -949,6 +949,51 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                       {'id': old_id, 'err': e})
             return False
 
+    def capsule_stats(self, context, capsule):
+        """Return per-container resource usage for one capsule.
+
+        The runtime already accounts for this -- it is what a kubelet reads to
+        answer "kubectl top" and what autoscaling on CPU or memory is driven
+        from. Without it a capsule is a black box: its owner can see that the
+        workload runs and nothing about what it uses, and a
+        HorizontalPodAutoscaler has no signal at all.
+
+        CPU arrives as a cumulative count of nanoseconds rather than a rate, so
+        it is passed on exactly as the runtime gives it, with its timestamp.
+        Turning two readings into a rate belongs to the caller: only the caller
+        knows which earlier reading belongs to the same container, and a rate
+        computed here would be wrong across a restart.
+        """
+        pod_id = capsule.container_id
+        if not pod_id:
+            return []
+
+        response = self.runtime_stub.ListContainerStats(
+            api_pb2.ListContainerStatsRequest(
+                filter=api_pb2.ContainerStatsFilter(pod_sandbox_id=pod_id)))
+
+        out = []
+        for stats in response.stats:
+            entry = {
+                'container_id': stats.attributes.id,
+                'name': stats.attributes.metadata.name,
+            }
+            if stats.HasField('cpu'):
+                entry['timestamp'] = stats.cpu.timestamp
+                if stats.cpu.HasField('usage_core_nano_seconds'):
+                    entry['cpu_usage_core_nanoseconds'] = \
+                        stats.cpu.usage_core_nano_seconds.value
+            if stats.HasField('memory'):
+                entry.setdefault('timestamp', stats.memory.timestamp)
+                if stats.memory.HasField('working_set_bytes'):
+                    entry['memory_working_set_bytes'] = \
+                        stats.memory.working_set_bytes.value
+                if stats.memory.HasField('usage_bytes'):
+                    entry['memory_usage_bytes'] = \
+                        stats.memory.usage_bytes.value
+            out.append(entry)
+        return out
+
     def delete_capsule(self, context, capsule, force):
         pod_id = capsule.container_id
         if not pod_id:

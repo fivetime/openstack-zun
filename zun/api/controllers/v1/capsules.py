@@ -157,6 +157,7 @@ class CapsuleController(base.Controller):
     _custom_actions = {
         'logs': ['GET'],
         'execute': ['POST'],
+        'stats': ['GET'],
     }
 
     @base.Controller.api_version("1.1", "1.31")
@@ -517,6 +518,35 @@ class CapsuleController(base.Controller):
         compute_api = pecan.request.compute_api
         return compute_api.container_logs(context, target, stdout, stderr,
                                           timestamps, tail, since)
+
+    @pecan.expose('json')
+    @exception.wrap_pecan_controller_exception
+    def stats(self, capsule_ident):
+        """Resource usage of every container in the given capsule.
+
+        Per-container rather than one figure for the capsule: that is the shape
+        the runtime accounts in, and a caller driving autoscaling or answering
+        "which container is using the memory" needs the breakdown. Summing is
+        cheap for a caller that wants the total; splitting a total is not
+        possible.
+
+        CPU is a cumulative nanosecond count, not a rate, and is returned as
+        the runtime reports it together with the timestamp it was read at. Two
+        readings make a rate; one does not, and a rate invented here would be
+        wrong across a container restart.
+
+        :param capsule_ident: UUID or Name of a capsule.
+        """
+        capsule = api_utils.get_resource('Capsule', capsule_ident)
+        check_policy_on_capsule(capsule.as_dict(), "capsule:stats")
+
+        if not capsule.host:
+            raise exception.Invalid(
+                _('Capsule is not running on any host yet'))
+
+        context = pecan.request.context
+        compute_api = pecan.request.compute_api
+        return {'stats': compute_api.capsule_stats(context, capsule)}
 
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception

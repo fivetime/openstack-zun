@@ -224,6 +224,9 @@ class API(object):
     def container_stats(self, context, container):
         return self.rpcapi.container_stats(context, container)
 
+    def capsule_stats(self, context, capsule):
+        return self.rpcapi.capsule_stats(context, capsule)
+
     def container_commit(self, context, container, *args):
         self._record_action_start(context, container, container_actions.COMMIT)
         return self.rpcapi.container_commit(context, container, *args)

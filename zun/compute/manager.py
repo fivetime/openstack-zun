@@ -1050,6 +1050,22 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
+    def capsule_stats(self, context, capsule):
+        """Resource usage of every container in a capsule.
+
+        Separate from container_stats because a capsule is not a container
+        here: it is a sandbox holding several, and the answer is per-container.
+        A capsule driver that cannot report usage says so, rather than
+        answering an empty set that reads as "running and using nothing".
+        """
+        LOG.debug('Displaying stats of the capsule: %s', capsule.uuid)
+        if not hasattr(self.capsule_driver, 'capsule_stats'):
+            raise exception.OperationNotSupported(
+                message=_('Resource usage is not reported by capsule '
+                          'driver %s') % type(self.capsule_driver).__name__)
+        return self.capsule_driver.capsule_stats(context, capsule)
+
+    @translate_exception
     def container_stats(self, context, container):
         LOG.debug('Displaying stats of the container: %s', container.uuid)
         try:

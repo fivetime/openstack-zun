@@ -99,6 +99,17 @@ rules = [
         ]
     ),
     policy.DocumentedRuleDefault(
+        name=CAPSULE % 'stats',
+        check_str=base.RULE_ADMIN_OR_OWNER,
+        description='Read the resource usage of a capsule\'s containers.',
+        operations=[
+            {
+                'path': '/v1/capsules/{capsule_ident}/stats',
+                'method': 'GET'
+            }
+        ]
+    ),
+    policy.DocumentedRuleDefault(
         name=CAPSULE % 'get:host',
         check_str=base.RULE_ADMIN_API,
         description='Retrieve the host field of a capsule.',
