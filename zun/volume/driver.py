@@ -12,6 +12,7 @@
 
 import abc
 import functools
+import os
 import shutil
 
 from oslo_log import log as logging
@@ -97,6 +98,22 @@ class Local(VolumeDriver):
         with open(filename, 'wb') as fd:
             content = utils.decode_file_data(volmap.contents)
             fd.write(content)
+
+    @validate_volume_provider(supported_providers)
+    def update_file(self, context, volmap, contents):
+        """Rewrite the file this volume is, leaving the file itself in place.
+
+        The file is bind mounted into the container, so the container follows
+        it by inode: truncating and writing is seen immediately, while writing
+        a new file and renaming it over this one would leave the container
+        reading a file that no longer exists anywhere.
+        """
+        mountpoint = mount.get_mountpoint(volmap.volume.uuid)
+        filename = '/'.join([mountpoint, volmap.volume.uuid])
+        with open(filename, 'wb') as fd:
+            fd.write(utils.decode_file_data(contents))
+            fd.flush()
+            os.fsync(fd.fileno())
 
     def _remove_local_file(self, volmap):
         mountpoint = mount.get_mountpoint(volmap.volume.uuid)

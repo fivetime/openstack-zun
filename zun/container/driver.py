@@ -176,6 +176,10 @@ class BaseDriver(object):
         volume_driver = self._get_volume_driver(volume_mapping)
         volume_driver.detach(context, volume_mapping)
 
+    def update_file_volume(self, context, volume_mapping, contents):
+        volume_driver = self._get_volume_driver(volume_mapping)
+        volume_driver.update_file(context, volume_mapping, contents)
+
     def delete_volume(self, context, volume_mapping):
         volume_driver = self._get_volume_driver(volume_mapping)
         volume_driver.delete(context, volume_mapping)

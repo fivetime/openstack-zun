@@ -1050,6 +1050,44 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
+    def capsule_update_file(self, context, capsule, container_path, contents):
+        """Replace the contents of one of a capsule's file volumes, in place.
+
+        A capsule's file volumes are written once, when it is built, and a
+        capsule cannot be changed afterwards -- so a file that has to change
+        while the workload runs had no way to. The case that forces this is a
+        service account token: it expires, and the alternatives are all worse.
+        Recreating the capsule restarts the workload and takes its address with
+        it. Running a command inside the container to rewrite the file needs a
+        shell, and the images most worth running do not have one -- a
+        distroless image has no `sh`, so that path fails on exactly the
+        well-built images it would matter most for.
+
+        The file is written where it already is, not replaced. It is bind
+        mounted into the container, so truncating and rewriting is seen there
+        immediately; creating a new file and renaming it over the old one
+        breaks the mount, and the container would go on reading the file that
+        is no longer there.
+
+        Only a local file volume can be rewritten. A Cinder volume is a block
+        device and this is not what it means to write to one.
+        """
+        volmaps = objects.VolumeMapping.list_by_container(context, capsule.uuid)
+        for volmap in volmaps:
+            if volmap.container_path != container_path:
+                continue
+            if volmap.volume.volume_provider != 'local':
+                raise exception.Invalid(
+                    _('%(path)s is not a file volume') % {
+                        'path': container_path})
+            self.driver.update_file_volume(context, volmap, contents)
+            volmap.contents = contents
+            volmap.save(context)
+            return
+
+        raise exception.VolumeMappingNotFound(id=container_path)
+
+    @translate_exception
     def capsule_stats(self, context, capsule):
         """Resource usage of every container in a capsule.
 

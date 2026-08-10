@@ -99,6 +99,17 @@ rules = [
         ]
     ),
     policy.DocumentedRuleDefault(
+        name=CAPSULE % 'update_file',
+        check_str=base.RULE_ADMIN_OR_OWNER,
+        description='Replace the contents of a capsule file volume.',
+        operations=[
+            {
+                'path': '/v1/capsules/{capsule_ident}/update_file',
+                'method': 'POST'
+            }
+        ]
+    ),
+    policy.DocumentedRuleDefault(
         name=CAPSULE % 'stats',
         check_str=base.RULE_ADMIN_OR_OWNER,
         description='Read the resource usage of a capsule\'s containers.',

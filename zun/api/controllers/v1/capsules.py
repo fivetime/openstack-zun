@@ -158,6 +158,7 @@ class CapsuleController(base.Controller):
         'logs': ['GET'],
         'execute': ['POST'],
         'stats': ['GET'],
+        'update_file': ['POST'],
     }
 
     @base.Controller.api_version("1.1", "1.31")
@@ -518,6 +519,39 @@ class CapsuleController(base.Controller):
         compute_api = pecan.request.compute_api
         return compute_api.container_logs(context, target, stdout, stderr,
                                           timestamps, tail, since)
+
+    @pecan.expose('json')
+    @exception.wrap_pecan_controller_exception
+    def update_file(self, capsule_ident, path=None, contents=None):
+        """Replace the contents of one of the capsule's file volumes.
+
+        For content that has to change while the capsule runs, which a capsule
+        otherwise has no way to express: it is built once and cannot be
+        changed, and the only alternatives are recreating it -- restarting the
+        workload and losing its address -- or running a command inside the
+        container, which needs a shell the better images do not have.
+
+        The file is rewritten where it is, so a container reading it sees the
+        new contents without anything being remounted.
+
+        :param capsule_ident: UUID or Name of a capsule.
+        :param path: the path the volume is mounted at inside the container.
+        :param contents: the new contents, base64 encoded.
+        """
+        capsule = api_utils.get_resource('Capsule', capsule_ident)
+        check_policy_on_capsule(capsule.as_dict(), "capsule:update_file")
+
+        if not path or contents is None:
+            raise exception.Invalid(
+                _('Both path and contents are required'))
+        if not capsule.host:
+            raise exception.Invalid(
+                _('Capsule is not running on any host yet'))
+
+        context = pecan.request.context
+        compute_api = pecan.request.compute_api
+        compute_api.capsule_update_file(context, capsule, path, contents)
+        return {'updated': path}
 
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception

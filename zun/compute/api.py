@@ -227,6 +227,10 @@ class API(object):
     def capsule_stats(self, context, capsule):
         return self.rpcapi.capsule_stats(context, capsule)
 
+    def capsule_update_file(self, context, capsule, container_path, contents):
+        return self.rpcapi.capsule_update_file(context, capsule,
+                                               container_path, contents)
+
     def container_commit(self, context, container, *args):
         self._record_action_start(context, container, container_actions.COMMIT)
         return self.rpcapi.container_commit(context, container, *args)
