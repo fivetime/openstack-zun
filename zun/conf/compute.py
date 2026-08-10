@@ -53,6 +53,16 @@ process, causing it to be repopulated the next time the data is accessed.
 Possible values:
 * Any positive integer in seconds, or zero to disable refresh.
 """),
+    cfg.IntOpt(
+        'reclaim_allocations_interval',
+        default=300,
+        help='Seconds between sweeps that give back placement allocations '
+             'whose container no longer exists on this node. A claim is '
+             'written before a container is built and released when it fails, '
+             'but a service killed at the wrong moment leaves one behind, and '
+             'nothing else ever collects it -- enough of them and the node '
+             'reports full while running almost nothing. Zero disables the '
+             'sweep.'),
     cfg.BoolOpt(
         'host_shared_with_nova',
         default=False,

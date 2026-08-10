@@ -425,6 +425,33 @@ class Manager(periodic_task.PeriodicTasks):
                                      unset_host=True)
                 self.reportclient.delete_allocation_for_container(
                     context, container.uuid)
+        except Exception as e:
+            # ⚠️ Every OTHER failure has to give the claim back too, and this
+            # branch did not exist. The claim is written to placement before
+            # the container is built; the context manager's abort() only rolls
+            # back this service's in-memory usage, so an image that would not
+            # pull, a runtime that refused, a port that would not bind -- any
+            # of them left placement believing the resources were still held.
+            # Nothing ever collects those: they are keyed by a container uuid
+            # that no longer exists, so they accumulate for the life of the
+            # deployment until the node looks full and schedules nothing.
+            #
+            # Measured on the lab after a day of a controller recreating pods
+            # in a loop: 241 allocations against two nodes whose live capsule
+            # count was 22 and 0. Deleting is safe on any path -- placement
+            # returns 404 for an allocation that is already gone, and the
+            # reportclient treats that as success.
+            with excutils.save_and_reraise_exception():
+                LOG.exception("Container create failed, releasing its "
+                              "placement allocation: %s", str(e))
+                try:
+                    self.reportclient.delete_allocation_for_container(
+                        context, container.uuid)
+                except Exception:
+                    # Never let cleanup mask the real failure above.
+                    LOG.exception("Could not release the placement allocation "
+                                  "for %s; it will need reclaiming",
+                                  container.uuid)
 
     def _attach_volumes_for_capsule(self, context, capsule, requested_volumes):
         for c in (capsule.init_containers or []):
@@ -1270,6 +1297,68 @@ class Manager(periodic_task.PeriodicTasks):
         # actually ran them.
         self.capsule_driver.check_probes(
             ctx, objects.Capsule.list_by_host(ctx, self.host))
+
+    @periodic_task.periodic_task(
+        spacing=CONF.compute.reclaim_allocations_interval)
+    @context.set_context
+    def reclaim_stale_allocations(self, ctx):
+        """Give back placement allocations whose consumer no longer exists.
+
+        A claim is written to placement before a container is built, and the
+        create path gives it back on failure -- but only if this service is
+        alive to do it. Killed at the wrong moment, or failing in a way an
+        earlier release of this code did not catch, the allocation stays,
+        keyed by a container uuid nothing will ever ask about again. Enough of
+        them and the node reports full and is scheduled nothing, while running
+        almost nothing.
+
+        Fails closed in every uncertain direction: it acts only on this node's
+        own resource provider, only on consumers absent from the database, and
+        it skips the whole sweep if the database cannot answer -- deleting on
+        an unreadable database would take live containers' resources away from
+        them.
+        """
+        rt = self._get_resource_tracker()
+        rp_uuid = getattr(rt, 'rp_uuid', None)
+        if not rp_uuid:
+            return
+
+        try:
+            allocations = self.reportclient.\
+                get_allocations_for_resource_provider(ctx, rp_uuid).allocations
+        except Exception as e:
+            LOG.warning("Allocation reclaim skipped: could not read "
+                        "placement: %s", str(e))
+            return
+        if not allocations:
+            return
+
+        try:
+            live = set()
+            for c in objects.Container.list_by_host(ctx, self.host):
+                live.add(c.uuid)
+            for c in objects.Capsule.list_by_host(ctx, self.host):
+                live.add(c.uuid)
+                for inner in (c.containers or []):
+                    live.add(inner.uuid)
+        except Exception as e:
+            # An unreadable database reads as "every consumer is stale", which
+            # would delete the allocations of everything actually running.
+            LOG.warning("Allocation reclaim skipped: could not list this "
+                        "node's containers: %s", str(e))
+            return
+
+        for consumer in allocations:
+            if consumer in live:
+                continue
+            LOG.info("Reclaiming placement allocation of %s: no such "
+                     "container on this node", consumer)
+            try:
+                self.reportclient.delete_allocation_for_container(
+                    ctx, consumer)
+            except Exception as e:
+                LOG.warning("Could not reclaim allocation %s: %s",
+                            consumer, str(e))
 
     @periodic_task.periodic_task(spacing=CONF.sync_container_state_interval,
                                  run_immediately=True)
