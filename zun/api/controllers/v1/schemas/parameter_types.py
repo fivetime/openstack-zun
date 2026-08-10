@@ -51,9 +51,13 @@ image_driver = {
 
 container_name = {
     'type': ['string', 'null'],
-    'minLength': 2,
+    # A single character is a name: kubernetes accepts container names of one
+    # character, and a capsule built from such a pod was rejected outright.
+    # Both the length and the pattern had to change -- the old pattern
+    # required a second character of its own accord.
+    'minLength': 1,
     'maxLength': 255,
-    'pattern': '^[a-zA-Z0-9][a-zA-Z0-9_.-]+$'
+    'pattern': '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$'
 }
 
 hex_uuid = {
