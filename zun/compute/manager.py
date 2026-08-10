@@ -1317,7 +1317,22 @@ class Manager(periodic_task.PeriodicTasks):
         it skips the whole sweep if the database cannot answer -- deleting on
         an unreadable database would take live containers' resources away from
         them.
+
+        It does not run at all when the host is shared with nova. There the
+        resource provider carries nova's allocations too, and this cannot tell
+        one of its own leaked consumers from a running instance: both are
+        absent from zun's database, and deleting an instance's allocation is a
+        far worse outcome than leaving a leak. Making it safe there needs
+        allocations tagged at the point they are written (placement's
+        consumer_type, microversion 1.38) so the sweep can recognise its own;
+        until then a shared host is swept by the operator, not by this.
         """
+        if CONF.compute.host_shared_with_nova:
+            LOG.debug('Allocation reclaim does not run on a host shared with '
+                      'nova: nova\'s allocations live on the same resource '
+                      'provider and cannot be told apart from stale ones.')
+            return
+
         rt = self._get_resource_tracker()
         rp_uuid = getattr(rt, 'rp_uuid', None)
         if not rp_uuid:

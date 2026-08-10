@@ -61,8 +61,12 @@ Possible values:
              'written before a container is built and released when it fails, '
              'but a service killed at the wrong moment leaves one behind, and '
              'nothing else ever collects it -- enough of them and the node '
-             'reports full while running almost nothing. Zero disables the '
-             'sweep.'),
+             'reports full while running almost nothing. A negative value '
+             'disables the sweep; zero does not -- oslo reads zero as "use '
+             'the default interval", so it sweeps more often, not less. The '
+             'sweep never runs when host_shared_with_nova is set, whatever '
+             'this is: nova\'s allocations sit on the same resource provider '
+             'and cannot be told apart from stale ones.'),
     cfg.BoolOpt(
         'host_shared_with_nova',
         default=False,
