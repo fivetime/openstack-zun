@@ -390,3 +390,191 @@ Response
 --------
 
 This request does not return anything in the response body.
+
+
+Read a capsule container's logs
+===============================
+
+.. rest_method:: GET /v1/capsules/{capsule_ident}/logs
+
+Read the output of one container in a capsule.
+
+A capsule holds several containers, so which one is being asked for has to be
+named; without it the only sensible answer would be the first, and a caller
+that meant another would silently read the wrong one.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 403
+   - 404
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - capsule_ident: capsule_ident
+  - container: capsule_container_ident
+  - stdout: stdout
+  - stderr: stderr
+  - timestamps: timestamps
+  - tail: tail
+  - since: since
+
+Response
+--------
+
+The log as a string, not in json format. A container that has not started yet
+has no output, which is answered as empty rather than as an error.
+
+
+Run a command in a capsule container
+====================================
+
+.. rest_method:: POST /v1/capsules/{capsule_ident}/execute
+
+Run a command in one container of a capsule.
+
+Two shapes, chosen by ``run`` and ``interactive``, and they are mutually
+exclusive: one waits for the command to finish and answers with its output,
+the other hands back a session to type into.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 403
+   - 404
+   - 409
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - capsule_ident: capsule_ident
+  - container: capsule_container_ident
+  - command: command
+  - run: run
+  - interactive: interactive
+
+Response
+--------
+
+With ``run=true``: the command's output and exit code.
+
+With ``interactive=true``: ``proxy_url``, a websocket address carrying a token
+that admits exactly one session. It names the node holding the capsule -- the
+runtime serves the stream on that node's loopback, so only the proxy running
+there can reach it. The session speaks the five-channel remote command
+protocol: the first byte of every frame is the channel (0 stdin, 1 stdout,
+2 stderr, 3 error, 4 resize).
+
+
+Read a capsule's resource usage
+===============================
+
+.. rest_method:: GET /v1/capsules/{capsule_ident}/stats
+
+Report what every container in the capsule is using.
+
+Per container rather than one figure for the capsule: that is the shape the
+runtime accounts in, and it is what answering "which container is using the
+memory" needs. Summing is cheap for a caller that wants a total; splitting one
+is not possible.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 403
+   - 404
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - capsule_ident: capsule_ident
+
+Response
+--------
+
+``stats``, a list with one entry per container:
+``container_id``, ``name``, ``timestamp`` (nanoseconds),
+``cpu_usage_core_nanoseconds``, ``memory_working_set_bytes`` and
+``memory_usage_bytes``.
+
+CPU is cumulative, not a rate, and is reported as the runtime counts it. Two
+readings make a rate; one does not -- and the counter resets when a container
+restarts, so a rate computed across one is wrong.
+
+
+Replace a capsule file volume's contents
+========================================
+
+.. rest_method:: POST /v1/capsules/{capsule_ident}/update_file
+
+Rewrite one of the capsule's file volumes in place.
+
+For content that has to change while the capsule runs, which a capsule
+otherwise has no way to express: it is built once and cannot be changed. The
+case that forces this is a service account token, which expires. The
+alternatives are worse -- recreating the capsule restarts the workload and
+takes its address with it, and running a command inside the container to
+rewrite the file needs a shell, which the better images do not have.
+
+The file is rewritten where it is, so a container reading it sees the new
+contents without anything being remounted. Only a local file volume can be
+rewritten; a Cinder volume is a block device and answers that it is not a file.
+
+Response Codes
+--------------
+
+.. rest_status_code:: success status.yaml
+
+   - 200
+
+.. rest_status_code:: error status.yaml
+
+   - 400
+   - 401
+   - 403
+   - 404
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - capsule_ident: capsule_ident
+  - path: container_path
+  - contents: file_contents
+
+Response
+--------
+
+``updated``, the path that was rewritten.

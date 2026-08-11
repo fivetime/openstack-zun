@@ -11,6 +11,28 @@ capsule_ident:
   in: path
   required: true
   type: string
+capsule_container_ident:
+  description: |
+    The name or UUID of a container within the capsule. Required when the
+    capsule holds more than one: without it the only sensible answer would be
+    the first, and a caller that meant another would silently reach the wrong
+    one.
+  in: query
+  required: false
+  type: string
+container_path:
+  description: |
+    The path a volume is mounted at inside the container, which is how the
+    volume to rewrite is named.
+  in: query
+  required: true
+  type: string
+file_contents:
+  description: |
+    The new contents of the file, base64 encoded.
+  in: query
+  required: true
+  type: string
 container_ident:
   description: |
     The UUID or name of container in Zun.

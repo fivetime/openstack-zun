@@ -1,0 +1,51 @@
+---
+features:
+  - |
+    Capsules can now back a Kubernetes pod. A pod's securityContext reaches the
+    runtime (user, group, fsGroup, read-only root, capabilities, seccomp), its
+    probes run, and its resolver is set by the caller rather than inherited
+    from the subnet -- which knows none of the names a cluster uses.
+  - |
+    New volume kinds. ``emptyDir`` is scratch space that lives and dies with
+    the capsule and is shared by the containers that mount it, on tmpfs when
+    ``medium: Memory`` is asked for. ``nfs`` mounts a shared filesystem, which
+    is what ReadWriteMany needs -- a multiattached block device shares the
+    device, not a filesystem, and two writers corrupt it.
+  - |
+    ``GET /v1/capsules/{ident}/stats`` reports per-container CPU and memory as
+    the runtime accounts them, which is what a scheduler or an autoscaler needs
+    and what a capsule previously gave no way to see.
+  - |
+    ``POST /v1/capsules/{ident}/execute`` accepts ``interactive``, answering
+    with a websocket to attach a terminal to. The session is served by the
+    runtime's own streaming server through ``zun-wsproxy`` running on the
+    compute node, which is what keeps that unauthenticated server off the
+    network while still reaching it.
+  - |
+    ``POST /v1/capsules/{ident}/update_file`` rewrites a file volume in place,
+    for content that has to change while the capsule runs -- a service account
+    token being the case that forces it.
+upgrade:
+  - |
+    ``zun-wsproxy`` must run on every compute node for interactive exec to
+    work. It reaches the runtime's streaming server on that node's loopback;
+    an instance elsewhere can reach nothing.
+  - |
+    Compute nodes serving NFS volumes need an NFS client, and those serving
+    Ceph-backed Cinder volumes need ceph-common and a working
+    ``/etc/ceph`` -- without it an attach fails at ``which rbd``.
+fixes:
+  - |
+    A placement allocation is now given back when a container fails to build
+    for any reason, not only when resources were unavailable. Every other
+    failure leaked one, keyed by a container uuid nothing would ask about
+    again, until the node reported full while running almost nothing.
+  - |
+    A periodic sweep releases mounts and mapped devices left behind by a volume
+    whose mapping is gone. A mapped rbd image holds a Ceph watcher, and Ceph
+    refuses to delete an image something is watching -- which reads as a volume
+    that cannot be removed with nothing visibly holding it.
+  - |
+    Container and volume names of a single character are accepted. Kubernetes
+    allows them and the schema did not, so a pod whose container was named
+    ``c`` was refused outright.
