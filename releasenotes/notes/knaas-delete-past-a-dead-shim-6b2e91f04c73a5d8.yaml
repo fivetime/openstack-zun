@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    A capsule whose runtime task no longer has a shim can be deleted again.
+    Stopping the sandbox and removing it are now attempted separately: a stop
+    that waits for an absent shim until it times out no longer takes the
+    removal with it, so the capsule is removed rather than left undeletable
+    forever with its resources still accounted for.
