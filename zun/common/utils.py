@@ -429,9 +429,15 @@ def capsule_get_volume_spec(spec_field):
             # A file carried with the capsule; its content is the whole spec,
             # so there is nothing further to check here.
             pass
+        elif 'emptyDir' in volumes_spec[i]:
+            # Scratch space made on whichever node the capsule lands on. It
+            # names nothing and carries nothing, so an empty object is the
+            # whole valid spec -- which is why this tests for the key rather
+            # than for a truthy value.
+            pass
         else:
-            raise exception.InvalidCapsuleTemplate("A capsule volume needs "
-                                                   "either a cinder or a file "
+            raise exception.InvalidCapsuleTemplate("A capsule volume needs a "
+                                                   "cinder, file or emptyDir "
                                                    "source")
 
     return volumes_spec

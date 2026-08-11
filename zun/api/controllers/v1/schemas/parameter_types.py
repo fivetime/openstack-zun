@@ -613,6 +613,25 @@ capsule_file_volume = {
     'required': ['contents'],
 }
 
+# A directory that lives and dies with the capsule, shared by every container
+# that mounts it. The pod-level scratch space nearly every workload assumes:
+# a sidecar writing where another reads, a web server's cache directory, a
+# socket two processes meet on.
+capsule_empty_dir_volume = {
+    'type': 'object',
+    'properties': {
+        # "Memory" makes it a tmpfs, which is what a caller asking for one
+        # wants: speed, and content that never reaches a disk. Anything else
+        # is a directory on the node.
+        'medium': {'type': ['string', 'null'], 'enum': ['', 'Memory', None]},
+        # Bytes. Only meaningful for a tmpfs, where it is enforced by the
+        # kernel; on a node directory nothing here can enforce it, and
+        # pretending otherwise would be worse than saying so.
+        'sizeLimit': {'type': ['integer', 'null'], 'minimum': 0},
+    },
+    'additionalProperties': False,
+}
+
 capsule_volumes_list = {
     'type': ['array', 'null'],
     'items': {
@@ -621,6 +640,7 @@ capsule_volumes_list = {
             'name': volume_name,
             'cinder': capsule_cinder_volume,
             'file': capsule_file_volume,
+            'emptyDir': capsule_empty_dir_volume,
         },
         'additionalProperties': True,
         # Exactly one source. Neither would mount nothing while looking valid;
@@ -629,6 +649,7 @@ capsule_volumes_list = {
         'oneOf': [
             {'required': ['name', 'cinder']},
             {'required': ['name', 'file']},
+            {'required': ['name', 'emptyDir']},
         ],
     }
 }

@@ -691,6 +691,19 @@ class CapsuleController(base.Controller):
                     volume_driver = 'local'
                     contents = mount['file']['contents']
                     auto_remove = True
+                elif 'emptyDir' in mount:
+                    # Scratch space for the capsule, shared by whichever of its
+                    # containers mount it and gone when it is. There is nothing
+                    # to store and nothing to attach: the driver makes the
+                    # directory on whichever node the capsule lands on.
+                    #
+                    # The options ride along in `contents` because that is the
+                    # field a volume already has for something that is not a
+                    # Cinder id. It is not file content and is not treated as
+                    # any.
+                    volume_driver = 'emptydir'
+                    contents = jsonutils.dumps(mount['emptyDir'] or {})
+                    auto_remove = True
                 else:
                     volume_driver = 'cinder'
                     mount_driver = mount[volume_driver]

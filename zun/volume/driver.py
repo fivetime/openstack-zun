@@ -140,6 +140,113 @@ class Local(VolumeDriver):
         return True, False
 
 
+class EmptyDir(VolumeDriver):
+    """A directory that lives and dies with the capsule.
+
+    Kubernetes calls it emptyDir and nearly every workload assumes one: a
+    sidecar writing where another reads, a cache directory, a socket two
+    processes meet on. It is also what makes an image with a read-only root
+    filesystem usable, which is most of the well-built ones.
+
+    Every container of the capsule that mounts it gets the same directory --
+    the sharing is the point, not a side effect -- and it goes when the capsule
+    does.
+    """
+
+    supported_providers = ['emptydir']
+
+    # An emptyDir is writable by whoever the containers run as, and a capsule
+    # does not say who that is until its image does. A kubelet solves this the
+    # same way: the directory is world-writable unless an fsGroup narrows it.
+    # Anything stricter and a container running as a non-root user -- which is
+    # every image worth running -- cannot write to its own scratch space.
+    MODE = 0o777
+
+    @validate_volume_provider(supported_providers)
+    def attach(self, context, volmap):
+        path = self._path(volmap)
+        fileutils.ensure_tree(path)
+        os.chmod(path, self.MODE)
+        if self._medium(volmap) != 'Memory':
+            # A directory on the node. Nothing here can enforce a size limit
+            # on it, and the caller was told so rather than being given one
+            # that does not hold.
+            return
+
+        # A capsule's containers each get their own mapping to the same
+        # volume, so this runs once per container that mounts it. Mounting a
+        # tmpfs over itself would fail the second time and take the capsule
+        # with it.
+        if os.path.ismount(path):
+            return
+
+        # tmpfs: what a caller asking for Memory wants -- speed, and content
+        # that never reaches a disk. The size limit is real here because the
+        # kernel enforces it.
+        opts = ['mode=%o' % self.MODE]
+        limit = self._size_limit(volmap)
+        if limit:
+            opts.append('size=%d' % limit)
+        utils.execute('mount', '-t', 'tmpfs', '-o', ','.join(opts),
+                      'tmpfs', path, run_as_root=True)
+
+    def _detach(self, volmap):
+        path = self._path(volmap)
+        if self._medium(volmap) == 'Memory':
+            try:
+                utils.execute('umount', path, run_as_root=True)
+            except Exception as e:
+                # Already gone, or never mounted. Removing the directory is
+                # still right; leaving it would leak one per capsule.
+                LOG.debug("Could not unmount %(path)s: %(err)s",
+                          {'path': path, 'err': e})
+        if os.path.exists(path):
+            shutil.rmtree(path, ignore_errors=True)
+
+    @validate_volume_provider(supported_providers)
+    def detach(self, context, volmap):
+        self._detach(volmap)
+
+    @validate_volume_provider(supported_providers)
+    def delete(self, context, volmap):
+        self._detach(volmap)
+
+    @validate_volume_provider(supported_providers)
+    def bind_mount(self, context, volmap):
+        return self._path(volmap), volmap.container_path
+
+    def is_volume_available(self, context, volmap):
+        return True, False
+
+    def is_volume_deleted(self, context, volmap):
+        return True, False
+
+    @staticmethod
+    def _path(volmap):
+        return mount.get_mountpoint(volmap.volume.uuid)
+
+    @staticmethod
+    def _options(volmap):
+        raw = volmap.volume.contents
+        if not raw:
+            return {}
+        try:
+            return jsonutils.loads(raw)
+        except ValueError:
+            return {}
+
+    @classmethod
+    def _medium(cls, volmap):
+        return cls._options(volmap).get('medium') or ''
+
+    @classmethod
+    def _size_limit(cls, volmap):
+        try:
+            return int(cls._options(volmap).get('sizeLimit') or 0)
+        except (TypeError, ValueError):
+            return 0
+
+
 class Cinder(VolumeDriver):
 
     supported_providers = [

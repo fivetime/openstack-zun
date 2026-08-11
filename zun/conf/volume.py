@@ -22,11 +22,12 @@ volume_opts = [
                deprecated_for_removal=True,
                help='Defines which driver to use for container volume.'),
     cfg.ListOpt('driver_list',
-                default=['cinder', 'local'],
+                default=['cinder', 'local', 'emptydir'],
                 help="""Defines the list of volume driver to use.
 Possible values:
 * ``cinder``
 * ``local``
+* ``emptydir``
 Services which consume this:
 * ``zun-compute``
 Interdependencies to other options:
