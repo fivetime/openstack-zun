@@ -991,13 +991,18 @@ class Manager(periodic_task.PeriodicTasks):
     def container_attach(self, context, container):
         LOG.debug('Get websocket url from the container: %s', container.uuid)
         try:
-            # NOTE(hongbin): capsule shouldn't reach here
-            url = self.driver.get_websocket_url(context, container)
+            driver = self._get_driver(container)
+            url = driver.get_websocket_url(context, container)
             token = uuidutils.generate_uuid()
             container.websocket_url = url
             container.websocket_token = token
             container.save(context)
-            return token
+            # Which proxy reaches this session, said by the node that knows.
+            # A runtime serving its own streams puts them on this node's
+            # loopback; the API host's own setting names a proxy that serves
+            # nothing. Same correction the interactive exec path needed.
+            return {'token': token,
+                    'proxy_base': CONF.websocket_proxy.base_url}
         except Exception as e:
             LOG.error("Error occurred while calling "
                       "get websocket url function: %s",

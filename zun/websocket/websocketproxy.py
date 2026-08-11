@@ -45,6 +45,21 @@ CONF = zun.conf.CONF
 V4_CHANNEL_PROTOCOL = 'v4.channel.k8s.io'
 
 
+def _as_websocket_url(url):
+    """Dial an http url as a websocket one.
+
+    The runtime hands back http/https because that is what its streaming
+    server serves on; the upgrade to a websocket happens in the request. A
+    websocket client refuses the scheme outright, which is a confusing way to
+    be told this.
+    """
+    if url.startswith('https'):
+        return 'wss' + url[len('https'):]
+    if url.startswith('http'):
+        return 'ws' + url[len('http'):]
+    return url
+
+
 class ZunProxyRequestHandlerBase(object):
     def verify_origin_proto(self, access_url, origin_proto):
         if not access_url:
@@ -237,16 +252,18 @@ class ZunProxyRequestHandlerBase(object):
 
         self._verify_origin(access_url)
 
-        if container.websocket_url:
-            target_url = container.websocket_url
-            escape = "~"
-            close_wait = 0.5
-            wscls = WebSocketClient(host_url=target_url, escape=escape,
-                                    close_wait=close_wait)
-            wscls.connect()
-            self.target = wscls
-        else:
+        if not container.websocket_url:
             raise exception.InvalidWebsocketUrl()
+
+        # A runtime serving its own streams answers with an http url; a docker
+        # daemon answers with a websocket one. Both arrive here, and only one
+        # of them is something a websocket client will dial.
+        target_url = _as_websocket_url(container.websocket_url)
+        wscls = WebSocketClient(host_url=target_url, escape="~",
+                                close_wait=0.5,
+                                subprotocols=[V4_CHANNEL_PROTOCOL])
+        wscls.connect()
+        self.target = wscls
 
         # Start proxying
         try:
@@ -277,11 +294,9 @@ class ZunProxyRequestHandlerBase(object):
         # nothing off it can reach the address, which is what keeps an
         # unauthenticated streaming server unexposed while still reachable
         # through a proxy that checks a token.
-        target_url = exec_instance.url
-        if not target_url:
+        if not exec_instance.url:
             raise exception.InvalidWebsocketUrl()
-        if target_url.startswith('http'):
-            target_url = 'ws' + target_url[len('http'):]
+        target_url = _as_websocket_url(exec_instance.url)
 
         # The runtime negotiates a subprotocol and stays silent until one it
         # knows is offered. v4 is what carries five channels -- stdin, stdout,

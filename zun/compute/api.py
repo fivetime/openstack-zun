@@ -198,10 +198,15 @@ class API(object):
         return self.rpcapi.container_update(context, container, *args)
 
     def container_attach(self, context, container):
-        token = self.rpcapi.container_attach(context, container)
-        access_url = '%s?token=%s&uuid=%s' % (
-            CONF.websocket_proxy.base_url, token, container.uuid)
-        return access_url
+        answer = self.rpcapi.container_attach(context, container)
+        # Older computes answer with the token alone; newer ones name the
+        # proxy that can actually reach the session.
+        if isinstance(answer, dict):
+            token = answer.get('token')
+            base = answer.get('proxy_base') or CONF.websocket_proxy.base_url
+        else:
+            token, base = answer, CONF.websocket_proxy.base_url
+        return '%s?token=%s&uuid=%s' % (base, token, container.uuid)
 
     def container_resize(self, context, container, *args):
         return self.rpcapi.container_resize(context, container, *args)

@@ -30,6 +30,7 @@ import zun.conf
 from zun.container import driver
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
+from zun.image import driver as img_driver
 from zun.network import neutron
 from zun.network import os_vif_util
 from zun import objects
@@ -163,8 +164,21 @@ def _restart_count(container):
         return 0
 
 
-class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
-    """Implementation of container drivers for CRI runtime."""
+class CriDriver(driver.BaseDriver, driver.ContainerDriver,
+                driver.CapsuleDriver):
+    """Implementation of container drivers for CRI runtime.
+
+    Serves both shapes on one runtime. A capsule is a sandbox holding several
+    containers; a container is a sandbox holding one. That is not a trick to
+    reuse code -- it is what a container IS under the CRI, which has no
+    concept of a container outside a sandbox. So the machinery is the same
+    machinery, and what differs is only how many containers go in and who
+    asked.
+
+    Which matters beyond tidiness: both shapes then share one containerd, one
+    Kata, one set of VMMs and one resource account, instead of a second daemon
+    keeping its own images and its own sandboxes beside the first.
+    """
 
     # TODO(hongbin): define a list of capabilities of this driver.
     capabilities = {}
@@ -175,6 +189,14 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             'unix:///run/containerd/containerd.sock')
         self.runtime_stub = api_pb2_grpc.RuntimeServiceStub(channel)
         self.image_stub = api_pb2_grpc.ImageServiceStub(channel)
+        # Fetching an image has never depended on which runtime will run it,
+        # so the image drivers are the same ones every other container driver
+        # loads. Only the Container API path uses them; a capsule pulls
+        # through the runtime.
+        self.image_drivers = {}
+        for driver_name in CONF.image_driver_list:
+            self.image_drivers[driver_name] = img_driver.load_image_driver(
+                driver_name)
 
     def create_capsule(self, context, capsule, image, requested_networks,
                        requested_volumes):
@@ -197,7 +219,8 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         capsule.status = consts.RUNNING
         return capsule
 
-    def _create_pod_sandbox(self, context, capsule, requested_networks):
+    def _create_pod_sandbox(self, context, capsule, requested_networks,
+                            labels=None):
         runtime = capsule.runtime or CONF.container_runtime
         if runtime == "runc":
             # pass "" to specify the default runtime which is runc
@@ -210,7 +233,7 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         # tenant.
         servers = _dns_servers(capsule) or dns_servers
         sandbox_config = self._get_sandbox_config(
-            capsule, servers, _dns_searches(capsule))
+            capsule, servers, _dns_searches(capsule), labels=labels)
         sandbox_resp = self.runtime_stub.RunPodSandbox(
             api_pb2.RunPodSandboxRequest(
                 config=sandbox_config,
@@ -221,7 +244,7 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         capsule.container_id = sandbox_resp.pod_sandbox_id
 
     def _get_sandbox_config(self, capsule, dns_servers=None,
-                            dns_searches=None):
+                            dns_searches=None, labels=None):
         config = api_pb2.PodSandboxConfig(
             metadata=api_pb2.PodSandboxMetadata(
                 name=capsule.uuid, namespace="default", uid=capsule.uuid
@@ -231,6 +254,12 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
             # nothing on disk, so the logs API has nothing to serve.
             log_directory=self._log_directory(),
         )
+        if labels:
+            # What ties a sandbox back to whoever owns it. A container records
+            # its container id, not its sandbox id -- there is one field and
+            # the container id has the stronger claim -- so the sandbox has to
+            # be findable some other way.
+            config.labels.update(labels)
         if dns_servers:
             config.dns_config.servers.extend(dns_servers)
         if dns_searches:
@@ -293,7 +322,15 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         return dns_servers
 
     def _create_container(self, context, capsule, container,
-                          requested_volumes):
+                          requested_volumes, start=True):
+        """Create one container inside a sandbox, and start it by default.
+
+        A capsule's containers are started as they are made -- a capsule has
+        no half-built state to sit in. A container created through the
+        Container API does: the caller starts it separately, and only when it
+        asked to run. Starting it anyway and stopping it again would boot a
+        virtual machine under Kata for no reason.
+        """
         # pull image
         self._pull_image(context, container)
 
@@ -311,6 +348,9 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         LOG.debug("container is created: %s", response)
         container.container_id = response.container_id
         container.save(context)
+
+        if not start:
+            return
 
         response = self.runtime_stub.StartContainer(
             api_pb2.StartContainerRequest(
@@ -467,12 +507,12 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                 _('since must be an epoch second or an ISO 8601 time'))
 
     def _pull_image(self, context, container):
+        self._pull_image_ref(container.image)
+
+    def _pull_image_ref(self, ref):
         # TODO(hongbin): add support for private registry
         response = self.image_stub.PullImage(
-            api_pb2.PullImageRequest(
-                image=api_pb2.ImageSpec(image=container.image)
-            )
-        )
+            api_pb2.PullImageRequest(image=api_pb2.ImageSpec(image=ref)))
         LOG.debug("image is pulled: %s", response)
 
     def _probe_helper_mount(self, container):
@@ -1008,6 +1048,205 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
                       {'id': old_id, 'err': e})
             return False
 
+    # ------------------------------------------------------------------
+    # ContainerDriver: a container is a sandbox with one container in it.
+    #
+    # Every helper below this line is the one the capsule path already uses.
+    # The container plays both roles -- it owns the sandbox and it is the
+    # container -- which works because Capsule and Container are sibling
+    # classes over one table and carry the same fields.
+    # ------------------------------------------------------------------
+
+    # The label that ties a sandbox back to the container that owns it. The
+    # container records the container id, because that is what exec, logs and
+    # stats need; the sandbox is found by this label, so a create interrupted
+    # between the two leaves something a sweep can still recognise rather than
+    # an anonymous sandbox nobody will ever claim.
+    OWNER_LABEL = 'io.zun.container.uuid'
+
+    def create(self, context, container, image, requested_networks,
+               requested_volumes):
+        """Create a container in a sandbox of its own, without starting it.
+
+        Created, not started: the Container API separates the two, and the
+        caller starts it afterwards when it was asked to run. The capsule path
+        does start what it creates -- a capsule has no half-built state to be
+        in -- so this cannot simply reuse it and must undo that one step.
+        """
+        self._create_pod_sandbox(context, container, requested_networks,
+                                 labels={self.OWNER_LABEL: container.uuid})
+        # The sandbox id lands in container_id; _create_container reads it as
+        # the sandbox to place into and then overwrites it with the container
+        # id it gets back. Both are needed for a moment and only one field
+        # holds them, which is why the sandbox is labelled.
+        self._create_container(context, container, container,
+                               requested_volumes, start=False)
+        container.status = consts.CREATED
+        container.status_reason = None
+        return container
+
+    def _sandbox_of(self, container):
+        """Find the sandbox holding this container.
+
+        By label rather than by a stored id: there is one id field and the
+        container id has the stronger claim on it. Falls back to asking the
+        runtime which sandbox the container is in, which covers a container
+        created before the label existed.
+        """
+        try:
+            response = self.runtime_stub.ListPodSandbox(
+                api_pb2.ListPodSandboxRequest(
+                    filter=api_pb2.PodSandboxFilter(
+                        label_selector={self.OWNER_LABEL: container.uuid})))
+            if response.items:
+                return response.items[0].id
+        except grpc.RpcError as e:
+            LOG.debug('Could not list sandboxes by owner label: %s', e)
+
+        if not container.container_id:
+            return None
+        try:
+            response = self.runtime_stub.ListContainers(
+                api_pb2.ListContainersRequest(
+                    filter=api_pb2.ContainerFilter(id=container.container_id)))
+            if response.containers:
+                return response.containers[0].pod_sandbox_id
+        except grpc.RpcError as e:
+            LOG.debug('Could not find the sandbox of %s: %s',
+                      container.container_id, e)
+        return None
+
+    def delete(self, context, container, force):
+        """Remove a container and the sandbox that held it.
+
+        The sandbox goes too: it exists only for this container, and leaving
+        it keeps a network namespace, a Neutron port and, under Kata, a virtual
+        machine.
+        """
+        pod_id = self._sandbox_of(container)
+        if pod_id:
+            self._delete_sandbox(context, container, pod_id)
+        elif container.container_id:
+            # No sandbox to be found, but the container is recorded: remove
+            # what can be removed rather than leaving both.
+            self._remove_container(container.container_id)
+        self._delete_neutron_ports(context, container)
+
+    def start(self, context, container):
+        if not container.container_id:
+            raise exception.ZunException(_(
+                'Container %s was never created on this host') % container.uuid)
+        self.runtime_stub.StartContainer(
+            api_pb2.StartContainerRequest(container_id=container.container_id))
+        container.status = consts.RUNNING
+        container.status_reason = None
+        return container
+
+    def stop(self, context, container, timeout=None):
+        if not container.container_id:
+            return container
+        self.runtime_stub.StopContainer(api_pb2.StopContainerRequest(
+            container_id=container.container_id,
+            timeout=int(timeout or CONF.docker.default_timeout)))
+        container.status = consts.STOPPED
+        container.status_reason = None
+        return container
+
+    def show(self, context, container):
+        """Refresh a container's state from the runtime."""
+        if not container.container_id:
+            return container
+        try:
+            return self._show_container(context, container)
+        except exception.ZunException:
+            # Gone from the runtime. Saying so beats reporting the last state
+            # it was seen in, which reads as running.
+            container.status = consts.ERROR
+            container.status_reason = _('Container is not found in runtime')
+            return container
+
+    def list(self, context):
+        """Every container this driver manages on this host.
+
+        Returned as (containers, sandboxes-with-no-record). The second is what
+        the caller needs to notice a sandbox whose container row is gone --
+        the shape a create interrupted halfway leaves behind.
+        """
+        db_containers = objects.Container.list_by_host(context, CONF.host)
+        by_id = {c.container_id: c for c in db_containers if c.container_id}
+
+        try:
+            response = self.runtime_stub.ListContainers(
+                api_pb2.ListContainersRequest())
+        except grpc.RpcError as e:
+            LOG.warning('Could not list containers: %s', e)
+            return db_containers, []
+
+        unrecorded = []
+        for item in response.containers:
+            recorded = by_id.get(item.id)
+            if recorded is not None:
+                self._populate_container_state(recorded, item)
+            elif item.labels.get(self.OWNER_LABEL):
+                unrecorded.append(item.id)
+        return db_containers, unrecorded
+
+    def get_websocket_url(self, context, container):
+        """Where to attach to this container's main process.
+
+        The runtime serves the stream itself, on this node's loopback -- which
+        is why zun-wsproxy runs here. Attach rather than exec: this is the
+        process the container was created to run, not a new one.
+        """
+        if not container.container_id:
+            raise exception.ZunException(_(
+                'Container %s was never created on this host') % container.uuid)
+        response = self.runtime_stub.Attach(api_pb2.AttachRequest(
+            container_id=container.container_id,
+            tty=bool(container.tty or container.interactive),
+            stdin=True,
+            stdout=True,
+            # A terminal merges the two, and asking for both is refused.
+            stderr=not (container.tty or container.interactive),
+        ))
+        if not response.url:
+            raise exception.ZunException(_(
+                'the runtime returned no streaming url for attach'))
+        return response.url
+
+    def pull_image(self, context, repo, tag, image_pull_policy='always',
+                   driver_name=None, registry=None):
+        """Fetch an image through the runtime, which is where it has to end up.
+
+        Not delegated to zun's image drivers, which is what the docker driver
+        does: the default one of those talks to a docker daemon, and there is
+        none here -- an attempt reaches a socket that does not exist and fails
+        as ENOENT, several layers from anything that names an image.
+
+        The runtime's own image service is also what the capsule path has
+        always used, so both shapes now pull the same way into the same store,
+        which was the point of putting them on one runtime.
+
+        image_loaded is True because there is nothing left to load: the image
+        is in the runtime's store, not in a file waiting to be imported.
+        """
+        ref = '%s:%s' % (repo, tag) if tag else repo
+        try:
+            self._pull_image_ref(ref)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.NOT_FOUND:
+                raise exception.ImageNotFound(image=ref)
+            raise exception.ZunException(
+                _('could not pull %(ref)s: %(err)s')
+                % {'ref': ref, 'err': e})
+        return {'image': ref, 'path': None, 'driver': 'cri'}, True
+
+    def search_image(self, context, repo, tag, driver_name, exact_match):
+        # A container runtime has no registry search. Saying so beats
+        # answering with an empty list, which reads as "no such image".
+        raise exception.OperationNotSupported(message=_(
+            'this runtime cannot search a registry; name the image exactly'))
+
     def capsule_stats(self, context, capsule):
         """Return per-container resource usage for one capsule.
 
@@ -1057,28 +1296,40 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         pod_id = capsule.container_id
         if not pod_id:
             return
+        self._delete_sandbox(context, capsule, pod_id)
+        self._delete_neutron_ports(context, capsule)
 
+    def _delete_sandbox(self, context, owner, pod_id):
+        """Stop and remove a sandbox, whether it held one container or many.
+
+        A sandbox that is already gone is not an error: this runs on the
+        delete path, and the caller's goal is that it not be there.
+        """
         try:
             response = self.runtime_stub.StopPodSandbox(
-                api_pb2.StopPodSandboxRequest(
-                    pod_sandbox_id=capsule.container_id,
-                )
-            )
+                api_pb2.StopPodSandboxRequest(pod_sandbox_id=pod_id))
             LOG.debug("podsandbox is stopped: %s", response)
             response = self.runtime_stub.RemovePodSandbox(
-                api_pb2.RemovePodSandboxRequest(
-                    pod_sandbox_id=capsule.container_id,
-                )
-            )
+                api_pb2.RemovePodSandboxRequest(pod_sandbox_id=pod_id))
             LOG.debug("podsandbox is removed: %s", response)
         except exception.CommandError as e:
             if 'error occurred when try to find sandbox' in str(e):
                 LOG.error("cannot find pod sandbox in runtime")
-                pass
             else:
                 raise
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.NOT_FOUND:
+                raise
+            LOG.debug("podsandbox %s was already gone", pod_id)
 
-        self._delete_neutron_ports(context, capsule)
+    def _remove_container(self, container_id):
+        """Remove one container, quietly when it is already gone."""
+        try:
+            self.runtime_stub.RemoveContainer(
+                api_pb2.RemoveContainerRequest(container_id=container_id))
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.NOT_FOUND:
+                raise
 
     def _delete_neutron_ports(self, context, capsule):
         if not capsule.addresses:

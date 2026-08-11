@@ -135,18 +135,34 @@ class ZunCNIRegistryPlugin(object):
                       'request. Ignoring.', container_uuid)
             pass
 
+    def _find_owner(self, container_uuid, container_type):
+        """Find whoever owns this sandbox, whichever kind it is.
+
+        The type comes from a CNI argument the runtime does not send: under
+        the CRI only the K8S_* arguments arrive, so ZUN_CONTAINER_TYPE always
+        falls back to its default. Trusting it means one kind is looked up
+        with the other's class -- and each class filters on its own type, so
+        the answer is "not found" for something that plainly exists.
+
+        The hinted type is tried first because it is right whenever it was
+        actually supplied; the other follows. Same trap, and same fix, as the
+        websocket proxy's session lookup.
+        """
+        order = ([objects.Capsule, objects.Container]
+                 if container_type == TYPE_CAPSULE
+                 else [objects.Container, objects.Capsule])
+        for cls in order:
+            try:
+                return cls.get_by_uuid(self.context, container_uuid)
+            except exception.ContainerNotFound:
+                continue
+        raise exception.ContainerNotFound(container=container_uuid)
+
     def _do_work(self, params, fn):
         container_uuid = self._get_container_uuid(params)
         container_type = self._get_container_type(params)
 
-        if container_type == TYPE_CAPSULE:
-            container = objects.Capsule.get_by_uuid(self.context,
-                                                    container_uuid)
-        elif container_type == TYPE_CONTAINER:
-            container = objects.Container.get_by_uuid(self.context,
-                                                      container_uuid)
-        else:
-            raise exception.CNIError('Unexpected type: %s' % container_type)
+        container = self._find_owner(container_uuid, container_type)
 
         vifs = cni_utils.get_vifs(container)
 
