@@ -429,6 +429,10 @@ def capsule_get_volume_spec(spec_field):
             # A file carried with the capsule; its content is the whole spec,
             # so there is nothing further to check here.
             pass
+        elif 'nfs' in volumes_spec[i]:
+            if not volumes_spec[i]['nfs'].get('export'):
+                raise exception.InvalidCapsuleTemplate("An nfs volume needs "
+                                                       "an export")
         elif 'emptyDir' in volumes_spec[i]:
             # Scratch space made on whichever node the capsule lands on. It
             # names nothing and carries nothing, so an empty object is the
@@ -437,7 +441,7 @@ def capsule_get_volume_spec(spec_field):
             pass
         else:
             raise exception.InvalidCapsuleTemplate("A capsule volume needs a "
-                                                   "cinder, file or emptyDir "
+                                                   "cinder, file, emptyDir or nfs "
                                                    "source")
 
     return volumes_spec

@@ -439,9 +439,12 @@ capsule_container_ports = {
 
 volume_name = {
     'type': ['string'],
-    'minLength': 2,
+    # One character is a name here for the same reason it is for containers:
+    # kubernetes allows it, and both the length and the pattern had to move --
+    # the old pattern demanded a second character by itself.
+    'minLength': 1,
     'maxLength': 255,
-    'pattern': '^[a-zA-Z0-9][a-zA-Z0-9_.-]+$'
+    'pattern': '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$'
 }
 
 capsule_volume_path = {
@@ -640,6 +643,20 @@ capsule_empty_dir_volume = {
     'additionalProperties': False,
 }
 
+# A shared filesystem mounted from an export the claim's provisioner already
+# created. shareID lets the node granting itself access do so with the
+# request's own token; without it the export must already be mountable.
+capsule_nfs_volume = {
+    'type': 'object',
+    'properties': {
+        'export': {'type': 'string', 'minLength': 3, 'maxLength': 1024},
+        'shareID': {'type': ['string', 'null'], 'maxLength': 64},
+        'fsGroup': {'type': ['integer', 'null'], 'minimum': 1},
+    },
+    'additionalProperties': False,
+    'required': ['export'],
+}
+
 capsule_volumes_list = {
     'type': ['array', 'null'],
     'items': {
@@ -649,6 +666,7 @@ capsule_volumes_list = {
             'cinder': capsule_cinder_volume,
             'file': capsule_file_volume,
             'emptyDir': capsule_empty_dir_volume,
+            'nfs': capsule_nfs_volume,
         },
         'additionalProperties': True,
         # Exactly one source. Neither would mount nothing while looking valid;
@@ -658,6 +676,7 @@ capsule_volumes_list = {
             {'required': ['name', 'cinder']},
             {'required': ['name', 'file']},
             {'required': ['name', 'emptyDir']},
+            {'required': ['name', 'nfs']},
         ],
     }
 }

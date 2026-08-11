@@ -14,6 +14,7 @@ import abc
 import functools
 import os
 import shutil
+import socket
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
@@ -25,6 +26,7 @@ from zun.common import exception
 from zun.common.i18n import _
 from zun.common import mount
 from zun.common import utils
+from zun.volume import manila
 import zun.conf
 from zun.volume import cinder_api
 from zun.volume import cinder_workflow
@@ -245,6 +247,143 @@ class EmptyDir(VolumeDriver):
             return int(cls._options(volmap).get('sizeLimit') or 0)
         except (TypeError, ValueError):
             return 0
+
+
+class NFS(VolumeDriver):
+    """A shared filesystem, mounted on the node and bind mounted in.
+
+    What backs a ReadWriteMany claim: several capsules, on several nodes,
+    reading and writing the same files. A Cinder volume cannot be this --
+    multiattach shares the block device, not a filesystem, and two writers
+    corrupt it.
+
+    The mount happens on the node, so the node is what Manila authorises. That
+    is the deliberate, uncomfortable part of this design: the grant is a /32
+    for this node, made with the tenant's own token when a capsule needing the
+    share lands here, and withdrawn when the last mount of that share on this
+    node goes. The grant set is always exactly the nodes running the tenant's
+    pods -- never a subnet, never a standing allowance.
+    """
+
+    supported_providers = ['nfs']
+
+    @validate_volume_provider(supported_providers)
+    def attach(self, context, volmap):
+        opts = self._options(volmap)
+        export = opts.get('export')
+        if not export:
+            raise exception.ZunException(_(
+                'an nfs volume names no export to mount'))
+
+        share_id = opts.get('shareID')
+        if share_id:
+            manila.grant(context, share_id,
+                         self._local_ip_for(export.split(':', 1)[0]))
+
+        path = mount.get_mountpoint(volmap.volume.uuid)
+        fileutils.ensure_tree(path)
+        if not os.path.ismount(path):
+            utils.execute('mount', '-t', 'nfs', export, path,
+                          run_as_root=True)
+        self._apply_fs_group(opts, path)
+
+    @staticmethod
+    def _apply_fs_group(opts, path):
+        try:
+            fs_group = int(opts.get('fsGroup') or 0)
+        except (TypeError, ValueError):
+            return
+        if fs_group <= 0:
+            return
+        try:
+            utils.execute('chown', ':%d' % fs_group, path, run_as_root=True)
+            utils.execute('chmod', 'g+rwxs', path, run_as_root=True)
+        except Exception as e:
+            # A server exporting with root squash refuses this. The share may
+            # still be writable through its export options; failing the mount
+            # over ownership would help nobody.
+            LOG.warning('could not apply fsGroup to %(path)s: %(err)s',
+                        {'path': path, 'err': e})
+
+    def _detach(self, context, volmap):
+        opts = self._options(volmap)
+        export = opts.get('export')
+        path = mount.get_mountpoint(volmap.volume.uuid)
+        if os.path.ismount(path):
+            try:
+                utils.execute('umount', path, run_as_root=True)
+            except Exception as e:
+                LOG.warning('could not unmount %(path)s: %(err)s',
+                            {'path': path, 'err': e})
+        if os.path.exists(path):
+            shutil.rmtree(path, ignore_errors=True)
+
+        share_id = opts.get('shareID')
+        if share_id and export and not self._export_still_mounted(export):
+            # The last mount of this share on this node is gone; so is the
+            # node's reason to reach it.
+            manila.revoke(context, share_id,
+                          self._local_ip_for(export.split(':', 1)[0]))
+
+    @staticmethod
+    def _export_still_mounted(export):
+        """Whether any other mount of this export remains on this node.
+
+        Two capsules of the same tenant on one node mount the same share at
+        two mountpoints. Revoking the node's access when the first leaves
+        would cut the second off mid-write; the grant goes only when the last
+        mount does.
+        """
+        try:
+            with open('/proc/mounts') as f:
+                return any(line.split()[0] == export for line in f)
+        except OSError:
+            # If the mount table cannot be read, keeping the grant is the
+            # smaller wrong.
+            return True
+
+    @staticmethod
+    def _local_ip_for(host):
+        """The address this node reaches the share server from.
+
+        That is the address the server sees and the one the access rule must
+        name. Asking the routing table beats asking a config option, which
+        would be wrong on any node with more than one interface.
+        """
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect((host, 2049))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+
+    @validate_volume_provider(supported_providers)
+    def detach(self, context, volmap):
+        self._detach(context, volmap)
+
+    @validate_volume_provider(supported_providers)
+    def delete(self, context, volmap):
+        self._detach(context, volmap)
+
+    @validate_volume_provider(supported_providers)
+    def bind_mount(self, context, volmap):
+        return mount.get_mountpoint(volmap.volume.uuid), volmap.container_path
+
+    def is_volume_available(self, context, volmap):
+        return True, False
+
+    def is_volume_deleted(self, context, volmap):
+        return True, False
+
+    @staticmethod
+    def _options(volmap):
+        raw = volmap.volume.contents
+        if not raw:
+            return {}
+        try:
+            return jsonutils.loads(raw)
+        except ValueError:
+            return {}
 
 
 class Cinder(VolumeDriver):

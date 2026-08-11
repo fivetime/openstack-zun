@@ -691,6 +691,13 @@ class CapsuleController(base.Controller):
                     volume_driver = 'local'
                     contents = mount['file']['contents']
                     auto_remove = True
+                elif 'nfs' in mount:
+                    # The provisioner already made the share; the node mounts
+                    # it and, given the share id, grants itself access with
+                    # the request's own token.
+                    volume_driver = 'nfs'
+                    contents = jsonutils.dumps(mount['nfs'])
+                    auto_remove = True
                 elif 'emptyDir' in mount:
                     # Scratch space for the capsule, shared by whichever of its
                     # containers mount it and gone when it is. There is nothing
