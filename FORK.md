@@ -114,6 +114,14 @@ dockerd 管它自己那套 containerd(`moby` 命名空间),而 capsule 在 `k8s.
 **定案:废弃 DockerDriver,让 CriDriver 实现 ContainerDriver。**后端只有一套
 containerd + kata + VMM,一份资源账。
 
+**"废弃"不等于"破坏"**:`container/docker/driver.py` 整个 fork 期间零改动,
+分派机制也没动,配 `container_driver = docker` 照样能跑。⚠️ 但共享代码上踩过一次:
+为 CRI 改 wsproxy 时把 TLS 证书从 `CONF.docker.*` 挪成构造参数、又无条件下发了
+运行时的子协议,两处都只有 docker 那条路会疼(远程 daemon 连不上、子协议不被认)。
+现在由 `_target_options()` **按 URL 判别**——运行时给 `http://`,docker daemon 给
+`ws://`,各拿各需要的。**改共享代码时要问的不是"我这条路对不对",而是"另一条路
+还在不在"**。
+
 ### 4.3 为什么这比想象的近
 
 **在 CRI 上,一个"容器"就是只有一个容器的 capsule。**CriDriver 已经在做建

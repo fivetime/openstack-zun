@@ -45,6 +45,23 @@ CONF = zun.conf.CONF
 V4_CHANNEL_PROTOCOL = 'v4.channel.k8s.io'
 
 
+def _target_options(url):
+    """How to speak to whatever is on the other end of this url.
+
+    The runtime's streaming server offers a subprotocol and stays silent until
+    one it knows is offered; a docker daemon knows nothing of that name and
+    reads its client certificates from the docker configuration. Deciding by
+    the url keeps both backends working from one proxy -- which matters
+    because this fork stops using the docker driver but does not break it.
+    """
+    if url.startswith('http'):
+        # The runtime: plain loopback, no client certificate to present.
+        return {'subprotocols': [V4_CHANNEL_PROTOCOL]}
+    return {'ca_file': CONF.docker.ca_file,
+            'cert_file': CONF.docker.cert_file,
+            'key_file': CONF.docker.key_file}
+
+
 def _as_websocket_url(url):
     """Dial an http url as a websocket one.
 
@@ -258,10 +275,10 @@ class ZunProxyRequestHandlerBase(object):
         # A runtime serving its own streams answers with an http url; a docker
         # daemon answers with a websocket one. Both arrive here, and only one
         # of them is something a websocket client will dial.
-        target_url = _as_websocket_url(container.websocket_url)
+        raw_url = container.websocket_url
+        target_url = _as_websocket_url(raw_url)
         wscls = WebSocketClient(host_url=target_url, escape="~",
-                                close_wait=0.5,
-                                subprotocols=[V4_CHANNEL_PROTOCOL])
+                                close_wait=0.5, **_target_options(raw_url))
         wscls.connect()
         self.target = wscls
 
@@ -302,7 +319,7 @@ class ZunProxyRequestHandlerBase(object):
         # knows is offered. v4 is what carries five channels -- stdin, stdout,
         # stderr, error and, the reason a terminal is usable at all, resize.
         client = WebSocketClient(host_url=target_url,
-                                 subprotocols=[V4_CHANNEL_PROTOCOL])
+                                 **_target_options(exec_instance.url))
         client.connect()
         self.target = client
         try:
