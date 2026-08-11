@@ -128,37 +128,65 @@ containerd + kata + VMM,一份资源账。
 sandbox、建容器、起停、挂卷、取日志、exec、stats——那是 capsule 路径每天在跑的。
 ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
 
-分档交付:
+### 4.3.1 CRI 能做什么,做不到什么
 
-| 档 | 方法 | 状态 |
-|---|---|---|
-| 一 | create/delete/start/stop/show/list + `get_websocket_url` + 镜像 | **已实现并实测**(`b2f9af06`) |
-| 二 | pause/unpause/reboot/kill/stats/top | 未做,都薄 |
-| 三 | commit / get_archive / put_archive / resize | CRI 无对应语义,**可以永远不做** |
+**按 `RuntimeService` 的 37 个 RPC 划线,不按"薄不薄"猜。**之前把
+pause/unpause 列进"第二档,都薄"是错的——CRI **根本没有 pause 这个调用**。
 
-**第一档实测**:经 Container API 建的容器 Running、拿到租户网地址、`attach` 给出
-真终端(容器内回 `uid=100(curl_user)`)。
+| ContainerDriver 方法 | 状态 |
+|---|---|
+| create/delete/start/stop/show/list/`get_websocket_url`/镜像 | **已实现并实测** |
+| reboot / kill / update / stats / top | **已实现并实测** |
+| **pause / unpause** | **做不到**:CRI 无对应 RPC |
+| **resize**(tty 尺寸) | **做不到**:CRI 无 resize;尺寸走流内第五通道 |
+| **network_attach / network_detach** | **做不到**:沙箱的网络在创建时定死 |
+| commit / get_archive / put_archive | 做不到,且无需求 |
 
-⚠️ **四个首跑撞到的差异**,都是两种形态的真实不同,不是笔误:
+⚠️ 几处**语义不等价**,不是实现细节:
 
-1. **镜像必须走运行时的 ImageService,不能委托 zun 的 image driver**。照抄
-   DockerDriver 的委托会去连 docker socket——我们没有 dockerd,报 `ENOENT`,
-   而且错误离"镜像"这个概念隔了好几层。走运行时还有一个正收益:**两种形态填同一个
-   镜像库**,这本来就是"一套 containerd"的意义。
-2. **create 不能启动**。capsule 没有"建好但没启动"这个中间态,所以 capsule 路径
-   建完即启;而 Container API 的 create 必须留在 Created,由调用方按 `run` 再启。
-   先启后停不行——对 Kata 等于白起一台虚机。`_create_container` 因此加了 `start` 开关。
-3. **CNI 注册表按类型查所有者,而类型那个 CNI 参数运行时根本不发**
-   (`ZUN_CONTAINER_TYPE` 永远取默认值 CAPSULE)。每个类各自按 `container_type`
-   过滤,于是原生容器"明明存在却查不到"。**与 wsproxy 会话查找同一个陷阱、同一个修法**
-   (先按提示的类型试,再试另一种)。
-4. **attach 拿到的是运行时的 `http://` URL**,websocket 客户端直接拒绝
-   (`scheme http is invalid`)。两条流式路径现在都做转换;attach 的 proxy 地址也改成
-   **由承载节点自报**(和 exec 同一处修正)——API 主机的配置指向的 proxy 什么都不服务。
+- **`kill` 不是 docker 的 kill**。CRI 只能"停",不能"发信号"。SIGKILL/SIGTERM
+  恰好可以表达成"停"(有无宽限期),**其他信号不行**——用 SIGHUP 让服务重载配置
+  在这里没有对应物,而"那就把容器停了"是用杀掉工作负载来回答一个重载请求。
+  所以其他信号明确报错,不静默降级。
+- **stop/start 与 reboot 会丢掉可写层**。CRI 不能重启已退出的容器,只能在原沙箱里
+  重建;**地址保住了**(地址属于沙箱),**文件没保住**(docker 的 restart 保得住)。
+  marker 文件实测:reboot 后 `/tmp/before-reboot` 不见了。
+- **`stats` 的 CPU 必须采两次**。运行时给的是累计纳秒计数器,单次采样除以任何东西
+  都得不到百分比——只会得到一个长得像百分比的数。BLOCK/NET I/O 运行时不记,报
+  `-/-` 而不是 0(0 读起来是"空闲",不是"没人量过")。
 
-⚠️ **仍待定的语义**:zun-ui 要求容器创建时 `interactive=true` 才给终端
-(`console.controller.js:42`)。如果产品期望是"建了就能开终端",要么 UI 默认勾上,
-要么 `get_websocket_url` 不依赖该标志。这影响用户体验,是产品决定。
+### 4.3.2 两次"服务两种形态"打断了 capsule
+
+都在共享代码上,都只伤新建、不伤在跑的,所以**极易漏过**:
+
+1. **周期状态同步遍历 `unit.containers`**,原生容器没有这个属性 → 抛异常。
+   而**一次抛出结束整趟清扫**,于是那台节点上**所有 capsule 也不再被对账**。
+   假定 capsule 的方法遇到 container 不是"跳过",是"把整件事拖下水"。
+2. **预拉取用 `hasattr(driver, 'pull_image')` 当能力探针**。为 images API 加上
+   这个方法,探针就自己翻转了:每个新 capsule 开始预拉它自己的沙箱镜像
+   `kubernetes/pause`——那不是一个真镜像。**调用方依赖的能力必须被声明,不能从类
+   的形状推断**(现为 `pulls_own_images`,且按对象自己的驱动读)。
+
+### 4.3.3 验收方法:202 不是证据
+
+⚠️ **没实现的动作照样回 202**——API 只负责受理,`NotImplementedError` 发生在
+计算节点上,调用方看不到。首轮 22 项里有**三项通过却什么都没做**:`reboot` 的
+终态和起始态都是 Running、`kill` 之后再没人看过那个容器、`network_detach` 之后
+没人看过地址。
+
+**当"成功"和"静默无操作"产生同一个状态时,判据必须去找动作发生过的证据。**
+(同一个陷阱咬了两次:第二轮我用 `started_at` 判 reboot,而那个字段根本不在租户
+视图里,于是 `None -> None` 又给了一个错误结论。最后用 marker 文件才判准。)
+
+### 4.3.4 契约测试
+
+按 **zun-ui 实际调用的 19 个容器方法**(`zun_ui/api/client.py`)打,不是 api-ref
+的 28 个端点。凭据用租户 **application credential**——admin 令牌会让 `list` 这项
+失去意义(Zun 的 DB 层把 admin 上下文当成跨所有项目)。
+
+⚠️ `containers_view.py:64-66` 按 `container:get_one:<字段>` 策略**逐字段剥离**,
+所以 api-ref 的响应字段表是 **admin 视图**;租户看不到 `host`/`privileged`
+是上游行为。images/hosts 端点的 403 同理(`RULE_ADMIN_API`)。
 
 ### 4.4 交互式 exec 的部署形态(已实现)
 
