@@ -17,7 +17,9 @@ import time
 
 import grpc
 import shlex
+import signal
 from oslo_log import log as logging
+from oslo_utils import excutils
 from oslo_utils import fileutils
 from oslo_utils import timeutils
 import tenacity
@@ -31,6 +33,8 @@ import zun.conf
 from zun.container import driver
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
+from zun.criapi import tasks_pb2
+from zun.criapi import tasks_pb2_grpc
 from zun.image import driver as img_driver
 from zun.network import neutron
 from zun.network import os_vif_util
@@ -156,6 +160,27 @@ def _dns_servers(capsule):
     return _annotation_list(capsule, DNS_SERVERS_ANNOTATION)
 
 
+def _signal_number(signal_name):
+    """Turn what the API was given into a number the task service takes.
+
+    The Container API accepts a signal however the caller wrote it -- SIGTERM,
+    TERM, 15 -- because docker-py did. Defaulting to SIGKILL matches the
+    docker driver, whose kill with no signal kills.
+    """
+    if signal_name is None or str(signal_name) in ('None', ''):
+        return int(signal.SIGKILL)
+    text = str(signal_name).strip().upper()
+    if text.isdigit():
+        return int(text)
+    if not text.startswith('SIG'):
+        text = 'SIG' + text
+    try:
+        return int(getattr(signal, text))
+    except AttributeError:
+        raise exception.Invalid(_('%s is not a signal this host knows')
+                                % signal_name)
+
+
 def _restart_count(container):
     """How many times a probe has had this container replaced."""
     state = (container.healthcheck or {}).get('k8s_probe_state') or {}
@@ -190,6 +215,12 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             'unix:///run/containerd/containerd.sock')
         self.runtime_stub = api_pb2_grpc.RuntimeServiceStub(channel)
         self.image_stub = api_pb2_grpc.ImageServiceStub(channel)
+        # containerd's own task service, on the same socket. The CRI is a view
+        # of containerd, not the whole of it: pausing a task and sending it a
+        # signal exist here and have no CRI call at all. Reaching past the CRI
+        # is a deliberate exception, kept to the calls that are only here --
+        # anything the CRI does serve is served through the CRI.
+        self.task_stub = tasks_pb2_grpc.TasksStub(channel)
         # Fetching an image has never depended on which runtime will run it,
         # so the image drivers are the same ones every other container driver
         # loads. Only the Container API path uses them; a capsule pulls
@@ -323,7 +354,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         return dns_servers
 
     def _create_container(self, context, capsule, container,
-                          requested_volumes, start=True):
+                          requested_volumes, start=True, attempt=None):
         """Create one container inside a sandbox, and start it by default.
 
         A capsule's containers are started as they are made -- a capsule has
@@ -337,7 +368,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
         sandbox_config = self._get_sandbox_config(capsule)
         container_config = self._get_container_config(context, capsule, container,
-                                                      requested_volumes)
+                                                      requested_volumes,
+                                                      attempt=attempt)
         response = self.runtime_stub.CreateContainer(
             api_pb2.CreateContainerRequest(
                 pod_sandbox_id=capsule.container_id,
@@ -360,7 +392,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         )
         LOG.debug("container is started: %s", response)
 
-    def _get_container_config(self, context, capsule, container, requested_volumes):
+    def _get_container_config(self, context, capsule, container,
+                              requested_volumes, attempt=None):
         args = []
         if container.command:
             args = [str(c) for c in container.command]
@@ -399,7 +432,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # container from the next, both in the runtime's own naming and in what
         # crictl shows, so a restarted container does not look like the
         # original still running.
-        attempt = _restart_count(container)
+        if attempt is None:
+            attempt = _restart_count(container)
 
         # TODO(hongbin): add support for entrypoint
         return api_pb2.ContainerConfig(
@@ -608,6 +642,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         if state == api_pb2.ContainerState.CONTAINER_CREATED:
             container.status = consts.CREATED
         elif state == api_pb2.ContainerState.CONTAINER_RUNNING:
+            # ⚠️ The CRI has no paused state to report, so a frozen container
+            # arrives here as running -- which is how a container that has
+            # stopped doing anything gets reported as working normally, and how
+            # a paused one would silently resist every attempt to resume it.
+            # containerd knows; it is asked only where the answer could differ.
+            if container.status == consts.PAUSED and self._still_paused(
+                    container.container_id):
+                return
             container.status = consts.RUNNING
         elif state == api_pb2.ContainerState.CONTAINER_EXITED:
             container.status = consts.STOPPED
@@ -618,6 +660,15 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             LOG.warning('Receive unexpected state from CRI runtime: %s', state)
             container.status = consts.UNKNOWN
             container.status_reason = "container state unknown"
+
+    def _still_paused(self, container_id):
+        status = self._task_status(container_id)
+        if status is None:
+            # Unreadable, so unchanged: reporting it running on the strength of
+            # a failed query would resume it in the record and nowhere else.
+            return True
+        return status in (tasks_pb2.Process.PAUSED,
+                          tasks_pb2.Process.PAUSING)
 
     @staticmethod
     def _as_argv(command):
@@ -1114,6 +1165,27 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         container.status_reason = None
         return container
 
+    def check_container_exist(self, container):
+        """Whether the runtime still has this container.
+
+        Asked before a rebuild, to decide whether there is anything to tear
+        down. ⚠️ Answering by exception -- which is what not implementing it
+        did -- makes rebuild fail without changing anything, and a rebuild that
+        changes nothing looks exactly like one that worked.
+        """
+        if not container.container_id:
+            return False
+        try:
+            response = self.runtime_stub.ListContainers(
+                api_pb2.ListContainersRequest(
+                    filter=api_pb2.ContainerFilter(
+                        id=container.container_id)))
+        except grpc.RpcError as e:
+            LOG.debug('Could not look for container %(id)s: %(err)s',
+                      {'id': container.container_id, 'err': e})
+            return False
+        return bool(response.containers)
+
     def _sandbox_of(self, container):
         """Find the sandbox holding this container.
 
@@ -1191,24 +1263,49 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             raise exception.ZunException(_(
                 'The sandbox that held container %s is gone, so it cannot be '
                 'started again') % container.uuid)
-        try:
-            self.runtime_stub.RemoveContainer(
-                api_pb2.RemoveContainerRequest(
-                    container_id=container.container_id))
-        except grpc.RpcError as e:
-            # Worth continuing without: a container that cannot be removed is
-            # usually one already gone, and the sandbox can hold the new one
-            # either way.
-            LOG.debug('Could not remove exited container %(id)s: %(err)s',
-                      {'id': container.container_id, 'err': e})
+        # ⚠️ Build the replacement before removing the corpse. The record holds
+        # one container id; show() marks a container Error when the runtime
+        # does not know that id, so any instant where it names nothing is an
+        # instant where a concurrent status read fails the container for good.
+        # Removing first left a window measured in seconds -- long enough that
+        # a caller polling every three seconds hit it and a test sleeping
+        # fourteen never did. Creating first keeps the recorded id naming
+        # something that exists at every instant: the old one until the new one
+        # is saved.
+        dead = container.container_id
         volmaps = objects.VolumeMapping.list_by_container(context,
                                                           container.uuid)
+        # Both incarnations are in the sandbox at once, so the new one needs a
+        # name of its own: the runtime names a container by its name and its
+        # attempt number, and reusing both would collide with what is still
+        # there.
+        attempt = self._attempt_of(dead) + 1
         # _create_container reads the sandbox out of this field and then
         # overwrites it with the id of what it made.
         container.container_id = sandbox
-        self._create_container(context, container, container,
-                               {container.uuid: volmaps} if volmaps else {},
-                               start=True)
+        try:
+            self._create_container(context, container, container,
+                                   {container.uuid: volmaps} if volmaps else {},
+                                   start=True, attempt=attempt)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                # The record still points at the dead container, which is a
+                # truer thing to say than the sandbox id it was holding.
+                container.container_id = dead
+        self._remove_container(dead)
+
+    def _attempt_of(self, container_id):
+        """Which incarnation the runtime thinks this container is."""
+        try:
+            response = self.runtime_stub.ListContainers(
+                api_pb2.ListContainersRequest(
+                    filter=api_pb2.ContainerFilter(id=container_id)))
+            if response.containers:
+                return response.containers[0].metadata.attempt
+        except grpc.RpcError as e:
+            LOG.debug('Could not read the attempt number of %(id)s: %(err)s',
+                      {'id': container_id, 'err': e})
+        return 0
 
     def reboot(self, context, container, timeout=None):
         """Stop it, then start it again.
@@ -1221,31 +1318,84 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         self.stop(context, container, timeout)
         return self.start(context, container)
 
-    # The two signals that mean "make it stop". Anything else asks the kernel
-    # to deliver something to a process, which is not a thing the CRI can be
-    # asked to do at all.
-    _STOP_SIGNALS = {'SIGKILL': 0, 'KILL': 0, '9': 0,
-                     'SIGTERM': None, 'TERM': None, '15': None}
+    # containerd looks in this namespace for anything the CRI created. Without
+    # the header it looks in the default one, finds nothing, and reports a
+    # running container as not found.
+    _CTRD_NS = (('containerd-namespace', 'k8s.io'),)
+
+    def pause(self, context, container):
+        """Freeze the container.
+
+        ⚠️ Frozen, not released. This is the freezer cgroup, applied inside the
+        guest by the kata agent, so from the host nothing changes at all: the
+        VMM still holds the whole of the guest's memory and the placement claim
+        does not move. CPU time stops being spent; nothing is given back. A
+        product calling this "pause" should not let anyone read it as "stops
+        costing money".
+        """
+        self.task_stub.Pause(
+            tasks_pb2.PauseTaskRequest(container_id=container.container_id),
+            metadata=self._CTRD_NS)
+        container.status = consts.PAUSED
+        container.status_reason = None
+        return container
+
+    def unpause(self, context, container):
+        self.task_stub.Resume(
+            tasks_pb2.ResumeTaskRequest(container_id=container.container_id),
+            metadata=self._CTRD_NS)
+        container.status = consts.RUNNING
+        container.status_reason = None
+        return container
 
     def kill(self, context, container, signal=None):
-        """Deliver a signal, for the two signals that can be delivered.
+        """Send a signal to the container's process.
 
-        ⚠️ Not a narrower version of docker's kill -- a different operation
-        wearing the same name. The CRI can stop a container; it cannot send it
-        a signal. SIGKILL and SIGTERM happen to be expressible as stopping,
-        with and without a grace period, and nothing else is: a SIGHUP asking
-        a server to reload its configuration has no CRI equivalent, and
-        quietly stopping the container instead would answer a reload request
-        by killing the workload.
+        Through containerd's task service rather than the CRI, which has no
+        call for this: StopContainer would answer a SIGHUP asking a server to
+        reload its configuration by killing the workload.
         """
-        name = str(signal or 'SIGKILL').upper()
-        if name not in self._STOP_SIGNALS:
-            raise exception.Invalid(_(
-                'This runtime can deliver SIGKILL and SIGTERM, which stop a '
-                'container; %s would have to be delivered to the process '
-                'itself, which it cannot do') % name)
-        self.stop(context, container, timeout=self._STOP_SIGNALS[name])
+        number = _signal_number(signal)
+        self.task_stub.Kill(
+            tasks_pb2.KillRequest(container_id=container.container_id,
+                                  signal=number, all=False),
+            metadata=self._CTRD_NS)
         return container
+
+    def resize(self, context, container, height, weight):
+        """Not available here, and not a gap that can be filled.
+
+        A tty's size travels inside the stream -- the fifth channel of the
+        protocol the runtime's streaming server speaks -- and an interactive
+        session resizes that way today. What has no equivalent is resizing
+        from outside the stream: this is a separate request that cannot reach
+        an already-open one, and the runtime offers no call for it.
+        """
+        raise exception.Invalid(_(
+            'This runtime carries the terminal size inside the session, so it '
+            'cannot be set from outside one'))
+
+    def network_attach(self, context, container, requested_network):
+        raise exception.Invalid(_(
+            'A sandbox is given its networks when it is created and this '
+            'runtime offers no way to change them afterwards'))
+
+    def network_detach(self, context, container, network):
+        raise exception.Invalid(_(
+            'A sandbox is given its networks when it is created and this '
+            'runtime offers no way to change them afterwards'))
+
+    def _task_status(self, container_id):
+        """What containerd says the task is doing, or None if it cannot say."""
+        try:
+            response = self.task_stub.Get(
+                tasks_pb2.GetRequest(container_id=container_id),
+                metadata=self._CTRD_NS)
+        except grpc.RpcError as e:
+            LOG.debug('Could not read task state of %(id)s: %(err)s',
+                      {'id': container_id, 'err': e})
+            return None
+        return response.process.status
 
     def update(self, context, container):
         """Apply changed cpu and memory limits to a running container."""
@@ -1345,8 +1495,18 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         try:
             return self._show_container(context, container)
         except exception.ZunException:
-            # Gone from the runtime. Saying so beats reporting the last state
-            # it was seen in, which reads as running.
+            if container.task_state:
+                # ⚠️ An operation owns this container and is somewhere between
+                # tearing down one incarnation and building the next, so the
+                # runtime not knowing the id is expected rather than news. The
+                # operation reports its own outcome; a status read that lands
+                # in that gap must not pre-empt it. Marking it Error here made
+                # a rebuild fail from the outside while it was still working,
+                # and left the container Error after it had succeeded.
+                return container
+            # Gone from the runtime with nothing operating on it. Saying so
+            # beats reporting the last state it was seen in, which reads as
+            # running.
             container.status = consts.ERROR
             container.status_reason = _('Container is not found in runtime')
             return container

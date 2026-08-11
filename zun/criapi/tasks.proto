@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+// The part of containerd's own task service that the CRI does not expose.
+//
+// Not a copy of containerd's tasks.proto: the four calls this driver needs,
+// with the field numbers and the service name they have upstream, which is
+// all the wire needs to agree on. Taking the real file would drag in
+// containerd's whole type tree -- mounts, descriptors, metrics -- to reach
+// three requests that carry a container id between them.
+//
+// Process lives in package containerd.v1.types upstream, and Status is a
+// top-level enum there rather than a nested one. Neither travels on the wire:
+// a message is its field numbers and an enum is a varint. It is declared here
+// where it is used.
+//
+// ⚠️ Every call needs the containerd-namespace metadata header. Without it
+// containerd looks in the default namespace, where nothing the CRI created
+// exists, and answers "not found" for a container that is plainly running.
+
+package containerd.services.tasks.v1;
+
+import "google/protobuf/empty.proto";
+
+service Tasks {
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Kill(KillRequest) returns (google.protobuf.Empty);
+  rpc Pause(PauseTaskRequest) returns (google.protobuf.Empty);
+  rpc Resume(ResumeTaskRequest) returns (google.protobuf.Empty);
+}
+
+message PauseTaskRequest {
+  string container_id = 1;
+}
+
+message ResumeTaskRequest {
+  string container_id = 1;
+}
+
+message KillRequest {
+  string container_id = 1;
+  string exec_id = 2;
+  uint32 signal = 3;
+  bool all = 4;
+}
+
+message GetRequest {
+  string container_id = 1;
+  string exec_id = 2;
+}
+
+message GetResponse {
+  Process process = 1;
+}
+
+message Process {
+  enum Status {
+    UNKNOWN = 0;
+    CREATED = 1;
+    RUNNING = 2;
+    STOPPED = 3;
+    PAUSED = 4;
+    PAUSING = 5;
+  }
+
+  string container_id = 1;
+  string id = 2;
+  uint32 pid = 3;
+  Status status = 4;
+}
