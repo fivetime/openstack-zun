@@ -132,6 +132,16 @@ def load_capsule_driver():
 class BaseDriver(object):
     """Base class for driver."""
 
+    # Whether this driver pulls an image itself while creating a container.
+    # ⚠️ This used to be probed with hasattr(driver, 'pull_image'), which
+    # conflated "has the method" with "wants the caller to pre-pull". The CRI
+    # driver later grew pull_image to serve the images API, and the probe
+    # flipped on its own: every capsule began pre-pulling its own sandbox
+    # image, which is not a real image, and no new capsule could start while
+    # every running one carried on. A capability the caller depends on has to
+    # be stated, not inferred from the shape of the class.
+    pulls_own_images = False
+
     def __init__(self):
         self.volume_drivers = {}
         for driver_name in CONF.volume.driver_list:

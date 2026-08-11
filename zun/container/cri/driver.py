@@ -16,6 +16,7 @@ import os
 import time
 
 import grpc
+import shlex
 from oslo_log import log as logging
 from oslo_utils import fileutils
 from oslo_utils import timeutils
@@ -618,6 +619,20 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             container.status = consts.UNKNOWN
             container.status_reason = "container state unknown"
 
+    @staticmethod
+    def _as_argv(command):
+        """Take the command however the caller wrote it.
+
+        The capsule API splits the string before it gets here and the docker
+        driver accepted one, so nothing upstream ever had to. The CRI takes a
+        list, and handing a string to a repeated field is accepted silently
+        one character at a time: `id` becomes ['i', 'd'], and the runtime
+        reports that the file `i` was not found.
+        """
+        if isinstance(command, str):
+            return shlex.split(command)
+        return list(command or [])
+
     def _exec_in_container(self, container_id, cmd, timeout):
         """Run a command inside a container and return its exit code.
 
@@ -629,7 +644,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         response = self.runtime_stub.ExecSync(
             api_pb2.ExecSyncRequest(
                 container_id=container_id,
-                cmd=cmd,
+                cmd=self._as_argv(cmd),
                 timeout=timeout,
             )
         )
@@ -665,11 +680,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         port -- so it is only useful to something running here. That is the
         whole reason the proxy exists.
         """
-        if isinstance(command, str):
-            command = [command]
         response = self.runtime_stub.Exec(api_pb2.ExecRequest(
             container_id=container.container_id,
-            cmd=list(command or []),
+            cmd=self._as_argv(command),
             tty=True,
             stdin=True,
             stdout=True,
@@ -774,10 +787,21 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 # Mid-operation; the operation itself owns the status.
                 continue
 
+            # A capsule holds containers; a container created through the
+            # Container API is its own only member. Both reach here now that
+            # this host serves both and the periodic sweep hands over
+            # everything it finds. ⚠️ Assuming capsules did not merely skip
+            # containers -- it raised, and one raise ends the whole sweep, so
+            # every capsule on the node stopped being reconciled too.
+            members = getattr(capsule, 'containers', None)
+            aggregate = members is not None
+            if not aggregate:
+                members = [capsule]
+
             changed = False
             running = 0
             counted = 0
-            for container in capsule.containers:
+            for container in members:
                 old_status = container.status
                 try:
                     self._show_container(context, container)
@@ -810,7 +834,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     container.save(context)
                     changed = True
 
-            if not counted:
+            if not counted or not aggregate:
+                # Nothing to roll up: a lone container already saved itself.
                 continue
 
             # The capsule is only running while all of its containers are: a
@@ -1064,6 +1089,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     # an anonymous sandbox nobody will ever claim.
     OWNER_LABEL = 'io.zun.container.uuid'
 
+    # The runtime pulls each container's image as it is created,
+    # for capsules and plain containers alike.
+    pulls_own_images = True
+
     def create(self, context, container, image, requested_networks,
                requested_volumes):
         """Create a container in a sandbox of its own, without starting it.
@@ -1136,11 +1165,168 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         if not container.container_id:
             raise exception.ZunException(_(
                 'Container %s was never created on this host') % container.uuid)
-        self.runtime_stub.StartContainer(
-            api_pb2.StartContainerRequest(container_id=container.container_id))
+        try:
+            self.runtime_stub.StartContainer(
+                api_pb2.StartContainerRequest(
+                    container_id=container.container_id))
+        except grpc.RpcError as e:
+            if 'CONTAINER_EXITED' not in (e.details() or ''):
+                raise
+            # A CRI container is not a docker container. Once it has exited the
+            # runtime will not start it again and offers no flag that makes it
+            # -- but docker will, and the Container API was written against
+            # docker, so "stop then start" is a thing users expect to work.
+            # Rebuilding it in the sandbox it died in is what keeps that
+            # promise, and keeps the address: the address belongs to the
+            # sandbox, not to the container.
+            self._restart_exited(context, container)
         container.status = consts.RUNNING
         container.status_reason = None
         return container
+
+    def _restart_exited(self, context, container):
+        """Give an exited container a fresh incarnation in its own sandbox."""
+        sandbox = self._sandbox_of(container)
+        if sandbox is None:
+            raise exception.ZunException(_(
+                'The sandbox that held container %s is gone, so it cannot be '
+                'started again') % container.uuid)
+        try:
+            self.runtime_stub.RemoveContainer(
+                api_pb2.RemoveContainerRequest(
+                    container_id=container.container_id))
+        except grpc.RpcError as e:
+            # Worth continuing without: a container that cannot be removed is
+            # usually one already gone, and the sandbox can hold the new one
+            # either way.
+            LOG.debug('Could not remove exited container %(id)s: %(err)s',
+                      {'id': container.container_id, 'err': e})
+        volmaps = objects.VolumeMapping.list_by_container(context,
+                                                          container.uuid)
+        # _create_container reads the sandbox out of this field and then
+        # overwrites it with the id of what it made.
+        container.container_id = sandbox
+        self._create_container(context, container, container,
+                               {container.uuid: volmaps} if volmaps else {},
+                               start=True)
+
+    def reboot(self, context, container, timeout=None):
+        """Stop it, then start it again.
+
+        The runtime has no reboot of its own, and on this driver the second
+        half is not a plain start: an exited CRI container cannot be started,
+        so it is rebuilt inside its sandbox. That is also why the address
+        survives a reboot -- it was never the container's.
+        """
+        self.stop(context, container, timeout)
+        return self.start(context, container)
+
+    # The two signals that mean "make it stop". Anything else asks the kernel
+    # to deliver something to a process, which is not a thing the CRI can be
+    # asked to do at all.
+    _STOP_SIGNALS = {'SIGKILL': 0, 'KILL': 0, '9': 0,
+                     'SIGTERM': None, 'TERM': None, '15': None}
+
+    def kill(self, context, container, signal=None):
+        """Deliver a signal, for the two signals that can be delivered.
+
+        ⚠️ Not a narrower version of docker's kill -- a different operation
+        wearing the same name. The CRI can stop a container; it cannot send it
+        a signal. SIGKILL and SIGTERM happen to be expressible as stopping,
+        with and without a grace period, and nothing else is: a SIGHUP asking
+        a server to reload its configuration has no CRI equivalent, and
+        quietly stopping the container instead would answer a reload request
+        by killing the workload.
+        """
+        name = str(signal or 'SIGKILL').upper()
+        if name not in self._STOP_SIGNALS:
+            raise exception.Invalid(_(
+                'This runtime can deliver SIGKILL and SIGTERM, which stop a '
+                'container; %s would have to be delivered to the process '
+                'itself, which it cannot do') % name)
+        self.stop(context, container, timeout=self._STOP_SIGNALS[name])
+        return container
+
+    def update(self, context, container):
+        """Apply changed cpu and memory limits to a running container."""
+        patch = container.obj_get_changes()
+        resources = {}
+        if patch.get('cpu') is not None:
+            resources['cpu_shares'] = int(1024 * patch['cpu'])
+        if patch.get('memory') is not None:
+            resources['memory_limit_in_bytes'] = (
+                int(patch['memory']) * 1024 * 1024)
+        if not resources:
+            return container
+        self.runtime_stub.UpdateContainerResources(
+            api_pb2.UpdateContainerResourcesRequest(
+                container_id=container.container_id,
+                linux=api_pb2.LinuxContainerResources(**resources)))
+        return container
+
+    def stats(self, context, container):
+        """What the container is using, in the shape the API documents.
+
+        ⚠️ The runtime reports CPU as a counter of nanoseconds burned, not a
+        rate, so a percentage cannot be read from one sample. Two samples a
+        second apart give the rate honestly; a single sample divided by
+        anything would be a number that looks like a percentage and is not.
+        """
+        first = self._container_stats(container.container_id)
+        time.sleep(1)
+        second = self._container_stats(container.container_id)
+
+        cpu_percent = 0.0
+        elapsed = second['timestamp'] - first['timestamp']
+        if elapsed > 0:
+            cores = os.cpu_count() or 1
+            burned = second['cpu_ns'] - first['cpu_ns']
+            cpu_percent = float(burned) / float(elapsed) / cores * 100
+
+        mem_usage = second['memory'] / 1024 / 1024
+        mem_limit = 0
+        if container.memory:
+            mem_limit = float(container.memory)
+        mem_percent = (mem_usage / mem_limit * 100) if mem_limit else 0.0
+
+        return {"CONTAINER": container.name,
+                "CPU %": cpu_percent,
+                "MEM USAGE(MiB)": mem_usage,
+                "MEM LIMIT(MiB)": mem_limit,
+                "MEM %": mem_percent,
+                # The runtime accounts for the writable layer, not for block
+                # reads and writes. Reporting its size here would put a real
+                # number under a heading that means something else.
+                "BLOCK I/O(B)": "-/-",
+                # The address is on the tenant's network and the runtime does
+                # not account for it; reporting zeros would read as an idle
+                # link rather than as a figure nobody measured.
+                "NET I/O(B)": "-/-"}
+
+    def _container_stats(self, container_id):
+        response = self.runtime_stub.ContainerStats(
+            api_pb2.ContainerStatsRequest(container_id=container_id))
+        st = response.stats
+        return {'timestamp': st.cpu.timestamp,
+                'cpu_ns': st.cpu.usage_core_nano_seconds.value,
+                'memory': st.memory.working_set_bytes.value}
+
+    def top(self, context, container, ps_args=None):
+        """Processes, as the container itself sees them.
+
+        There is no CRI call for this: the only vantage point on a kata
+        sandbox is inside it, so this runs ps in the container and needs the
+        image to carry one. An image without ps says so plainly rather than
+        returning an empty list of processes.
+        """
+        argv = ['ps'] + shlex.split(ps_args) if ps_args else ['ps', '-ef']
+        exit_code, out, err = self._exec_in_container(
+            container.container_id, argv, CONF.cri_exec_timeout)
+        if exit_code != 0:
+            raise exception.Invalid(_(
+                'Could not list processes in the container: %s')
+                % ((err or out or '').strip()[:200] or 'ps is not in the image'))
+        return out
 
     def stop(self, context, container, timeout=None):
         if not container.container_id:

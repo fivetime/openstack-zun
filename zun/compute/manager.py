@@ -346,15 +346,19 @@ class Manager(periodic_task.PeriodicTasks):
                                                registry=container.registry)
             image_pull_policy = utils.get_image_pull_policy(
                 container.image_pull_policy, tag)
-            if hasattr(self.driver, 'pull_image'):
+            # By the object's own driver: on a host serving both, a capsule
+            # and a container can be built by different drivers with different
+            # answers to this.
+            builder = self._get_driver(container)
+            if not builder.pulls_own_images:
                 try:
                     # TODO(hongbin): move image pulling logic to docker driver
-                    image, image_loaded = self.driver.pull_image(
+                    image, image_loaded = builder.pull_image(
                         context, repo, tag, image_pull_policy,
                         image_driver_name, registry=container.registry)
                     image['repo'], image['tag'] = repo, tag
                     if not image_loaded:
-                        self.driver.load_image(image['path'])
+                        builder.load_image(image['path'])
                 except exception.ImageNotFound as e:
                     with excutils.save_and_reraise_exception():
                         LOG.error(str(e))
