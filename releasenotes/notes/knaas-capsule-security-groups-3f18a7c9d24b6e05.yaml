@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    A capsule template may now name ``securityGroups``, alongside ``nets``. The
+    groups are resolved to ids when the request is made, scoped to the caller's
+    own project, and land on the capsule's Neutron port as it is created -- so
+    the port is never briefly attached with the project's default group.
+    Naming a group that does not exist is answered synchronously, by name.

@@ -14,6 +14,7 @@
 
 import shlex
 
+from neutronclient.common import exceptions as n_exc
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import strutils
@@ -36,6 +37,7 @@ from zun.common import policy
 from zun.common import utils
 import zun.conf
 from zun.container import driver
+from zun.network import neutron
 from zun import objects
 from zun.volume import cinder_api as cinder
 
@@ -228,6 +230,38 @@ class CapsuleController(base.Controller):
         """
         return self._do_post(**capsule_dict)
 
+    @staticmethod
+    def _resolve_security_groups(context, names):
+        """Turn the groups a capsule asked for into ids, or refuse.
+
+        The driver accepts either form (common/utils.py:315-329), but names are
+        resolved here so an unknown one is answered synchronously, by name, to
+        whoever wrote it -- rather than reaching a compute node and failing
+        there, where the tenant sees a capsule that died for no stated reason.
+
+        find_resourceid_by_name_or_id is scoped to the caller's own project, so
+        a tenant cannot borrow another project's group by naming it.
+        """
+        if not names:
+            return None
+        neutron_api = neutron.NeutronAPI(context)
+        resolved = []
+        for name in sorted(set(names)):
+            try:
+                resolved.append(neutron_api.find_resourceid_by_name_or_id(
+                    'security_group', name, context.project_id))
+            except n_exc.NeutronClientNoUniqueMatch:
+                raise exception.Conflict(_(
+                    'Multiple security groups are named %(name)s; use an id '
+                    'to say which.') % {'name': name})
+            except n_exc.NeutronClientException as e:
+                if e.status_code == 404:
+                    raise exception.InvalidValue(_(
+                        'Security group %(name)s not found.')
+                        % {'name': name})
+                raise
+        return resolved
+
     def _do_post(self, legacy_api_version=False, **capsule_dict):
         context = pecan.request.context
         compute_api = pecan.request.compute_api
@@ -267,6 +301,14 @@ class CapsuleController(base.Controller):
         new_capsule.restart_policy = container_restart_policy
 
         metadata_info = template_json.get('metadata', None)
+        # Resolved here rather than at attach time so a name that does not
+        # exist is a synchronous error naming the group, instead of a capsule
+        # that reaches a compute node and dies there. Scoped to the caller's
+        # own project by find_resourceid_by_name_or_id, so a tenant cannot
+        # name a group belonging to anybody else.
+        new_capsule.security_groups = self._resolve_security_groups(
+            context, template_json.get('securityGroups'))
+
         requested_networks_info = template_json.get('nets', [])
         requested_networks = \
             utils.build_requested_networks(context, requested_networks_info)

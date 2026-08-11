@@ -712,6 +712,10 @@ capsule_template = {
         "availabilityZone": availability_zone,
         "architecture": capsule_architecture,
         "nets": nets,
+        # Alongside nets rather than inside spec, because it is the same kind
+        # of thing: what the capsule's port is, not what runs inside it. The
+        # spec object mirrors a Kubernetes pod, which has no such field.
+        "securityGroups": security_groups,
     },
     "additionalProperties": False,
     "required": ['kind', 'spec', 'metadata']
