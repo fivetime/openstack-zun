@@ -48,6 +48,20 @@ Use multipath connection of volume
 Volumes can be connected as multipath devices. This will provide high
 availability and fault tolerance.
 """),
+    cfg.BoolOpt(
+        'host_dedicated_to_capsules',
+        default=False,
+        help='Whether this compute node runs capsules and nothing else. '
+             'Shared filesystems are mounted on the node and the file server '
+             'authorises the node, so every tenant share mounted here is '
+             'readable by anything holding this node\'s identity. On a node '
+             'that serves only capsules that is the platform itself; on a '
+             'node shared with a kubelet or with nova it is also whatever '
+             'else runs there with host networking, which is a different '
+             'tenant\'s workload. Left false, this node refuses to mount a '
+             'shared filesystem at all -- the refusal is visible, whereas the '
+             'exposure is not. Set it only where the operator can say the '
+             'node carries no other tenant\'s workload.'),
     cfg.IntOpt('timeout_wait_volume_available',
                default=60,
                help='Defines the timeout on waiting volume to become '

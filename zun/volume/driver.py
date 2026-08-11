@@ -283,12 +283,21 @@ class NFS(VolumeDriver):
             raise exception.ZunException(_(
                 'an nfs volume names no export to mount'))
 
+        # ⚠️ Both checks refuse rather than warn, and both default to
+        # refusing. The property they protect -- that only this platform can
+        # read a tenant's files -- is not observable from inside a capsule: a
+        # share mounted on a node another tenant's workload can reach looks
+        # exactly like a private one, right up until it is read. A refusal is
+        # visible to whoever can fix it; the exposure is visible to nobody.
+        self._refuse_unless_node_is_ours()
+
         # One lock per share and node: attach and detach of the same share
         # must not interleave, or two detaches can each see the other's mount
         # still present and both skip the revoke -- leaking the grant forever.
         with lockutils.lock('knaas-share-%s' % (opts.get('shareID') or export)):
             share_id = opts.get('shareID')
             if share_id:
+                self._refuse_if_grants_are_wider_than_hosts(context, share_id)
                 manila.grant(context, share_id,
                              self._local_ip_for(export.split(':', 1)[0]))
 
@@ -308,6 +317,63 @@ class NFS(VolumeDriver):
                               '-o', 'rw,nosuid,nodev',
                               export, path, run_as_root=True)
             self._apply_fs_group(opts, path)
+
+    @staticmethod
+    def _refuse_unless_node_is_ours():
+        """Refuse to mount a tenant's files on a node we do not own outright.
+
+        The file server authorises by client address, so the unit of trust is
+        the node -- not the capsule, and not the tenant. On a node that runs
+        capsules and nothing else, holding the node's identity means being the
+        platform. On a node shared with a kubelet or with nova it also means
+        being whatever else runs there with host networking, and that is
+        somebody else's workload.
+
+        There is a version of this that does not depend on the node: a backend
+        where each share carries its own credential, or a mount performed
+        inside the guest so the client is the capsule's own address. Until one
+        of those exists, the safe shape is the only shape, and it has to be
+        declared rather than assumed.
+        """
+        if not CONF.volume.host_dedicated_to_capsules:
+            raise exception.ZunException(_(
+                'This node does not declare itself dedicated to capsules, so '
+                'it will not mount a shared filesystem: the file server '
+                'authorises the node, and anything else running here with the '
+                'node\'s identity would be able to read these files. Set '
+                '[volume] host_dedicated_to_capsules on a node that carries no '
+                'other tenant workload.'))
+
+    @staticmethod
+    def _refuse_if_grants_are_wider_than_hosts(context, share_id):
+        """Refuse when someone has opened the share to more than single hosts.
+
+        Every grant this driver makes is a /32 for one node, withdrawn when the
+        last mount there goes. That is the whole of the isolation a
+        host-mounted share has. One subnet rule -- added by hand, by another
+        tool, by an operator solving a different problem -- replaces it with
+        nothing, and no capsule can tell.
+
+        Mounting anyway would make the platform a participant in an isolation
+        it knows is not there.
+        """
+        wide = []
+        for rule in manila.access_rules(context, share_id):
+            target = (rule.get('access_to') or '').strip()
+            if rule.get('access_type') != 'ip':
+                # A different authorisation model entirely. Not ours to judge
+                # as safe.
+                wide.append('%s:%s' % (rule.get('access_type'), target))
+                continue
+            if '/' in target and not target.endswith('/32'):
+                wide.append(target)
+        if wide:
+            raise exception.ZunException(_(
+                'Share %(share)s is reachable from more than single hosts '
+                '(%(rules)s), which is wider than the access this platform '
+                'grants and withdraws per node. Refusing to mount it rather '
+                'than treat it as isolated.')
+                % {'share': share_id, 'rules': ', '.join(sorted(wide))})
 
     @staticmethod
     def _validate_mounted(path, export):

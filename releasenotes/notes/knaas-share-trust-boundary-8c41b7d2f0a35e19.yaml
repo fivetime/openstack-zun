@@ -1,0 +1,22 @@
+---
+upgrade:
+  - |
+    A compute node now refuses to mount a shared filesystem unless
+    ``[volume] host_dedicated_to_capsules`` is set. The option defaults to
+    false, so a node that mounted NFS-backed volumes before will stop until an
+    operator declares it. Set it only on nodes that carry no workload other
+    than capsules.
+security:
+  - |
+    A share mounted on a node is authorised by the node's address, which makes
+    the node the unit of trust rather than the capsule or the tenant. On a node
+    shared with a kubelet or with nova, anything running there with the node's
+    identity can read every tenant share mounted on it. That constraint used to
+    exist only in documentation; it is now enforced, and refuses rather than
+    warns.
+  - |
+    Mounting is also refused when a share carries an access rule broader than a
+    single host, or a rule of a type this platform does not issue. Every grant
+    made here is a ``/32`` withdrawn when the last mount on that node goes, and
+    that grant set is the whole of the isolation a host-mounted share has: one
+    subnet rule replaces it with nothing, and no capsule can tell.
