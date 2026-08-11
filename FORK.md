@@ -53,6 +53,16 @@ kubezun(virtual-kubelet provider)驱动。
   字符。⚠️ 长度和 pattern 都要改——原 pattern `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
   自己就要求了第二个字符。
 
+- **capsule 模板收 `securityGroups`**(与 `nets` 并列)。驱动**早就**在读
+  `capsule.security_groups` 并传给 port(`cri/driver.py:323-330`),`network/neutron.py:110-113`
+  的创建分支也早就会把它写进 port——**只差 API 没地方说这件事**,于是每个 capsule 都
+  落到项目的 default 组,这正是"同租户所有 namespace 互通"的直接原因。
+  组名在**请求时**就解析成 id(限定在调用者自己的 project 内),不存在的组当场 400
+  并点名;放到挂载时才解析,租户看到的会是一个"没说原因就死掉的 pod"。
+  ⚠️ **空列表和不写不是一回事**:不写 = 没意见(Neutron 塞默认组),空 = 什么都不放行。
+  两者原来都被折叠成 `None`,于是**"要求谁都够不到"变成了"谁都能够到"**——正是执行
+  隔离的那条路上,朝着放行的方向错。
+
 ### 3.2 存储
 
 - **emptyDir 卷种**(`volume/driver.py:EmptyDir`)。随 capsule 生灭,被挂载它的
@@ -86,6 +96,14 @@ kubezun(virtual-kubelet provider)驱动。
 - **孤儿节点资源清扫**:卷走了但挂载/rbd 映射留下。不是美观问题——映射着的 rbd
   镜像持有 Ceph watcher,Ceph 拒绝删除被 watch 的镜像,表现为"卷可用但删不掉,
   且没有任何东西看起来占着它"。两种形状都实际发生过。
+
+- **shim 已死的 capsule 现在删得掉**。停止和删除原来写在同一个 try 里,而 shim 一没,
+  `StopPodSandbox` 就去等一个没人应答的任务、`DEADLINE_EXCEEDED`,**把删除一起带走**。
+  于是永远删不掉:每次重试都在等同一个不存在的 shim,记录还在、资源账还在,
+  **而没有任何东西看起来占着它**——和 rbd watcher 同一形状。
+  **删除才是目的,停止只是礼貌**,两者现在分开尝试(CRI 本来就规定
+  `RemovePodSandbox` 要强制终止里面还在跑的东西)。实测:那批 8-06 起删不掉的,
+  `DELETE` 从 500 变 204,租户 capsule 从 29 个降到 5 个(全部有 pod 在跑)。
 
 ## 四、双驱动:capsule 给 K8s,container 给 Horizon
 
