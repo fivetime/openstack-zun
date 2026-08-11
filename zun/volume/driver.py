@@ -16,6 +16,7 @@ import os
 import shutil
 import socket
 
+from oslo_concurrency import lockutils
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import excutils
@@ -267,6 +268,13 @@ class NFS(VolumeDriver):
 
     supported_providers = ['nfs']
 
+    # MOUNT_TIMEOUT bounds the mount syscall. An unreachable NFS server hangs
+    # a plain mount for minutes, and zun-compute is one process of green
+    # threads: a hung mount starves the heartbeat, and a node that misses its
+    # heartbeat is refused every operation. The same failure this codebase has
+    # already paid for once, from a different direction.
+    MOUNT_TIMEOUT = '60'
+
     @validate_volume_provider(supported_providers)
     def attach(self, context, volmap):
         opts = self._options(volmap)
@@ -275,17 +283,48 @@ class NFS(VolumeDriver):
             raise exception.ZunException(_(
                 'an nfs volume names no export to mount'))
 
-        share_id = opts.get('shareID')
-        if share_id:
-            manila.grant(context, share_id,
-                         self._local_ip_for(export.split(':', 1)[0]))
+        # One lock per share and node: attach and detach of the same share
+        # must not interleave, or two detaches can each see the other's mount
+        # still present and both skip the revoke -- leaking the grant forever.
+        with lockutils.lock('knaas-share-%s' % (opts.get('shareID') or export)):
+            share_id = opts.get('shareID')
+            if share_id:
+                manila.grant(context, share_id,
+                             self._local_ip_for(export.split(':', 1)[0]))
 
-        path = mount.get_mountpoint(volmap.volume.uuid)
-        fileutils.ensure_tree(path)
-        if not os.path.ismount(path):
-            utils.execute('mount', '-t', 'nfs', export, path,
-                          run_as_root=True)
-        self._apply_fs_group(opts, path)
+            path = mount.get_mountpoint(volmap.volume.uuid)
+            fileutils.ensure_tree(path)
+            if os.path.ismount(path):
+                # Whatever is mounted there must BE this export. A stale mount
+                # of something else, silently accepted, hands the capsule a
+                # filesystem it never asked for.
+                self._validate_mounted(path, export)
+            else:
+                # nosuid,nodev: the tenant controls every byte of this
+                # filesystem, and it is mounted on the host. A setuid binary
+                # or a device node in it must mean nothing here.
+                utils.execute('timeout', self.MOUNT_TIMEOUT,
+                              'mount', '-t', 'nfs',
+                              '-o', 'rw,nosuid,nodev',
+                              export, path, run_as_root=True)
+            self._apply_fs_group(opts, path)
+
+    @staticmethod
+    def _validate_mounted(path, export):
+        try:
+            with open('/proc/mounts') as f:
+                for line in f:
+                    fields = line.split()
+                    if len(fields) > 1 and fields[1] == path:
+                        if fields[0] != export:
+                            raise exception.ZunException(_(
+                                '%(path)s already carries a mount of '
+                                '%(other)s, not %(export)s')
+                                % {'path': path, 'other': fields[0],
+                                   'export': export})
+                        return
+        except OSError:
+            pass
 
     @staticmethod
     def _apply_fs_group(opts, path):
@@ -308,6 +347,10 @@ class NFS(VolumeDriver):
     def _detach(self, context, volmap):
         opts = self._options(volmap)
         export = opts.get('export')
+        with lockutils.lock('knaas-share-%s' % (opts.get('shareID') or export)):
+            self._detach_locked(context, volmap, opts, export)
+
+    def _detach_locked(self, context, volmap, opts, export):
         path = mount.get_mountpoint(volmap.volume.uuid)
         if os.path.ismount(path):
             try:
