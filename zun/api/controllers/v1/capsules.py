@@ -242,8 +242,15 @@ class CapsuleController(base.Controller):
         find_resourceid_by_name_or_id is scoped to the caller's own project, so
         a tenant cannot borrow another project's group by naming it.
         """
-        if not names:
+        if names is None:
             return None
+        if not names:
+            # ⚠️ An empty list is not the same as no list, and the difference is
+            # the difference between a port that allows nothing and one Neutron
+            # hands the project's permissive default to. Saying "no groups"
+            # explicitly must survive to the port, so it is returned as an empty
+            # list rather than collapsed into None.
+            return []
         neutron_api = neutron.NeutronAPI(context)
         resolved = []
         for name in sorted(set(names)):

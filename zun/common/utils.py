@@ -313,8 +313,14 @@ def parse_floating_cpu(spec):
 
 
 def get_security_group_ids(context, security_groups, **kwargs):
-    if not security_groups:
+    if security_groups is None:
         return None
+    if not security_groups:
+        # ⚠️ Asked for no groups, which is not the same as not asking. Neutron
+        # gives the project's default group to a port that names none, so
+        # collapsing an explicit empty list into None turns "this must reach
+        # nothing" into "this may reach everything".
+        return []
     else:
         neutron = clients.OpenStackClients(context).neutron()
         search_opts = {'tenant_id': context.project_id}
