@@ -707,6 +707,13 @@ class CapsuleController(base.Controller):
                 else:
                     volume_driver = 'cinder'
                     mount_driver = mount[volume_driver]
+                    if mount_driver.get('fsGroup'):
+                        # Ownership the volume is given after mounting, so the
+                        # pod's user can actually write to it. Rides in
+                        # `contents`, the field a volume has for what is not a
+                        # Cinder id.
+                        contents = jsonutils.dumps(
+                            {'fsGroup': mount_driver['fsGroup']})
                     if mount_driver.get("volumeID"):
                         uuid = mount_driver.get("volumeID")
                         volume = cinder_api.search_volume(uuid)

@@ -80,6 +80,14 @@ def _linux_security_context(container):
         kwargs['run_as_user'] = api_pb2.Int64Value(value=int(sc['runAsUser']))
     if sc.get('runAsGroup') is not None:
         kwargs['run_as_group'] = api_pb2.Int64Value(value=int(sc['runAsGroup']))
+    if sc.get('fsGroup') is not None:
+        # The other half of fsGroup. Chowning the volume to the group does
+        # nothing unless the process is IN that group; a kubelet adds it to
+        # the container's supplemental groups, and so does this. Without it
+        # the volume mounts, carries the right ownership, and still cannot be
+        # written -- from inside the pod that is indistinguishable from a
+        # broken volume.
+        kwargs['supplemental_groups'] = [int(sc['fsGroup'])]
     if sc.get('readOnlyRootFilesystem'):
         kwargs['readonly_rootfs'] = True
     # allowPrivilegeEscalation: false is no_new_privs: true. Named the other way

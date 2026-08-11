@@ -522,6 +522,10 @@ capsule_security_context = {
     'properties': {
         'runAsUser': non_negative_integer,
         'runAsGroup': non_negative_integer,
+        # Pod-level in Kubernetes; per-container here because the runtime
+        # applies groups per container. The volume-ownership half lives on the
+        # cinder volume spec; this half puts the group on the process.
+        'fsGroup': non_negative_integer,
         'readOnlyRootFilesystem': boolean,
         'allowPrivilegeEscalation': boolean,
         'capabilities': {
@@ -594,6 +598,10 @@ capsule_cinder_volume = {
         'volumeID': volume_uuid,
         'size': volume_size,
         'autoRemove': boolean,
+        # The pod's fsGroup: the volume is chowned to it after mounting, the
+        # way a kubelet does, so a workload running as a non-root user can
+        # write to its own volume.
+        'fsGroup': {'type': ['integer', 'null'], 'minimum': 1},
     },
     'additionalProperties': False,
 }

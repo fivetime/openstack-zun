@@ -285,6 +285,35 @@ class Cinder(VolumeDriver):
         mountpoint = mount.get_mountpoint(volmap.volume.uuid)
         fileutils.ensure_tree(mountpoint)
         mount.do_mount(devpath, mountpoint, CONF.volume.fstype)
+        self._apply_fs_group(volmap, mountpoint)
+
+    @staticmethod
+    def _apply_fs_group(volmap, mountpoint):
+        """Give the pod's fsGroup ownership of the volume, as a kubelet would.
+
+        A fresh filesystem is root's, mode 0755, and the workload runs as
+        whatever user its image says -- almost never root. Without this the
+        volume attaches, mounts, and cannot be written to, which reads as an
+        application bug on a pod that looks perfectly healthy.
+
+        Group ownership with setgid rather than handing the user the
+        directory: it is what a kubelet applies, and it means files created by
+        the workload stay reachable by the group when the pod is recreated
+        with a different uid.
+        """
+        raw = volmap.volume.contents
+        if not raw:
+            return
+        try:
+            fs_group = int(jsonutils.loads(raw).get('fsGroup') or 0)
+        except (ValueError, TypeError, AttributeError):
+            return
+        if fs_group <= 0:
+            return
+        utils.execute('chown', '-R', ':%d' % fs_group, mountpoint,
+                      run_as_root=True)
+        utils.execute('chmod', '-R', 'g+rwX', mountpoint, run_as_root=True)
+        utils.execute('chmod', 'g+s', mountpoint, run_as_root=True)
 
     @validate_volume_provider(supported_providers)
     def detach(self, context, volmap):
