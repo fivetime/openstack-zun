@@ -122,17 +122,35 @@ ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
 
 分档交付:
 
-| 档 | 方法 | 说明 |
+| 档 | 方法 | 状态 |
 |---|---|---|
-| 一 | create/delete/start/stop/show/list + `get_websocket_url` + 镜像委托 | zun-ui 的"建容器→看列表→开终端→删容器"全流程 |
-| 二 | pause/unpause/reboot/kill/stats/top | UI 上的按钮,都薄 |
+| 一 | create/delete/start/stop/show/list + `get_websocket_url` + 镜像 | **已实现并实测**(`b2f9af06`) |
+| 二 | pause/unpause/reboot/kill/stats/top | 未做,都薄 |
 | 三 | commit / get_archive / put_archive / resize | CRI 无对应语义,**可以永远不做** |
 
-`get_websocket_url` 用 CRI 的 `Attach` RPC,复用已经建好的 wsproxy 链路。
+**第一档实测**:经 Container API 建的容器 Running、拿到租户网地址、`attach` 给出
+真终端(容器内回 `uid=100(curl_user)`)。
 
-⚠️ **待定的语义**:zun-ui 要求容器创建时 `interactive=true` 才给终端。如果产品
-期望是"建了就能开终端",要么 UI 默认勾上,要么 `get_websocket_url` 不依赖该标志。
-这影响用户体验,动手前先定。
+⚠️ **四个首跑撞到的差异**,都是两种形态的真实不同,不是笔误:
+
+1. **镜像必须走运行时的 ImageService,不能委托 zun 的 image driver**。照抄
+   DockerDriver 的委托会去连 docker socket——我们没有 dockerd,报 `ENOENT`,
+   而且错误离"镜像"这个概念隔了好几层。走运行时还有一个正收益:**两种形态填同一个
+   镜像库**,这本来就是"一套 containerd"的意义。
+2. **create 不能启动**。capsule 没有"建好但没启动"这个中间态,所以 capsule 路径
+   建完即启;而 Container API 的 create 必须留在 Created,由调用方按 `run` 再启。
+   先启后停不行——对 Kata 等于白起一台虚机。`_create_container` 因此加了 `start` 开关。
+3. **CNI 注册表按类型查所有者,而类型那个 CNI 参数运行时根本不发**
+   (`ZUN_CONTAINER_TYPE` 永远取默认值 CAPSULE)。每个类各自按 `container_type`
+   过滤,于是原生容器"明明存在却查不到"。**与 wsproxy 会话查找同一个陷阱、同一个修法**
+   (先按提示的类型试,再试另一种)。
+4. **attach 拿到的是运行时的 `http://` URL**,websocket 客户端直接拒绝
+   (`scheme http is invalid`)。两条流式路径现在都做转换;attach 的 proxy 地址也改成
+   **由承载节点自报**(和 exec 同一处修正)——API 主机的配置指向的 proxy 什么都不服务。
+
+⚠️ **仍待定的语义**:zun-ui 要求容器创建时 `interactive=true` 才给终端
+(`console.controller.js:42`)。如果产品期望是"建了就能开终端",要么 UI 默认勾上,
+要么 `get_websocket_url` 不依赖该标志。这影响用户体验,是产品决定。
 
 ### 4.4 交互式 exec 的部署形态(已实现)
 
