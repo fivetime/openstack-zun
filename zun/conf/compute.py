@@ -54,6 +54,17 @@ Possible values:
 * Any positive integer in seconds, or zero to disable refresh.
 """),
     cfg.IntOpt(
+        'reclaim_node_resources_interval',
+        default=600,
+        help='Seconds between sweeps that release node resources -- mounts and '
+             'mapped devices -- left behind by a volume whose mapping is gone. '
+             'They accumulate when the service dies between detaching a volume '
+             'and recording it, and nothing else ever collects them: a mapped '
+             'rbd image keeps a Ceph watcher, which makes the volume behind it '
+             'undeletable with nothing visibly holding it. A negative value '
+             'disables the sweep; zero does not -- oslo reads zero as "use the '
+             'default interval".'),
+    cfg.IntOpt(
         'reclaim_allocations_interval',
         default=300,
         help='Seconds between sweeps that give back placement allocations '
