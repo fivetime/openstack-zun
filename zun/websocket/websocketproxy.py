@@ -23,7 +23,6 @@ import socket
 import sys
 import time
 
-import docker
 from oslo_log import log as logging
 from oslo_utils import uuidutils
 from urllib import parse as urlparse
@@ -38,6 +37,12 @@ from zun.websocket.websocketclient import WebSocketClient
 
 LOG = logging.getLogger(__name__)
 CONF = zun.conf.CONF
+
+
+# The remotecommand subprotocol that carries five channels. Anything older
+# has no resize channel, which is the difference between a terminal and a
+# window that never fits.
+V4_CHANNEL_PROTOCOL = 'v4.channel.k8s.io'
 
 
 class ZunProxyRequestHandlerBase(object):
@@ -196,15 +201,32 @@ class ZunProxyRequestHandlerBase(object):
 
         ctx = context.get_admin_context(all_projects=True)
 
-        if uuidutils.is_uuid_like(uuid):
-            container = objects.Container.get_by_uuid(ctx, uuid)
-        else:
-            container = objects.Container.get_by_name(ctx, uuid)
+        container = self._find_container(ctx, uuid)
 
         if exec_id:
             self._new_exec_client(container, token, uuid, exec_id)
         else:
             self._new_websocket_client(container, token, uuid)
+
+    @staticmethod
+    def _find_container(ctx, uuid):
+        """Find the container this session belongs to, whatever kind it is.
+
+        Each container class filters on its own type, so asking only the
+        plain one finds nothing when the session is for a capsule's container
+        -- which is every session a Kubernetes provider opens. The lookup is
+        by identity; the type is the caller's business, not this one's.
+        """
+        by_uuid = uuidutils.is_uuid_like(uuid)
+        for cls in (objects.Container, objects.CapsuleContainer,
+                    objects.CapsuleInitContainer):
+            try:
+                if by_uuid:
+                    return cls.get_by_uuid(ctx, uuid)
+                return cls.get_by_name(ctx, uuid)
+            except exception.ContainerNotFound:
+                continue
+        raise exception.ContainerNotFound(container=uuid)
 
     def _new_websocket_client(self, container, token, uuid):
         if token != container.websocket_token:
@@ -249,21 +271,31 @@ class ZunProxyRequestHandlerBase(object):
 
         self._verify_origin(access_url)
 
-        client = docker.APIClient(base_url=exec_instance.url)
-        tsock = client.exec_start(exec_id, socket=True, tty=True)
-        if hasattr(tsock, "_sock"):
-            # NOTE(hongbin): dockerpy returns different socket class depending
-            # on python version and base_url (see _get_raw_response_socket) so
-            # we need to handle it in here.
-            tsock = tsock._sock
+        # The recorded url is the session itself: a runtime that serves its
+        # own streams answered execute_create with one, on this node's
+        # loopback. This process runs on that node for exactly that reason --
+        # nothing off it can reach the address, which is what keeps an
+        # unauthenticated streaming server unexposed while still reachable
+        # through a proxy that checks a token.
+        target_url = exec_instance.url
+        if not target_url:
+            raise exception.InvalidWebsocketUrl()
+        if target_url.startswith('http'):
+            target_url = 'ws' + target_url[len('http'):]
 
+        # The runtime negotiates a subprotocol and stays silent until one it
+        # knows is offered. v4 is what carries five channels -- stdin, stdout,
+        # stderr, error and, the reason a terminal is usable at all, resize.
+        client = WebSocketClient(host_url=target_url,
+                                 subprotocols=[V4_CHANNEL_PROTOCOL])
+        client.connect()
+        self.target = client
         try:
-            self.do_proxy(tsock)
+            self.do_websocket_proxy(client.ws)
         finally:
-            if tsock:
-                tsock.shutdown(socket.SHUT_RDWR)
-                tsock.close()
-                self.vmsg(_("%s: Closed target") % exec_instance.url)
+            if client.ws:
+                client.ws.close()
+            self.vmsg(_("%s: Closed target") % exec_instance.url)
 
     def _verify_origin(self, access_url):
         # Verify Origin

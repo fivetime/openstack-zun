@@ -176,9 +176,13 @@ class API(object):
         data = self.rpcapi.container_exec(context, container, *args)
         token = data.pop('token', None)
         exec_id = data.get('exec_id')
+        # The node running the container says which proxy reaches it; only it
+        # knows. Falling back to this service's own setting keeps a
+        # single-host deployment working, and is wrong on any other.
+        base = data.pop('proxy_base', None) or CONF.websocket_proxy.base_url
         if token:
             data['proxy_url'] = '%s?token=%s&uuid=%s&exec_id=%s' % (
-                CONF.websocket_proxy.base_url, token, container.uuid, exec_id)
+                base, token, container.uuid, exec_id)
         else:
             data['proxy_url'] = None
         return data

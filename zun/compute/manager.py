@@ -872,19 +872,29 @@ class Manager(periodic_task.PeriodicTasks):
     def container_exec(self, context, container, command, run, interactive):
         LOG.debug('Executing command in container: %s', container.uuid)
         try:
-            # NOTE(hongbin): capsule shouldn't reach here
-            exec_id = self.driver.execute_create(context, container, command,
-                                                 interactive)
+            # By the container's own type, not by which driver this service
+            # was configured with: a capsule's container is served by the
+            # capsule driver even on a host whose container driver is
+            # something else, and reaching the wrong one execs into nothing.
+            driver = self._get_driver(container)
+            exec_id = driver.execute_create(context, container, command,
+                                            interactive)
             if run:
-                # NOTE(hongbin): capsule shouldn't reach here
-                output, exit_code = self.driver.execute_run(exec_id, command)
+                output, exit_code = driver.execute_run(exec_id, command)
                 return {"output": output,
                         "exit_code": exit_code,
                         "exec_id": None,
                         "token": None}
             else:
                 token = uuidutils.generate_uuid()
-                url = CONF.docker.docker_remote_api_url
+                # Where the session actually lives. A runtime that serves its
+                # own streams answers with a URL of its own -- on this node's
+                # loopback, which is why something on this node has to proxy
+                # it -- and only a daemon-backed driver falls back to a
+                # configured endpoint.
+                url = getattr(driver, 'exec_stream_url', lambda h: None)(exec_id)
+                if not url:
+                    url = CONF.docker.docker_remote_api_url
                 exec_instace = objects.ExecInstance(
                     context, container_id=container.id, exec_id=exec_id,
                     url=url, token=token)
@@ -892,7 +902,14 @@ class Manager(periodic_task.PeriodicTasks):
                 return {'output': None,
                         'exit_code': None,
                         'exec_id': exec_id,
-                        'token': token}
+                        'token': token,
+                        # Which proxy to reach this session through. It is
+                        # this node's, and only this node's: the runtime
+                        # serves the stream on loopback here, so the proxy
+                        # that can reach it runs here too. The API cannot
+                        # know that from its own configuration -- it would
+                        # name its own host, which serves nothing.
+                        'proxy_base': CONF.websocket_proxy.base_url}
         except exception.DockerError as e:
             LOG.error("Error occurred while calling Docker exec API: %s",
                       str(e))

@@ -584,12 +584,16 @@ class CapsuleController(base.Controller):
 
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception
-    def execute(self, capsule_ident, container=None, run=True, **kwargs):
+    def execute(self, capsule_ident, container=None, run=True,
+                interactive=False, **kwargs):
         """Run a command in a container of the given capsule.
 
         :param capsule_ident: UUID or Name of a capsule.
         :param container: Name or UUID of a container within the capsule.
         :param run: Run the command immediately and return its output.
+        :param interactive: Keep stdin open and allocate a terminal. The
+            answer is then a proxy url to attach to rather than output: there
+            is no output yet, and there will not be until someone types.
         """
         capsule = api_utils.get_resource('Capsule', capsule_ident)
         check_policy_on_capsule(capsule.as_dict(), "capsule:execute")
@@ -604,9 +608,16 @@ class CapsuleController(base.Controller):
 
         try:
             run = strutils.bool_from_string(run, strict=True)
+            interactive = strutils.bool_from_string(interactive, strict=True)
         except ValueError:
             bools = ', '.join(strutils.TRUE_STRINGS + strutils.FALSE_STRINGS)
-            raise exception.InvalidValue(_('Valid run values are: %s') % bools)
+            raise exception.InvalidValue(
+                _('Valid run and interactive values are: %s') % bools)
+        if run and interactive:
+            raise exception.Invalid(_(
+                'run and interactive are mutually exclusive: one waits for '
+                'the command to finish, the other hands back a session to '
+                'type into'))
 
         if not capsule.host:
             raise exception.Invalid(
@@ -617,7 +628,8 @@ class CapsuleController(base.Controller):
 
         context = pecan.request.context
         compute_api = pecan.request.compute_api
-        return compute_api.container_exec(context, target, command, run, False)
+        return compute_api.container_exec(context, target, command, run,
+                                          interactive)
 
     @staticmethod
     def _find_container(capsule, ident):

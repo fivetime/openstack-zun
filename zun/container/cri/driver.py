@@ -603,13 +603,64 @@ class CriDriver(driver.BaseDriver, driver.CapsuleDriver):
         container id is handed back as the handle execute_run expects.
         """
         if interactive:
-            # An interactive session needs the runtime's streaming Exec and a
-            # URL to attach to, which is a different endpoint from the one used
-            # here. Refused rather than run non-interactively, which would hang
-            # a caller waiting to type.
-            raise exception.Invalid(
-                _('Interactive exec is not supported on a capsule'))
+            return self._create_streaming_exec(container, command)
         return container.container_id
+
+    def _create_streaming_exec(self, container, command):
+        """Ask the runtime for a URL an interactive session can attach to.
+
+        Exec, not ExecSync. ExecSync runs the command to completion and hands
+        back everything at once, which is the right shape for a probe and the
+        wrong one for a terminal: there is nothing to type into. Exec returns a
+        URL served by the runtime's own streaming server, which already speaks
+        the protocol kubectl expects -- five channels over one websocket,
+        stdin, stdout, stderr, error and resize.
+
+        Resize needs no call of its own here. The CRI has no resize RPC: a
+        terminal's new size travels on the stream's fifth channel and the
+        runtime applies it. Anything that proxies the stream byte for byte
+        carries it for free.
+
+        The URL is where the runtime put it -- loopback on this node, a random
+        port -- so it is only useful to something running here. That is the
+        whole reason the proxy exists.
+        """
+        if isinstance(command, str):
+            command = [command]
+        response = self.runtime_stub.Exec(api_pb2.ExecRequest(
+            container_id=container.container_id,
+            cmd=list(command or []),
+            tty=True,
+            stdin=True,
+            stdout=True,
+            stderr=False,  # A tty merges stderr into stdout; asking for both
+                           # is refused by the runtime.
+        ))
+        if not response.url:
+            raise exception.ZunException(_(
+                'the runtime returned no streaming url for an interactive '
+                'exec'))
+        return response.url
+
+    def exec_stream_url(self, exec_id):
+        """Where an interactive session made by execute_create is served.
+
+        For this driver the handle IS the url: the runtime hands one back and
+        there is nothing else to remember it by.
+        """
+        return exec_id
+
+    def execute_resize(self, exec_id, height, width):
+        """Not a call here: see _create_streaming_exec.
+
+        A terminal resize travels on the exec stream itself, which the runtime
+        reads and applies. Answering with an error rather than silently doing
+        nothing, because a caller reaching this has a resize that would
+        otherwise be lost with no sign of it.
+        """
+        raise exception.OperationNotSupported(message=_(
+            'a terminal resize travels on the exec stream and needs no '
+            'separate call'))
 
     def execute_run(self, exec_id, command):
         # Bounded well below the RPC reply timeout. A command that outlives
