@@ -130,32 +130,58 @@ ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
 
 ### 4.3.1 CRI 能做什么,做不到什么
 
-**按 `RuntimeService` 的 37 个 RPC 划线,不按"薄不薄"猜。**之前把
-pause/unpause 列进"第二档,都薄"是错的——CRI **根本没有 pause 这个调用**。
+**按能力划线,不按"薄不薄"猜。**⚠️ 曾把 pause/unpause 列进"第二档,都薄",
+错在两头:它们不薄(CRI 没有这个 RPC),但也不是做不到(**containerd 有**)。
 
 | ContainerDriver 方法 | 状态 |
 |---|---|
-| create/delete/start/stop/show/list/`get_websocket_url`/镜像 | **已实现并实测** |
-| reboot / kill / update / stats / top | **已实现并实测** |
-| **pause / unpause** | **做不到**:CRI 无对应 RPC |
-| **resize**(tty 尺寸) | **做不到**:CRI 无 resize;尺寸走流内第五通道 |
-| **network_attach / network_detach** | **做不到**:沙箱的网络在创建时定死 |
+| create/delete/start/stop/show/list/`get_websocket_url`/镜像 | 已实现并实测 |
+| reboot / update / stats / top | 已实现并实测(CRI) |
+| **pause / unpause / kill(带信号)** | 已实现并实测(**containerd task API**,见 §4.3.2) |
+| **resize**(tty 尺寸) | **做不到**,见下 |
+| **network_attach / network_detach** | **做不到**,见下 |
 | commit / get_archive / put_archive | 做不到,且无需求 |
 
-⚠️ 几处**语义不等价**,不是实现细节:
+#### 真正做不到的两项(以及为什么不是"还没做")
 
-- **`kill` 不是 docker 的 kill**。CRI 只能"停",不能"发信号"。SIGKILL/SIGTERM
-  恰好可以表达成"停"(有无宽限期),**其他信号不行**——用 SIGHUP 让服务重载配置
-  在这里没有对应物,而"那就把容器停了"是用杀掉工作负载来回答一个重载请求。
-  所以其他信号明确报错,不静默降级。
-- **stop/start 与 reboot 会丢掉可写层**。CRI 不能重启已退出的容器,只能在原沙箱里
+- **`resize`**。终端尺寸**已经**能改——它走流内第五通道,`kubectl exec -it` 里
+  实测好使。够不到的是**从流外面改**:REST 的 resize 是另一条连接,而 proxy 没有
+  会话表把它和某个开着的流对上;运行时也没有这个调用。要做就是给 wsproxy 加会话
+  跟踪,是架构改动不是补方法。**现在明确报错并说明原因**,不返回 500。
+- **`network_attach` / `network_detach`**。沙箱的网络在创建时定死。kata 内部确实有
+  `Sandbox.AddInterface`(`virtcontainers/sandbox.go:1245`),但 **shim 的管理接口
+  只暴露 `/direct-volume/resize` 一类,不暴露它**;CRI 也不会对运行中的 sandbox
+  重跑 CNI。要做就得绕开 CRI 直接操 os-vif + kata 热插,那是另一个架构决定。
+
+#### 几处语义不等价(不是实现细节)
+
+- **pause 不释放任何东西**。链路:shim `Pause` → `Sandbox.PauseContainer` → agent
+  `pause_container`(`src/agent/src/rpc.rs:972`)→ `LinuxContainer::pause`
+  (`rustjail/src/container.rs:306`)→ **freezer cgroup**。⚠️ 冻结发生在
+  **guest 内部**,宿主机毫不知情:VMM 照旧持有整块 guest RAM,Placement 的 claim
+  一动不动。省下的只有 CPU 时间。**产品文案不能让它读起来像"暂停就不计费"。**
+- **stop/start 与 reboot 会丢掉可写层**。CRI 不能重启已退出的容器,只能在原沙箱
   重建;**地址保住了**(地址属于沙箱),**文件没保住**(docker 的 restart 保得住)。
-  marker 文件实测:reboot 后 `/tmp/before-reboot` 不见了。
-- **`stats` 的 CPU 必须采两次**。运行时给的是累计纳秒计数器,单次采样除以任何东西
-  都得不到百分比——只会得到一个长得像百分比的数。BLOCK/NET I/O 运行时不记,报
-  `-/-` 而不是 0(0 读起来是"空闲",不是"没人量过")。
+  marker 文件实测。
+- **`stats` 的 CPU 必须采两次**。运行时给的是累计纳秒计数器。BLOCK/NET I/O 运行时
+  不记,报 `-/-` 而不是 0——0 读起来是"空闲",不是"没人量过"。
 
-### 4.3.2 两次"服务两种形态"打断了 capsule
+### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
+
+**定案:只对"CRI 之外别无他处"的调用越界。**CRI 服务得了的,一律走 CRI。
+
+containerd 的 task 服务在**同一个 socket** 上,kata 的 shim v2 实实在在实现了
+Pause/Resume(`containerd-shim-v2/service.go:709`/`:750`)。所以驱动对一个运行时
+说两种协议。
+
+- `zun/criapi/tasks.proto` **不是** containerd 那份文件的拷贝:只声明需要的四个调用,
+  字段号和服务名与上游一致——线格式要一致的就这些。照搬原文件会为了三个只装着
+  container id 的请求,拖进 mounts/descriptors/metrics 一整棵类型树。
+- ⚠️ **每个调用都要带 `containerd-namespace: k8s.io` 头**
+  (`containerd/pkg/namespaces/grpc.go:27`)。不带,containerd 去默认命名空间找,
+  对一个明明在跑的容器回"不存在"。
+
+### 4.3.3 两次"服务两种形态"打断了 capsule
 
 都在共享代码上,都只伤新建、不伤在跑的,所以**极易漏过**:
 
@@ -167,7 +193,7 @@ pause/unpause 列进"第二档,都薄"是错的——CRI **根本没有 pause �
    `kubernetes/pause`——那不是一个真镜像。**调用方依赖的能力必须被声明,不能从类
    的形状推断**(现为 `pulls_own_images`,且按对象自己的驱动读)。
 
-### 4.3.3 验收方法:202 不是证据
+### 4.3.4 验收方法:状态不变不是证据
 
 ⚠️ **没实现的动作照样回 202**——API 只负责受理,`NotImplementedError` 发生在
 计算节点上,调用方看不到。首轮 22 项里有**三项通过却什么都没做**:`reboot` 的
@@ -175,10 +201,22 @@ pause/unpause 列进"第二档,都薄"是错的——CRI **根本没有 pause �
 没人看过地址。
 
 **当"成功"和"静默无操作"产生同一个状态时,判据必须去找动作发生过的证据。**
-(同一个陷阱咬了两次:第二轮我用 `started_at` 判 reboot,而那个字段根本不在租户
-视图里,于是 `None -> None` 又给了一个错误结论。最后用 marker 文件才判准。)
 
-### 4.3.4 契约测试
+⚠️ **这个陷阱一共咬了四次,后三次都是判据本身写错:**
+
+1. 三项通过却什么都没做(上面那三个)。
+2. 用 `started_at` 判 reboot ——那个字段被策略从租户视图里剥掉了,`None -> None`
+   把一个正常工作的 reboot 判成无操作。最后用 **marker 文件**才判准
+   (顺带证明了重建会丢可写层)。
+3. kill 之后等 `Running / Stopped / Exited` ——把 `Running` 也算进"可接受终态",
+   于是 wait 在信号落地前就返回,后面每一步都跑在没人检查过的状态上,
+   **一个正确的 rebuild 被判成坏的**。
+4. ⚠️ **有一轮失败的检查,后面两轮原样重跑全过,中间什么都没改**。这套测试有真实的
+   偶发性,**单独一轮全绿不算证据**。查偶发之前,先确认自己看的是不是同一个东西。
+
+**判据错的时候,失败和通过一样没有信息量。**
+
+### 4.3.5 契约测试
 
 按 **zun-ui 实际调用的 19 个容器方法**(`zun_ui/api/client.py`)打,不是 api-ref
 的 28 个端点。凭据用租户 **application credential**——admin 令牌会让 `list` 这项
