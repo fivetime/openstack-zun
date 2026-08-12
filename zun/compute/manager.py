@@ -1078,6 +1078,36 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
+    def capsule_extend_volume(self, context, capsule, volume_id, requested_gib):
+        """Grow a capsule's block volume after Cinder has grown it.
+
+        ⚠️ The caller has already extended the volume; this is the half that
+        can only be done where the volume is attached. os-brick makes the
+        kernel see the new size and the filesystem is grown on top of it --
+        and until that happens the pod sees the old size however large the
+        volume is, which is indistinguishable from an expansion that did not
+        work.
+        """
+        LOG.debug('Extending volume %(vol)s of capsule %(cap)s to %(gib)sGiB',
+                  {'vol': volume_id, 'cap': capsule.uuid, 'gib': requested_gib})
+        # ⚠️ A capsule's volumes belong to the containers inside it, not to the
+        # capsule: that is how they are attached (_attach_volumes_for_capsule),
+        # so it is how they have to be found. Looking them up under the
+        # capsule's own uuid finds nothing and reads as "not attached here".
+        driver = self._get_driver(capsule)
+        found = False
+        for c in list(capsule.init_containers or []) + list(capsule.containers or []):
+            for volmap in objects.VolumeMapping.list_by_container(context, c.uuid):
+                if volmap.cinder_volume_id != volume_id:
+                    continue
+                driver.extend_volume(context.elevated(), volmap,
+                                     int(requested_gib))
+                found = True
+        if not found:
+            raise exception.ZunException(_(
+                'capsule %(cap)s has no volume %(vol)s attached here')
+                % {'cap': capsule.uuid, 'vol': volume_id})
+
     def capsule_update_file(self, context, capsule, container_path, contents):
         """Replace the contents of one of a capsule's file volumes, in place.
 

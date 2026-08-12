@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    ``POST /v1/capsules/{capsule_ident}/extend_volume`` makes a capsule see a
+    volume that has already been grown: os-brick is asked to re-read the device
+    and the filesystem on it is grown. The volume itself is not extended here --
+    whoever owns the claim owns the size -- and until this runs the workload
+    sees the old size however large the volume is, which is indistinguishable
+    from an expansion that failed.

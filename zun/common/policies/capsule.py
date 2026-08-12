@@ -99,6 +99,17 @@ rules = [
         ]
     ),
     policy.DocumentedRuleDefault(
+        name=CAPSULE % 'extend_volume',
+        check_str=base.RULE_ADMIN_OR_OWNER,
+        description='Make a capsule see a volume that has been grown.',
+        operations=[
+            {
+                'path': '/v1/capsules/{capsule_ident}/extend_volume',
+                'method': 'POST'
+            }
+        ]
+    ),
+    policy.DocumentedRuleDefault(
         name=CAPSULE % 'update_file',
         check_str=base.RULE_ADMIN_OR_OWNER,
         description='Replace the contents of a capsule file volume.',

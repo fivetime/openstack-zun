@@ -182,6 +182,11 @@ class API(rpc_service.API):
         return self._call(capsule.host, 'capsule_stats', capsule=capsule)
 
     @check_container_host
+    def capsule_extend_volume(self, context, capsule, volume_id, requested_gib):
+        return self._call(capsule.host, 'capsule_extend_volume',
+                          capsule=capsule, volume_id=volume_id,
+                          requested_gib=requested_gib)
+
     def capsule_update_file(self, context, capsule, container_path, contents):
         return self._call(capsule.host, 'capsule_update_file', capsule=capsule,
                           container_path=container_path, contents=contents)

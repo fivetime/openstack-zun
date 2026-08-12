@@ -529,6 +529,38 @@ class Cinder(VolumeDriver):
                 except Exception:
                     LOG.exception("Failed to detach volume")
 
+    def extend(self, context, volmap, requested_gib):
+        """Grow the filesystem after Cinder has grown the device.
+
+        Two steps, and the second is ours alone. os-brick makes the kernel see
+        the larger device; then the filesystem inside it has to be grown, and
+        ⚠️ that step exists here and not in nova because of where the
+        filesystem lives. Nova hands a raw device to a virtual machine whose
+        guest kernel grows it. This mounts the filesystem on the compute node
+        and bind mounts the directory into the capsule, so the node is the only
+        place that can.
+
+        Until this runs, a pod sees the old size however large the volume is --
+        which looks exactly like an expansion that did not happen.
+        """
+        if not volmap.connection_info:
+            raise exception.ZunException(_(
+                'volume %s has no connection on this node') % volmap.volume.uuid)
+        conn_info = jsonutils.loads(volmap.connection_info)
+        cinder = cinder_workflow.CinderWorkflow(context)
+        cinder.extend_volume(conn_info, requested_gib)
+
+        devpath = conn_info['data'].get('device_path')
+        mountpoint = mount.get_mountpoint(volmap.volume.uuid)
+        if not devpath or not os.path.ismount(mountpoint):
+            # Grown where it is attached but not mounted: nothing to resize
+            # here, and the next mount reads the new size anyway.
+            return
+        # ⚠️ resize2fs on a mounted ext4 grows it online; the same call on an
+        # unmounted one also works. What it will not do is shrink, which is
+        # why this is only ever reached for a request that is larger.
+        utils.execute('resize2fs', devpath, run_as_root=True)
+
     def _mount_device(self, volmap, devpath):
         mountpoint = mount.get_mountpoint(volmap.volume.uuid)
         fileutils.ensure_tree(mountpoint)

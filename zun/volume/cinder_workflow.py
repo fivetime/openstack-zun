@@ -142,6 +142,34 @@ class CinderWorkflow(object):
         device_info = connector.connect_volume(conn_info['data'])
         return device_info
 
+    def extend_volume(self, conn_info, requested_gib):
+        """Make the kernel see a volume that Cinder has already grown.
+
+        ⚠️ os-brick does the rescan, per connection type -- iSCSI re-reads the
+        session, rbd refreshes the image, and so on. Writing that here would be
+        reimplementing what the library exists for; the CSI driver only does so
+        because Go cannot call it (cloud-provider-openstack
+        pkg/csi/cinder/nodeserver.go:397-404).
+
+        ⚠️ And the size it reports back is checked, not assumed. An expansion
+        that quietly did less than was asked for is found when the filesystem
+        fills, a long way from anything that would explain it. Same reason nova
+        raises here (nova/virt/incus/driver.py:12812-12820).
+        """
+        protocol = conn_info['driver_volume_type']
+        connector = get_volume_connector(protocol)
+        try:
+            new_size = connector.extend_volume(conn_info['data'])
+        except NotImplementedError:
+            raise exception.ZunException(_(
+                'The %s connector cannot extend a volume in place') % protocol)
+        wanted = requested_gib * 1024 * 1024 * 1024
+        if new_size is None or new_size < wanted:
+            raise exception.ZunException(_(
+                'os-brick reported %(got)s bytes after extending; at least '
+                '%(want)s were expected') % {'got': new_size, 'want': wanted})
+        return new_size
+
     def _disconnect_volume(self, conn_info):
         protocol = conn_info['driver_volume_type']
         connector = get_volume_connector(protocol)

@@ -161,6 +161,7 @@ class CapsuleController(base.Controller):
         'execute': ['POST'],
         'stats': ['GET'],
         'update_file': ['POST'],
+        'extend_volume': ['POST'],
     }
 
     @base.Controller.api_version("1.1", "1.31")
@@ -568,6 +569,32 @@ class CapsuleController(base.Controller):
         compute_api = pecan.request.compute_api
         return compute_api.container_logs(context, target, stdout, stderr,
                                           timestamps, tail, since)
+
+    @base.Controller.api_version("1.32")
+    @pecan.expose('json')
+    @exception.wrap_pecan_controller_exception
+    def extend_volume(self, capsule_ident, **kwargs):
+        """Grow one of a capsule's volumes, after the volume service has.
+
+        The caller extended the volume and this makes the capsule see it: the
+        kernel is told to re-read the device and the filesystem on it is grown.
+        ⚠️ Only the second half happens here -- this does not extend the volume
+        itself, because whoever owns the claim owns the size.
+        """
+        capsule = api_utils.get_resource('Capsule', capsule_ident)
+        check_policy_on_capsule(capsule.as_dict(), 'capsule:extend_volume')
+        volume_id = kwargs.get('volume_id')
+        size = kwargs.get('size')
+        if not volume_id or not size:
+            raise exception.InvalidValue(_(
+                'both volume_id and size are required to extend a volume'))
+        try:
+            requested = int(size)
+        except (TypeError, ValueError):
+            raise exception.InvalidValue(_('size must be a whole number of GiB'))
+        context = pecan.request.context
+        pecan.request.compute_api.capsule_extend_volume(
+            context, capsule, volume_id, requested)
 
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception

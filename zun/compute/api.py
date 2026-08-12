@@ -236,6 +236,10 @@ class API(object):
     def capsule_stats(self, context, capsule):
         return self.rpcapi.capsule_stats(context, capsule)
 
+    def capsule_extend_volume(self, context, capsule, volume_id, requested_gib):
+        return self.rpcapi.capsule_extend_volume(context, capsule, volume_id,
+                                                 requested_gib)
+
     def capsule_update_file(self, context, capsule, container_path, contents):
         return self.rpcapi.capsule_update_file(context, capsule,
                                                container_path, contents)

@@ -186,6 +186,21 @@ class BaseDriver(object):
         volume_driver = self._get_volume_driver(volume_mapping)
         volume_driver.detach(context, volume_mapping)
 
+    def extend_volume(self, context, volume_mapping, requested_gib):
+        """Grow an attached volume in place.
+
+        Not every volume kind can be: a share is grown by the file server and
+        never touched here, and an emptyDir has no size to grow. The driver
+        that can says so by implementing it.
+        """
+        volume_driver = self._get_volume_driver(volume_mapping)
+        extend = getattr(volume_driver, 'extend', None)
+        if extend is None:
+            raise exception.ZunException(_(
+                'volumes of type %s cannot be extended in place')
+                % volume_mapping.volume_provider)
+        extend(context, volume_mapping, requested_gib)
+
     def update_file_volume(self, context, volume_mapping, contents):
         volume_driver = self._get_volume_driver(volume_mapping)
         volume_driver.update_file(context, volume_mapping, contents)
