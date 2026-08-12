@@ -53,6 +53,33 @@ process, causing it to be repopulated the next time the data is accessed.
 Possible values:
 * Any positive integer in seconds, or zero to disable refresh.
 """),
+    cfg.BoolOpt(
+        'reclaim_orphan_ports',
+        default=True,
+        help='Whether to delete Neutron ports whose container no longer '
+             'exists. Only ports made for a capsule whose real owner is '
+             'outside Zun -- a Kubernetes pod today -- are ever considered; '
+             'what a tenant created through the Zun API is theirs, and a port '
+             'they meant to keep is indistinguishable from one they forgot. '
+             'A port is created with its container and deleted with it, so '
+             'these appear only when a delete failed before it got that far, '
+             'and then nothing is left that could ever connect the two again: '
+             'the container row is hard-deleted. They end at "no address '
+             'available" on a subnet, pointing at nothing.'),
+    cfg.IntOpt(
+        'reclaim_orphan_ports_interval',
+        default=900,
+        help='Seconds between sweeps for ports whose container is gone. '
+             'Nothing is harmed by one outliving its container for a quarter '
+             'of an hour, and listing every port on the host is not free.'),
+    cfg.IntOpt(
+        'reclaim_orphan_ports_grace',
+        default=600,
+        help='How old a port must be before a missing container is taken as '
+             'evidence that it was orphaned. A port made moments ago belongs '
+             'to a container being created right now, whose row this node may '
+             'simply not have read yet -- deleting it takes the network from '
+             'a workload that is starting normally.'),
     cfg.IntOpt(
         'reclaim_node_resources_interval',
         default=600,

@@ -1,0 +1,17 @@
+---
+fixes:
+  - |
+    Neutron ports whose container no longer exists are now collected by a
+    periodic task on the compute node. A port is created with its container and
+    deleted with it, so these appear only when a delete failed before it got
+    that far -- and once the container row is gone, nothing was left that could
+    connect the two again. They end at "no address available" on a subnet, with
+    nothing at that point pointing back at the capsule that leaked them.
+upgrade:
+  - |
+    Only ports made for a capsule whose authority lies outside Zun are ever
+    considered, identified by a marker written into the port's description when
+    it is created. Ports created before this release carry no marker and are
+    left alone; an operator wanting them back must remove them by hand.
+    Controlled by ``[compute] reclaim_orphan_ports``, on by default, with
+    ``reclaim_orphan_ports_interval`` and ``reclaim_orphan_ports_grace``.

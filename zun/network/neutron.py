@@ -35,6 +35,29 @@ CONF = zun.conf.CONF
 LOG = logging.getLogger(__name__)
 
 
+# PORT_OWNER_PREFIX marks a port made for a capsule that something else is the
+# authority for -- today, a Kubernetes pod by way of kubezun. It is written
+# into the port's description because the description survives the container
+# row, and after that row is gone there is nothing else left to ask.
+PORT_OWNER_PREFIX = 'managed-by:'
+
+
+def _managed_by(container):
+    """Who is the authority for this container, if it is not Zun itself.
+
+    Read from the labels its creator set. A capsule made straight through the
+    Zun API carries none of them, which is the point: this platform reclaims
+    the ports of capsules whose real owner is a Kubernetes pod that no longer
+    exists, and does not touch what a tenant made for its own reasons.
+    """
+    labels = getattr(container, 'labels', None) or {}
+    namespace = labels.get('knaas.io/pod-namespace')
+    name = labels.get('knaas.io/pod-name')
+    if not namespace or not name:
+        return None
+    return '%skubezun %s/%s' % (PORT_OWNER_PREFIX, namespace, name)
+
+
 class NeutronAPI(object):
 
     def __init__(self, context):
@@ -103,6 +126,15 @@ class NeutronAPI(object):
                 'tenant_id': self.context.project_id,
                 'device_id': container.uuid,
             }
+            # ⚠️ Said at creation, in the same call, and not as a tag applied
+            # afterwards. A second call leaves a window in which the port
+            # exists carrying nothing -- and a port carrying nothing, once its
+            # container row is gone, is exactly the untraceable orphan this
+            # exists to prevent. A window that produces the thing you are
+            # preventing is not a small window.
+            owner = _managed_by(container)
+            if owner:
+                port_dict['description'] = owner
             if set_binding_host:
                 port_dict['device_owner'] = device_owner
                 port_dict[consts.BINDING_HOST_ID] = container.host

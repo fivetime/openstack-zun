@@ -1381,6 +1381,82 @@ class Manager(periodic_task.PeriodicTasks):
             ctx, objects.Capsule.list_by_host(ctx, self.host))
 
     @periodic_task.periodic_task(
+        spacing=CONF.compute.reclaim_orphan_ports_interval)
+    @context.set_context
+    def reclaim_orphan_ports(self, ctx):
+        """Delete Neutron ports whose container no longer exists.
+
+        A port is created for a container and deleted with it. When the delete
+        path fails before it gets that far -- and for five days it did, waiting
+        on a shim that was gone -- the port outlives everything that knows
+        about it: the container row is hard-deleted, so nothing is left that
+        could ever connect the two again. Measured here: 136 such ports on one
+        tenant, against 8 running pods, on a /24 where 152 of 253 addresses
+        were spoken for. The wall this ends at is "no address available", and
+        nothing at that point points back at a capsule deleted last week.
+
+        ⚠️ Only ports whose real owner is something outside Zun -- today a
+        Kubernetes pod, marked at creation by network/neutron.py. A capsule or
+        container a tenant made through the Zun API is theirs: its port may be
+        one they mean to keep, and this has no way to know. Zun's own leak is
+        not a licence to tidy somebody else's project.
+        """
+        if not CONF.compute.reclaim_orphan_ports:
+            return
+
+        # ⚠️ The context the decorator handed in, not a fresh admin one.
+        # set_context builds it with all_projects=True; get_admin_context()
+        # defaults to False, and a container list missing every other tenant's
+        # rows would make their ports look orphaned and delete them.
+        neutron_api = neutron.NeutronAPI(ctx)
+        try:
+            ports = neutron_api.list_ports(
+                device_owner=consts.DEVICE_OWNER_ZUN,
+                **{consts.BINDING_HOST_ID: self.host})['ports']
+        except Exception as e:
+            LOG.warning('Orphan port sweep skipped: %s', str(e))
+            return
+
+        # Every container this deployment knows of, not just this host's: a
+        # port bound here can belong to a container the database has moved,
+        # and deleting it because this node has not heard of it would take the
+        # network from a container that is running somewhere else.
+        known = {c.uuid for c in objects.Container.list(ctx)}
+
+        now = timeutils.utcnow()
+        for port in ports:
+            if not (port.get('description') or '').startswith(
+                    neutron.PORT_OWNER_PREFIX):
+                continue
+            if port.get('device_id') in known:
+                continue
+            if port.get('status') != 'DOWN':
+                # Still carrying traffic. Whatever the database thinks, that
+                # is not an orphan.
+                continue
+            created = port.get('created_at')
+            if created:
+                try:
+                    age = now - timeutils.parse_isotime(created).replace(
+                        tzinfo=None)
+                except (ValueError, TypeError):
+                    continue
+                if age.total_seconds() < CONF.compute.reclaim_orphan_ports_grace:
+                    # A port made moments ago belongs to a container being
+                    # created right now, whose row this may simply not have
+                    # read yet.
+                    continue
+            LOG.info('Deleting orphan port %(port)s: it was made for '
+                     '%(owner)s and its container %(device)s is gone',
+                     {'port': port['id'], 'owner': port['description'],
+                      'device': port.get('device_id')})
+            try:
+                neutron_api.delete_port(port['id'])
+            except Exception as e:
+                LOG.warning('Could not delete orphan port %(port)s: %(err)s',
+                            {'port': port['id'], 'err': str(e)})
+
+    @periodic_task.periodic_task(
         spacing=CONF.compute.reclaim_node_resources_interval)
     @context.set_context
     def reclaim_orphan_node_resources(self, ctx):
