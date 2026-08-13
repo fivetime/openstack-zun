@@ -651,8 +651,15 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     container.container_id):
                 return
             container.status = consts.RUNNING
+            if (container.status_detail or '').startswith('exit:'):
+                # A recorded exit belongs to a previous run of this container
+                # (a probe restart makes a new one under the same record);
+                # carrying it into a running container would report the old
+                # death on the living.
+                container.status_detail = None
         elif state == api_pb2.ContainerState.CONTAINER_EXITED:
             container.status = consts.STOPPED
+            self._record_exit(container)
         elif state == api_pb2.ContainerState.CONTAINER_UNKNOWN:
             LOG.debug('State is unknown, status: %s', state)
             container.status = consts.UNKNOWN
@@ -660,6 +667,42 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             LOG.warning('Receive unexpected state from CRI runtime: %s', state)
             container.status = consts.UNKNOWN
             container.status_reason = "container state unknown"
+
+    def _record_exit(self, container):
+        """Record how a container exited, in status_detail as "exit:<code>".
+
+        The listing this sync reads carries only the state, not the code --
+        CRI's ListContainers response has no exit_code field -- so a stopped
+        container needs one ContainerStatus call to learn it. Without this the
+        record says STOPPED and nothing else, and the consumer above (kubezun)
+        can only guess from the status name; it guessed 0, which is the code
+        callers read as success. A Job whose command failed was judged
+        Completed. Recording the code is what lets a failure look like one.
+
+        Recorded once per run: the marker is cleared when the container runs
+        again, so a re-exit re-records. A failed status call leaves the detail
+        empty rather than wrong -- absent means "was never told", and the
+        consumer falls back to its status-name heuristic, which is the honest
+        remainder.
+        """
+        if (container.status_detail or '').startswith('exit:'):
+            return
+        try:
+            resp = self.runtime_stub.ContainerStatus(
+                api_pb2.ContainerStatusRequest(
+                    container_id=container.container_id))
+        except grpc.RpcError as e:
+            LOG.warning('Could not read the exit status of %(id)s: %(err)s',
+                        {'id': container.container_id, 'err': e})
+            return
+        st = resp.status
+        container.status_detail = 'exit:%d' % st.exit_code
+        if st.started_at:
+            # Nanoseconds since the epoch; kubezun reports it as the
+            # container's startedAt, which was null for every capsule
+            # container before this.
+            container.started_at = datetime.datetime.utcfromtimestamp(
+                st.started_at / 1e9)
 
     def _still_paused(self, container_id):
         status = self._task_status(container_id)
