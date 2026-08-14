@@ -27,6 +27,7 @@ from zun.scheduler import driver
 from zun.scheduler import filters
 from zun.scheduler.host_state import HostState
 from zun.scheduler import utils
+from zun.scheduler import weights
 
 
 CONF = zun.conf.CONF
@@ -76,6 +77,14 @@ class FilterScheduler(driver.Scheduler):
         if not hosts:
             msg = _("Is the appropriate service running?")
             raise exception.NoValidHost(reason=msg)
+
+        # Order, do not filter: capsules sharing an owner spread across hosts,
+        # and a host carrying the whole owner already still schedules when it
+        # is the only one that can claim. Before this, hosts were tried in
+        # arbitrary order and the first claim won -- the comment below about a
+        # "sorted list" described Nova, not this code, and the measured result
+        # was every replica of a StatefulSet stacked on one machine.
+        hosts = weights.order_hosts(context, hosts, container)
 
         # Attempt to claim the resources against one or more resource
         # providers, looping over the sorted list of possible hosts
