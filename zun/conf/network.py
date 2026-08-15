@@ -24,6 +24,12 @@ network_opts = [
                default='kuryr',
                help=('The network plugin driver name, you can find it by'
                      ' docker plugin list.')),
+    cfg.IntOpt('stale_network_min_age',
+               default=120,
+               help='Seconds a docker network row must have existed before '
+                    'it may be treated as stale when docker no longer has '
+                    'the network. Below this age the row is assumed to '
+                    'belong to a create still in flight.'),
 ]
 
 ALL_OPTS = (network_opts)

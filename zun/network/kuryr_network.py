@@ -17,6 +17,7 @@ import time
 from neutronclient.common import exceptions
 from oslo_log import log as logging
 from oslo_utils import excutils
+from oslo_utils import timeutils
 
 from zun.common import consts
 from zun.common import exception
@@ -157,11 +158,31 @@ class KuryrNetwork(network.Network):
                 LOG.debug("Network (%s) has already been created in docker",
                           network.name)
                 return networks[0]
-            else:
-                # Probably, there are concurrent requests on creating the
-                # network but the network is yet created in Docker.
-                # We return False and let the caller retry.
+
+            if networks and not docker_networks and self._is_stale(
+                    networks[0]):
+                # The row outlived the docker network it points at: the
+                # daemon's data root was wiped, or moved to another disk.
+                # Nothing will ever reconcile it, and while it stands every
+                # create on this network fails on a network that no longer
+                # exists. A young row is a concurrent create still in
+                # flight and must be left alone -- the age is what tells
+                # the two apart.
+                LOG.info("Removing stale network row %(uuid)s: docker has "
+                         "no network named %(name)s",
+                         {'uuid': networks[0].uuid, 'name': network.name})
+                try:
+                    networks[0].destroy()
+                except Exception as e:
+                    LOG.warning("Could not remove stale network row "
+                                "%(uuid)s: %(err)s",
+                                {'uuid': networks[0].uuid, 'err': e})
                 return False
+
+            # Probably, there are concurrent requests on creating the
+            # network but the network is yet created in Docker.
+            # We return False and let the caller retry.
+            return False
 
         LOG.debug("Calling docker.create_network to create network %s, "
                   "ipam_options %s, options %s",
@@ -181,6 +202,15 @@ class KuryrNetwork(network.Network):
         network.network_id = docker_network['Id']
         network.save()
         return network
+
+    @staticmethod
+    def _is_stale(network, min_age=CONF.network.stale_network_min_age):
+        """True when a network row is too old to be a create in flight."""
+        created_at = getattr(network, 'created_at', None)
+        if not created_at:
+            return False
+        return (timeutils.utcnow(with_timezone=bool(created_at.tzinfo)) -
+                created_at).total_seconds() > min_age
 
     def _get_subnet(self, subnets, ip_version):
         subnets = [s for s in subnets if s['ip_version'] == ip_version]

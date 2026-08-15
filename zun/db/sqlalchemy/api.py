@@ -1296,7 +1296,14 @@ class Connection(object):
                 session.add(network)
                 session.flush()
             except db_exc.DBDuplicateEntry as e:
-                if 'neutron_net_id' in e.columns:
+                # The constraint spans two columns and its index is named
+                # uniq_network0neutron_net_id_host, which oslo.db splits on
+                # '0' into the single pseudo-column 'neutron_net_id_host'.
+                # An equality test never matches it, so a duplicate on the
+                # real constraint was reported as a uuid collision and the
+                # caller's recovery path -- which only runs for
+                # neutron_net_id -- was skipped.
+                if any('neutron_net_id' in c for c in e.columns):
                     raise exception.NetworkAlreadyExists(
                         field='neutron_net_id', value=values['neutron_net_id'])
                 else:
