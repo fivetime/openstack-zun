@@ -104,6 +104,20 @@ class TestManager(base.TestCase):
         self.compute_manager = manager.Manager()
         self.compute_manager._resource_tracker = FakeResourceTracker()
 
+    @mock.patch.object(manager.utils, 'execute')
+    @mock.patch.object(manager.Manager, '_reclaim_orphan_mounts')
+    @mock.patch.object(VolumeMapping, 'list')
+    def test_reclaim_node_resources_never_scans_shared_rbd_devices(
+            self, mock_list, mock_reclaim_mounts, mock_execute):
+        mapping = mock.Mock()
+        mapping.volume.uuid = 'mapping-uuid'
+        mock_list.return_value = [mapping]
+
+        self.compute_manager.reclaim_orphan_node_resources(self.context)
+
+        mock_reclaim_mounts.assert_called_once()
+        mock_execute.assert_not_called()
+
     @mock.patch.object(Container, 'save')
     def test_init_container_sets_creating_error(self, mock_save):
         container = Container(self.context, **utils.get_test_container())

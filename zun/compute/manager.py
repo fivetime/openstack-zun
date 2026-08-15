@@ -19,7 +19,6 @@ import os
 import time
 
 from oslo_log import log as logging
-from oslo_serialization import jsonutils
 from oslo_service import periodic_task
 from oslo_utils import excutils
 from oslo_utils import timeutils
@@ -1525,28 +1524,19 @@ class Manager(periodic_task.PeriodicTasks):
     def reclaim_orphan_node_resources(self, ctx):
         """Release node resources whose volume mapping is gone.
 
-        A volume leaves two things on the node: a mount, and for a block
-        volume a mapped device. Both are supposed to go when it detaches, and
-        both stay if the service dies in the wrong second -- and once the
-        mapping row is gone, nothing will ever come looking for them again.
-
-        They are not cosmetic. A mapped rbd image keeps a watcher, and Ceph
-        refuses to delete an image that something is watching: the volume goes
-        to "available", the delete is rolled back, and what an operator sees is
-        a volume that cannot be removed with nothing holding it. Both shapes
-        happened here -- a leftover NFS mount from a service that crashed
-        mid-attach, and a mapped device that outlived its capsule by an hour.
+        A filesystem volume can leave a mount behind if the service dies after
+        deleting its mapping. Once the row is gone, nothing in the normal
+        detach path will look for that mount again.
 
         Only paths under this service's own volume directory are touched, and
-        only when no mapping claims them. Anything else on the node was put
-        there by someone else.
+        only when no mapping claims them. Kernel block-device inventories are
+        deliberately excluded: on a host shared with Nova, an RBD image name
+        does not prove that Zun owns the mapping.
         """
         try:
             volume_dir = CONF.volume.volume_dir
             mappings = objects.VolumeMapping.list(ctx)
             live = {m.volume.uuid for m in mappings}
-            cinder_ids = {m.cinder_volume_id for m in mappings
-                          if m.cinder_volume_id}
         except Exception as e:
             # An unreadable database reads as "nothing is live", which would
             # unmount every volume this node is serving.
@@ -1555,7 +1545,6 @@ class Manager(periodic_task.PeriodicTasks):
             return
 
         self._reclaim_orphan_mounts(volume_dir, live)
-        self._reclaim_orphan_rbd_devices(cinder_ids)
 
     def _reclaim_orphan_mounts(self, volume_dir, live):
         try:
@@ -1579,41 +1568,6 @@ class Manager(periodic_task.PeriodicTasks):
             except Exception as e:
                 LOG.warning('Could not unmount %(path)s: %(err)s',
                             {'path': path, 'err': e})
-
-    def _reclaim_orphan_rbd_devices(self, cinder_ids):
-        """Unmap rbd images no mapping claims.
-
-        The image name carries the Cinder volume id, which is what ties a
-        mapped device back to a mapping -- the mapping's own uuid never
-        reaches the device.
-        """
-        try:
-            out = utils.execute('rbd', 'showmapped', '--format', 'json',
-                                run_as_root=True)[0]
-            devices = jsonutils.loads(out or '[]')
-        except Exception as e:
-            # No rbd on this node, or no images mapped: both are the normal
-            # case on a deployment that does not use Ceph.
-            LOG.debug('Skipping rbd sweep: %s', str(e))
-            return
-
-        if isinstance(devices, dict):  # older rbd keys by index
-            devices = list(devices.values())
-
-        for dev in devices:
-            image = dev.get('name') or ''
-            device = dev.get('device')
-            if not image.startswith('volume-') or not device:
-                continue
-            if image[len('volume-'):] in cinder_ids:
-                continue
-            LOG.info('Unmapping %(device)s (%(image)s): no volume mapping '
-                     'claims it', {'device': device, 'image': image})
-            try:
-                utils.execute('rbd', 'unmap', device, run_as_root=True)
-            except Exception as e:
-                LOG.warning('Could not unmap %(device)s: %(err)s',
-                            {'device': device, 'err': e})
 
     @periodic_task.periodic_task(
         spacing=CONF.compute.reclaim_allocations_interval)

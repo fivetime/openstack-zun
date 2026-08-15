@@ -83,14 +83,12 @@ Possible values:
     cfg.IntOpt(
         'reclaim_node_resources_interval',
         default=600,
-        help='Seconds between sweeps that release node resources -- mounts and '
-             'mapped devices -- left behind by a volume whose mapping is gone. '
-             'They accumulate when the service dies between detaching a volume '
-             'and recording it, and nothing else ever collects them: a mapped '
-             'rbd image keeps a Ceph watcher, which makes the volume behind it '
-             'undeletable with nothing visibly holding it. A negative value '
-             'disables the sweep; zero does not -- oslo reads zero as "use the '
-             'default interval".'),
+        help='Seconds between sweeps that release mounts under the service '
+             'volume directory after their volume mapping is gone. Block '
+             'devices are not swept because their kernel inventory has no '
+             'service ownership marker on a host shared with Nova. A negative '
+             'value disables the sweep; zero does not -- oslo reads zero as '
+             '"use the default interval".'),
     cfg.IntOpt(
         'reclaim_allocations_interval',
         default=300,
