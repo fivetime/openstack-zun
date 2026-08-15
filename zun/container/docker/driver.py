@@ -317,6 +317,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             if container.disk:
                 disk_size = str(container.disk) + 'G'
                 host_config['storage_opt'] = {'size': disk_size}
+            self._apply_flavor_limits(container, host_config)
             if container.cpu_policy == 'dedicated':
                 host_config['cpuset_cpus'] = container.cpuset.cpuset_cpus
                 host_config['cpuset_mems'] = str(container.cpuset.cpuset_mems)
@@ -359,6 +360,72 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def node_support_disk_quota(self):
         return self.support_disk_quota
+
+    def _apply_flavor_limits(self, container, host_config):
+        """Translate the flavor limit fields into docker HostConfig.
+
+        Every field is optional; an absent one falls back to the operator
+        default where one exists (pids, swap) or to the runtime default.
+        The io device caps target the disk backing the docker data root,
+        resolved once per driver -- a container cannot name a device, so it
+        cannot throttle (or unthrottle) anything but its own rootfs path.
+        """
+        pids = container.pids_limit
+        if pids is None and CONF.docker.default_pids_limit > 0:
+            pids = CONF.docker.default_pids_limit
+        if pids is not None:
+            host_config['pids_limit'] = pids
+
+        # docker semantics: total = memory + swap; equal to memory = no swap,
+        # -1 = unlimited. Value is MB, same unit the API stores.
+        memswap = container.memory_swap
+        if memswap is None:
+            memswap = CONF.default_memory_swap
+        if memswap is not None:
+            if memswap == -1:
+                host_config['memswap_limit'] = -1
+            else:
+                host_config['memswap_limit'] = str(memswap) + 'M'
+
+        if container.blkio_weight is not None:
+            host_config['blkio_weight'] = container.blkio_weight
+
+        dev = None
+        caps = [('device_read_bps', container.device_read_bps),
+                ('device_write_bps', container.device_write_bps),
+                ('device_read_iops', container.device_read_iops),
+                ('device_write_iops', container.device_write_iops)]
+        if any(v is not None for _, v in caps):
+            dev = self._get_rootfs_device()
+        if dev:
+            for key, value in caps:
+                if value is not None:
+                    host_config[key] = [{'Path': dev, 'Rate': value}]
+
+    _rootfs_device = None
+
+    def _get_rootfs_device(self):
+        """The whole disk behind the docker data root, e.g. /dev/vda.
+
+        Throttle rules must name the disk, not the partition -- the io
+        controller matches bios at the disk level and a partition dev_t
+        silently matches nothing.
+        """
+        if self._rootfs_device:
+            return self._rootfs_device
+        try:
+            src, _ = utils.execute(
+                'findmnt', '-no', 'SOURCE', '--target',
+                CONF.docker.docker_data_root)
+            src = src.strip().split('[')[0]
+            pk, _ = utils.execute('lsblk', '-no', 'pkname', src)
+            pk = pk.strip().splitlines()[0].strip() if pk.strip() else ''
+            self._rootfs_device = '/dev/' + pk if pk else src
+        except Exception as e:
+            LOG.warning('Cannot resolve the docker data root device, '
+                        'io device caps will be skipped: %s', e)
+            return None
+        return self._rootfs_device
 
     def get_host_default_base_size(self):
         return self.base_device_size
@@ -907,7 +974,13 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         memory = patch.get('memory')
         if memory is not None:
             args['mem_limit'] = str(memory) + 'M'
-            args['memswap_limit'] = CONF.default_memory_swap
+            memswap = container.memory_swap
+            if memswap is None:
+                memswap = CONF.default_memory_swap
+            if memswap == -1 or memswap is None:
+                args['memswap_limit'] = -1
+            else:
+                args['memswap_limit'] = str(memswap) + 'M'
         cpu = patch.get('cpu')
         if cpu is not None:
             args['cpu_shares'] = int(1024 * cpu)

@@ -17,6 +17,7 @@ SQLAlchemy models for container service
 from oslo_db.sqlalchemy import models
 from oslo_serialization import jsonutils as json
 from oslo_utils import timeutils
+from sqlalchemy import BigInteger
 from sqlalchemy import Boolean
 from sqlalchemy import Column
 from sqlalchemy import DateTime
@@ -161,6 +162,15 @@ class Container(Base):
     runtime = Column(String(32))
     disk = Column(Integer, default=0)
     auto_heal = Column(Boolean, default=False)
+    # Flavor-driven per-container limits the BSS passes through the API.
+    # All nullable: absent means "operator default / runtime default".
+    pids_limit = Column(Integer, nullable=True)
+    memory_swap = Column(Integer, nullable=True)       # MB, -1 = unlimited
+    blkio_weight = Column(Integer, nullable=True)      # 10..1000 relative
+    device_read_bps = Column(BigInteger, nullable=True)   # bytes/s on rootfs dev
+    device_write_bps = Column(BigInteger, nullable=True)
+    device_read_iops = Column(Integer, nullable=True)
+    device_write_iops = Column(Integer, nullable=True)
     capsule_id = Column(Integer,
                         ForeignKey('container.id', ondelete='CASCADE'))
     started_at = Column(DateTime)

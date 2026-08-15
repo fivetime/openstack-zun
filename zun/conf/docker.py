@@ -57,6 +57,13 @@ docker_opts = [
                default='/var/lib/docker',
                deprecated_for_removal=True,
                help='Root directory of persistent Docker state.'),
+    cfg.IntOpt('default_pids_limit',
+               default=-1,
+               help='PidsLimit applied to containers that do not carry a '
+                    'pids_limit of their own. A fork bomb in a runc '
+                    'container exhausts the host PID table and scheduler '
+                    'with it, so a node serving untrusted tenants should '
+                    'set this. -1 leaves the runtime default (unlimited).'),
     cfg.StrOpt('default_registry',
                help='The default registry from which docker images are '
                     'pulled. Its value can be the registry domain name '

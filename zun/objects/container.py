@@ -97,6 +97,14 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
                                                  nullable=True),
         'disk': fields.IntegerField(nullable=True),
         'auto_heal': fields.BooleanField(nullable=True),
+        # flavor-driven per-container limits (see BSS flavor mapping)
+        'pids_limit': fields.IntegerField(nullable=True),
+        'memory_swap': fields.IntegerField(nullable=True),
+        'blkio_weight': fields.IntegerField(nullable=True),
+        'device_read_bps': fields.IntegerField(nullable=True),
+        'device_write_bps': fields.IntegerField(nullable=True),
+        'device_read_iops': fields.IntegerField(nullable=True),
+        'device_write_iops': fields.IntegerField(nullable=True),
         'started_at': fields.DateTimeField(tzinfo_aware=False, nullable=True),
         'exposed_ports': z_fields.JsonField(nullable=True),
         'exec_instances': fields.ListOfObjectsField('ExecInstance',
@@ -423,7 +431,9 @@ class Container(ContainerBase):
     # Version 1.42: Remove 'meta' attribute
     # Version 1.43: Add 'cni_metadata' attribute
     # Version 1.44: Add 'entrypoint' attribute
-    VERSION = '1.44'
+    # Version 1.45: Add flavor limit attributes (pids_limit, memory_swap,
+    #               blkio_weight, device_read/write_bps, device_read/write_iops)
+    VERSION = '1.45'
 
     container_type = consts.TYPE_CONTAINER
 

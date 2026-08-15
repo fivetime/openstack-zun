@@ -119,6 +119,39 @@ memory = {
     'pattern': '^[0-9]+$'
 }
 
+# Flavor-driven per-container limits. Ranges are hard schema guards so a
+# tenant cannot talk itself into a wider allowance than any flavor grants;
+# absent (null) means "operator default / runtime default".
+pids_limit = {
+    'type': ['integer', 'null'],
+    'minimum': 8,
+    'maximum': 32768,
+}
+
+memory_swap = {
+    # MB. -1 = unlimited swap; to forbid swap pass the memory size itself
+    # (docker semantics: swap allowance = memory_swap - memory).
+    'type': ['integer', 'null'],
+    'minimum': -1,
+}
+
+blkio_weight = {
+    'type': ['integer', 'null'],
+    'minimum': 10,
+    'maximum': 1000,
+}
+
+device_bps = {
+    # bytes/second on the device backing the docker data root
+    'type': ['integer', 'null'],
+    'minimum': 1,
+}
+
+device_iops = {
+    'type': ['integer', 'null'],
+    'minimum': 1,
+}
+
 disk = {
     'type': ['string', 'integer', 'null'],
     'minimum': CONF.minimum_disk,
