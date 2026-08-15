@@ -58,6 +58,10 @@ Request
   - availability_zone: container_availability_zone
   - hints: hints
   - mounts: mounts
+  - mounts.read_bps: mount_read_bps
+  - mounts.write_bps: mount_write_bps
+  - mounts.read_iops: mount_read_iops
+  - mounts.write_iops: mount_write_iops
   - privileged: privileged-request
   - healthcheck: healthcheck-request
   - exposed_ports: exposed_ports

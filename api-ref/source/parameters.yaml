@@ -1265,6 +1265,33 @@ message:
   in: body
   required: true
   type: string
+mount_read_bps:
+  description: |
+    Optional read ceiling, in bytes per second, on the block device this
+    mount resolves to on the node. Applied to the container cgroup, since
+    the local rbd attach cannot be capped by Ceph itself.
+  in: body
+  required: false
+  type: integer
+mount_read_iops:
+  description: |
+    Optional read IOPS ceiling on the device this mount resolves to.
+  in: body
+  required: false
+  type: integer
+mount_write_bps:
+  description: |
+    Optional write ceiling, in bytes per second, on the device this mount
+    resolves to.
+  in: body
+  required: false
+  type: integer
+mount_write_iops:
+  description: |
+    Optional write IOPS ceiling on the device this mount resolves to.
+  in: body
+  required: false
+  type: integer
 mounts:
   description: |
     A list of dictionary data to specify how volumes are mounted into the
