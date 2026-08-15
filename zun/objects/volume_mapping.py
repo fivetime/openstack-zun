@@ -174,6 +174,24 @@ class VolumeMapping(base.ZunPersistentObject, base.ZunObject):
             volume = volume_obj.Volume(context, **volume_values)
             volume.create(context)
             values['volume_id'] = volume.id
+        else:
+            # The volume row was pre-created (e.g. by the API controller in
+            # _build_requested_volumes) before runtime attributes like 'host'
+            # were known, and the popped VOLUME_ATTRS were silently dropped
+            # here. Persist them, otherwise volume.host stays NULL and
+            # _volume_connection_keep() never sees this host as the last
+            # user of the volume, so the local attachment (e.g. the krbd
+            # map from os-brick do_local_attach) is never disconnected and
+            # leaks on every detach.
+            update_values = {
+                k: v for k, v in volume_values.items()
+                if k not in ('user_id', 'project_id') and v is not None}
+            if update_values:
+                volume = volume_obj.Volume.get_by_id(
+                    context, values['volume_id'])
+                for attrname, value in update_values.items():
+                    setattr(volume, attrname, value)
+                volume.save(context)
 
     @base.remotable
     def destroy(self, context=None):
