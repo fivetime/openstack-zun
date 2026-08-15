@@ -105,6 +105,35 @@ Possible values:
              'sweep never runs when host_shared_with_nova is set, whatever '
              'this is: nova\'s allocations sit on the same resource provider '
              'and cannot be told apart from stale ones.'),
+    cfg.StrOpt(
+        'reclaim_orphan_containers',
+        default='docker_only',
+        choices=['off', 'docker_only', 'all'],
+        help='Whether to reap runtime objects nothing claims any more -- a '
+             'task whose container record is gone, which keeps running with '
+             'its memory, its VM and its ports, invisible to the daemon that '
+             'started it. docker_only sweeps the Docker path, whose '
+             'authority (dockerd) is local and complete. all also sweeps the '
+             'CRI path, where the real authority is Kubernetes and lives in '
+             'kubezun: turn it on only where no other sweep runs, because '
+             'two sweepers racing for the same sandbox is a hard thing to '
+             'debug.'),
+    cfg.IntOpt(
+        'reclaim_orphan_containers_interval',
+        default=600,
+        help='Seconds between orphan runtime sweeps.'),
+    cfg.IntOpt(
+        'reclaim_orphan_containers_min_age',
+        default=300,
+        help='Seconds a runtime object must have existed before it may be '
+             'called an orphan. Below this, a create still in flight and a '
+             'leak look exactly alike, and guessing wrong destroys a '
+             'container somebody is still waiting for.'),
+    cfg.BoolOpt(
+        'reclaim_orphan_containers_dry_run',
+        default=False,
+        help='Log what the sweep would remove and remove nothing. Worth a '
+             'cycle or two on a node whose leaks are not yet understood.'),
     cfg.BoolOpt(
         'host_shared_with_nova',
         default=False,

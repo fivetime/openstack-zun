@@ -436,6 +436,14 @@ class ContainerDriver(object):
         """List all containers."""
         raise NotImplementedError()
 
+    def reap_orphans(self, context, min_age, dry_run=False):
+        """Remove runtime objects this driver's authority no longer claims.
+
+        Optional: a driver that cannot name an authority should not guess.
+        Returns (reaped, skipped_young, failed).
+        """
+        return (0, 0, 0)
+
     def update_containers_states(self, context, containers, manager):
         """Update containers states."""
         raise NotImplementedError()

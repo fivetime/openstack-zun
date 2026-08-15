@@ -1487,6 +1487,39 @@ class Manager(periodic_task.PeriodicTasks):
                             {'port': port['id'], 'err': str(e)})
 
     @periodic_task.periodic_task(
+        spacing=CONF.compute.reclaim_orphan_containers_interval)
+    @context.set_context
+    def reclaim_orphan_containers(self, ctx):
+        """Reap runtime objects nothing claims, on whichever driver runs here.
+
+        The third of the sweeps, and the one closest to the metal: ports and
+        node resources outlive their container, this outlives the record that
+        the container ever existed. The mechanics are shared
+        (zun/container/orphan.py); what each driver supplies is its own
+        authority -- dockerd on one path, the owner label and its rows on the
+        other -- because only that differs.
+        """
+        mode = CONF.compute.reclaim_orphan_containers
+        if mode == 'off':
+            return
+
+        drivers = [self.driver]
+        if self.capsule_driver is not self.driver:
+            drivers.append(self.capsule_driver)
+
+        for drv in drivers:
+            if mode == 'docker_only' and type(drv).__name__ != 'DockerDriver':
+                continue
+            try:
+                drv.reap_orphans(
+                    ctx, CONF.compute.reclaim_orphan_containers_min_age,
+                    dry_run=CONF.compute.reclaim_orphan_containers_dry_run)
+            except Exception as e:
+                LOG.warning('Orphan container sweep failed on %(drv)s: '
+                            '%(err)s',
+                            {'drv': type(drv).__name__, 'err': e})
+
+    @periodic_task.periodic_task(
         spacing=CONF.compute.reclaim_node_resources_interval)
     @context.set_context
     def reclaim_orphan_node_resources(self, ctx):

@@ -37,6 +37,7 @@ import zun.conf
 from zun.container.docker import host
 from zun.container.docker import utils as docker_utils
 from zun.container import driver
+from zun.container import orphan
 from zun.image import driver as img_driver
 from zun.network import network as zun_network
 from zun import objects
@@ -403,6 +404,77 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             for key, value in caps:
                 if value is not None:
                     host_config[key] = [{'Path': dev, 'Rate': value}]
+
+    def reap_orphans(self, context, min_age, dry_run=False):
+        """Reap containerd tasks in the moby namespace dockerd disowns.
+
+        dockerd delegates to containerd but keeps its own record of what it
+        asked for, and when that record and the runtime disagree nothing
+        reconciles them: a create that failed after the sandbox came up, a
+        force-delete that could not clear a stale task (kata does this), a
+        data root replaced under a running daemon. The task keeps running --
+        with kata, a whole VM -- and `docker ps` shows nothing.
+
+        The authority here is dockerd: an id it cannot inspect belongs to no
+        container of ours. Only the moby namespace is looked at; k8s.io is
+        the kubelet's and none of our business.
+        """
+        objects_ = []
+        try:
+            out, _err = utils.execute(
+                'ctr', '--namespace', 'moby', 'containers', 'list', '-q',
+                run_as_root=True)
+        except Exception as e:
+            LOG.debug('Orphan sweep skipped, cannot list containerd: %s', e)
+            return (0, 0, 0)
+
+        for cid in [line.strip() for line in out.splitlines() if line.strip()]:
+            objects_.append(orphan.RuntimeObject(
+                cid, self._containerd_age(cid), label=cid[:12]))
+
+        def is_claimed(obj):
+            with docker_utils.docker_client() as docker:
+                try:
+                    docker.inspect_container(obj.ident)
+                    return True
+                except errors.APIError as e:
+                    if is_not_found(e):
+                        return False
+                    raise
+
+        def remove(obj):
+            for args in (('tasks', 'kill', '-s', 'SIGKILL', obj.ident),
+                         ('tasks', 'delete', '--force', obj.ident),
+                         ('containers', 'delete', obj.ident)):
+                try:
+                    utils.execute('ctr', '--namespace', 'moby', *args,
+                                  run_as_root=True)
+                except Exception as e:
+                    # A task that is already gone makes the first two fail;
+                    # only the last one failing means the record survives.
+                    LOG.debug('ctr %(args)s on %(id)s: %(err)s',
+                              {'args': args[:2], 'id': obj.label, 'err': e})
+
+        return orphan.sweep('moby', objects_, is_claimed, remove, min_age,
+                            dry_run=dry_run)
+
+    @staticmethod
+    def _containerd_age(cid):
+        """Seconds since containerd created this container record."""
+        try:
+            out, _err = utils.execute(
+                'ctr', '--namespace', 'moby', 'containers', 'info', cid,
+                run_as_root=True)
+            created = jsonutils.loads(out).get('CreatedAt')
+            if not created:
+                return None
+            stamp = timeutils.parse_isotime(created)
+            return (timeutils.utcnow(with_timezone=True) -
+                    stamp).total_seconds()
+        except Exception as e:
+            LOG.debug('Cannot read age of containerd container %(id)s: '
+                      '%(err)s', {'id': cid, 'err': e})
+            return None
 
     def _apply_volume_io_limits(self, context, container):
         """Cap io on the devices this container's volumes resolve to.

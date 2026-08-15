@@ -31,6 +31,7 @@ from zun.common.i18n import _
 from zun.common import utils
 import zun.conf
 from zun.container import driver
+from zun.container import orphan
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
 from zun.criapi import tasks_pb2
@@ -866,6 +867,56 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                       {'id': container.container_id, 'code': exit_code,
                        'err': err[:200] if err else ''})
         return exit_code == 0
+
+    def reap_orphans(self, context, min_age, dry_run=False):
+        """Reap sandboxes we labelled whose owner row is gone.
+
+        ⚠️ The real authority on this path is Kubernetes, and it is not
+        reachable from here -- kubezun holds that answer and sweeps against
+        it. What is reachable is the owner label this driver stamps on every
+        sandbox it creates, plus the rows that made them. A sandbox carrying
+        our label whose row no longer exists is ours to remove; anything
+        without the label belongs to the kubelet and is never touched.
+
+        Because the two sweeps can overlap, this one is off unless an
+        operator turns it on ([compute] reclaim_orphan_containers = all).
+        """
+        sandboxes = []
+        try:
+            response = self.runtime_stub.ListPodSandbox(
+                api_pb2.ListPodSandboxRequest())
+        except grpc.RpcError as e:
+            LOG.debug('Orphan sweep skipped, cannot list sandboxes: %s', e)
+            return (0, 0, 0)
+
+        now_ns = time.time() * 1e9
+        for item in response.items:
+            owner = (item.labels or {}).get(self.OWNER_LABEL)
+            if not owner:
+                # The kubelet's own. Not ours to judge.
+                continue
+            age = None
+            if item.created_at:
+                age = (now_ns - item.created_at) / 1e9
+            obj = orphan.RuntimeObject(item.id, age, label=owner)
+            obj.owner_uuid = owner
+            sandboxes.append(obj)
+
+        known = set()
+        for row in objects.Capsule.list(context):
+            known.add(row.uuid)
+        for row in objects.Container.list(context):
+            known.add(row.uuid)
+
+        def is_claimed(obj):
+            return obj.owner_uuid in known
+
+        def remove(obj):
+            self.runtime_stub.RemovePodSandbox(
+                api_pb2.RemovePodSandboxRequest(pod_sandbox_id=obj.ident))
+
+        return orphan.sweep('k8s.io', sandboxes, is_claimed, remove, min_age,
+                            dry_run=dry_run)
 
     def update_containers_states(self, context, capsules, manager):
         """Refresh capsule state from what the runtime actually reports.
