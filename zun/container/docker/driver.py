@@ -15,11 +15,13 @@ import datetime
 import errno
 import eventlet
 import functools
+import os
 import types
 
 from docker import errors
 from neutronclient.common import exceptions as n_exc
 from oslo_log import log as logging
+from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
 import psutil
@@ -401,6 +403,79 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             for key, value in caps:
                 if value is not None:
                     host_config[key] = [{'Path': dev, 'Rate': value}]
+
+    def _apply_volume_io_limits(self, context, container):
+        """Cap io on the devices this container's volumes resolve to.
+
+        Ceph will not do this for us: rbd QoS lives in librbd and the local
+        attach is krbd, which never enters it. The node is the only place
+        left, and the cgroup of the container is the only handle there.
+
+        Written after start, and again on every start: the scope is created
+        by the runtime when the container starts and taken away when it
+        stops, so an io.max written earlier is not merely stale, it has
+        nowhere to live. Failure is logged, never fatal -- a container that
+        runs uncapped is a billing question, while one that refuses to start
+        because a cgroup file moved is an outage.
+        """
+        if not container.container_id:
+            return
+        try:
+            volmaps = objects.VolumeMapping.list_by_container(
+                context, container.uuid)
+        except Exception as e:
+            LOG.warning('Cannot list volumes of container %(c)s to apply io '
+                        'limits: %(e)s', {'c': container.uuid, 'e': e})
+            return
+
+        rules = []
+        for volmap in volmaps:
+            caps = {'rbps': volmap.read_bps, 'wbps': volmap.write_bps,
+                    'riops': volmap.read_iops, 'wiops': volmap.write_iops}
+            if not any(v is not None for v in caps.values()):
+                continue
+            devno = self._volume_device_number(volmap)
+            if not devno:
+                continue
+            terms = ' '.join('%s=%s' % (k, v)
+                             for k, v in caps.items() if v is not None)
+            rules.append('%s %s' % (devno, terms))
+        if not rules:
+            return
+
+        scope = ('/sys/fs/cgroup/system.slice/docker-%s.scope/io.max'
+                 % container.container_id)
+        for rule in rules:
+            try:
+                utils.execute('sh', '-c',
+                              'echo %s > %s' % (rule, scope),
+                              run_as_root=True)
+                LOG.info('Applied io limits "%(r)s" to container %(c)s',
+                         {'r': rule, 'c': container.uuid})
+            except Exception as e:
+                LOG.warning('Failed to apply io limits "%(r)s" to container '
+                            '%(c)s: %(e)s',
+                            {'r': rule, 'c': container.uuid, 'e': e})
+
+    @staticmethod
+    def _volume_device_number(volmap):
+        """MAJ:MIN of the block device behind an attached volume."""
+        conn_info = volmap.connection_info
+        if not conn_info:
+            return None
+        try:
+            path = jsonutils.loads(conn_info)['data'].get('device_path')
+        except Exception:
+            return None
+        if not path:
+            return None
+        try:
+            st = os.stat(path)
+            return '%d:%d' % (os.major(st.st_rdev), os.minor(st.st_rdev))
+        except OSError as e:
+            LOG.warning('Cannot stat volume device %(p)s: %(e)s',
+                        {'p': path, 'e': e})
+            return None
 
     _rootfs_device = None
 
@@ -874,6 +949,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                     pass
                 container.status = consts.STOPPED
                 container.status_reason = _("failed to configure network")
+            self._apply_volume_io_limits(context, container)
             return container
 
     @check_container_id

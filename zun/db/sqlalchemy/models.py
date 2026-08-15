@@ -204,6 +204,13 @@ class VolumeMapping(Base):
                        ForeignKey('volume.id', ondelete="CASCADE"),
                        nullable=False)
     container_path = Column(String(255), nullable=True)
+    # Per-volume io ceilings for this attachment. They live on the mapping,
+    # not on the volume: the same volume attached to a different container
+    # under a different flavor gets that flavor's ceilings.
+    read_bps = Column(BigInteger, nullable=True)
+    write_bps = Column(BigInteger, nullable=True)
+    read_iops = Column(Integer, nullable=True)
+    write_iops = Column(Integer, nullable=True)
     container_uuid = Column(String(36), ForeignKey('container.uuid'))
     container = orm.relationship(
         Container,

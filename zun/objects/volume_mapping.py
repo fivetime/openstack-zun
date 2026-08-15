@@ -52,7 +52,8 @@ class VolumeMapping(base.ZunPersistentObject, base.ZunObject):
     # Version 1.3: Add field "contents"
     # Version 1.4: Rename field "volume_id" to "cinder_volume_id"
     # Version 1.5: Add method "count"
-    VERSION = '1.5'
+    # Version 1.6: Add per-attachment io ceilings
+    VERSION = '1.6'
 
     fields = {
         'id': fields.IntegerField(),
@@ -62,6 +63,10 @@ class VolumeMapping(base.ZunPersistentObject, base.ZunObject):
         'cinder_volume_id': fields.UUIDField(nullable=True),
         'volume_provider': fields.StringField(nullable=False),
         'container_path': fields.StringField(nullable=True),
+        'read_bps': fields.IntegerField(nullable=True),
+        'write_bps': fields.IntegerField(nullable=True),
+        'read_iops': fields.IntegerField(nullable=True),
+        'write_iops': fields.IntegerField(nullable=True),
         'container_uuid': fields.UUIDField(nullable=True),
         'container': fields.ObjectField('ContainerBase', nullable=True),
         'connection_info': fields.SensitiveStringField(nullable=True),

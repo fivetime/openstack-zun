@@ -267,6 +267,24 @@ mounts = {
             },
             'size': {
                 'type': ['string', 'integer'],
+            },
+            # Per-volume io ceilings, applied to the block device this mount
+            # resolves to on the node. Absent means unlimited.
+            'read_bps': {
+                'type': ['integer', 'null'],
+                'minimum': 1,
+            },
+            'write_bps': {
+                'type': ['integer', 'null'],
+                'minimum': 1,
+            },
+            'read_iops': {
+                'type': ['integer', 'null'],
+                'minimum': 1,
+            },
+            'write_iops': {
+                'type': ['integer', 'null'],
+                'minimum': 1,
             }
         },
         'additionalProperties': False,

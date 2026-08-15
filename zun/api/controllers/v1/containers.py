@@ -607,6 +607,10 @@ class ContainersController(base.Controller):
             volume_object.create(context)
             volume_dict['volume_id'] = volume_object.id
             volume_dict['container_path'] = mount['destination']
+            for io_key in ('read_bps', 'write_bps',
+                           'read_iops', 'write_iops'):
+                if mount.get(io_key) is not None:
+                    volume_dict[io_key] = mount[io_key]
 
             volmapp = objects.VolumeMapping(context, **volume_dict)
             requested_volumes[container.uuid].append(volmapp)
