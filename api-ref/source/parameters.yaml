@@ -826,6 +826,41 @@ disabled_reason:
   in: body
   required: true
   type: string
+blkio_weight:
+  description: |
+    Relative block IO weight of the container, 10-1000. Containers on the
+    same disk share bandwidth proportionally to their weights when the disk
+    is contended; no absolute cap is implied.
+  in: body
+  required: false
+  type: integer
+device_read_bps:
+  description: |
+    Read rate cap, in bytes per second, on the disk backing the docker
+    data root (the container rootfs device). The device is resolved by the
+    compute node; a caller cannot name a device.
+  in: body
+  required: false
+  type: integer
+device_read_iops:
+  description: |
+    Read IOPS cap on the disk backing the container rootfs.
+  in: body
+  required: false
+  type: integer
+device_write_bps:
+  description: |
+    Write rate cap, in bytes per second, on the disk backing the container
+    rootfs.
+  in: body
+  required: false
+  type: integer
+device_write_iops:
+  description: |
+    Write IOPS cap on the disk backing the container rootfs.
+  in: body
+  required: false
+  type: integer
 disk:
   description: |
     The container disk size in GiB.
@@ -1197,6 +1232,14 @@ links:
   in: body
   required: true
   type: array
+memory_swap:
+  description: |
+    Total of memory plus swap, in MB, the container may use. Pass the
+    memory size itself to forbid swap entirely; -1 allows unlimited swap.
+    Absent means the operator default.
+  in: body
+  required: false
+  type: integer
 memory:
   description: |
     The container memory size in MiB.
@@ -1280,6 +1323,14 @@ port_id:
   in: body
   required: true
   type: string
+pids_limit:
+  description: |
+    Maximum number of processes the container may run, 8-32768. A fork
+    bomb dies at this limit instead of taking the host PID table with it.
+    Absent means the operator default.
+  in: body
+  required: false
+  type: integer
 ports:
   description: |
     The ports exposed on the container.

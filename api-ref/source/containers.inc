@@ -63,6 +63,13 @@ Request
   - exposed_ports: exposed_ports
   - host: requested_host
   - entrypoint: entrypoint-request
+  - pids_limit: pids_limit
+  - memory_swap: memory_swap
+  - blkio_weight: blkio_weight
+  - device_read_bps: device_read_bps
+  - device_write_bps: device_write_bps
+  - device_read_iops: device_read_iops
+  - device_write_iops: device_write_iops
 
 Request Example
 ----------------
@@ -108,6 +115,13 @@ Response
   - registry_id: registry_id
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
+  - pids_limit: pids_limit
+  - memory_swap: memory_swap
+  - blkio_weight: blkio_weight
+  - device_read_bps: device_read_bps
+  - device_write_bps: device_write_bps
+  - device_read_iops: device_read_iops
+  - device_write_iops: device_write_iops
 
 
 Response Example
@@ -187,6 +201,13 @@ Response
   - registry_id: registry_id
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
+  - pids_limit: pids_limit
+  - memory_swap: memory_swap
+  - blkio_weight: blkio_weight
+  - device_read_bps: device_read_bps
+  - device_write_bps: device_write_bps
+  - device_read_iops: device_read_iops
+  - device_write_iops: device_write_iops
 
 Response Example
 ----------------
@@ -257,6 +278,13 @@ Response
   - registry_id: registry_id
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
+  - pids_limit: pids_limit
+  - memory_swap: memory_swap
+  - blkio_weight: blkio_weight
+  - device_read_bps: device_read_bps
+  - device_write_bps: device_write_bps
+  - device_read_iops: device_read_iops
+  - device_write_iops: device_write_iops
 
 Response Example
 ----------------
@@ -465,6 +493,13 @@ Return new container with updated attributes.
   - registry_id: registry_id
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
+  - pids_limit: pids_limit
+  - memory_swap: memory_swap
+  - blkio_weight: blkio_weight
+  - device_read_bps: device_read_bps
+  - device_write_bps: device_write_bps
+  - device_read_iops: device_read_iops
+  - device_write_iops: device_write_iops
 
 Response Example
 ----------------
@@ -763,6 +798,13 @@ Response
   - registry_id: registry_id
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
+  - pids_limit: pids_limit
+  - memory_swap: memory_swap
+  - blkio_weight: blkio_weight
+  - device_read_bps: device_read_bps
+  - device_write_bps: device_write_bps
+  - device_read_iops: device_read_iops
+  - device_write_iops: device_write_iops
 
 Response Example
 ----------------
