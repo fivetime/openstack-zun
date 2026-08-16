@@ -713,7 +713,11 @@ class ContainersController(base.Controller):
         if 'name' in patch:
             patch['name'] = str(patch['name'])
 
-        if 'memory' not in patch and 'cpu' not in patch:
+        # swap joins cpu and memory in going through the compute service:
+        # saving the row would leave the container running on the limit it
+        # was created with, and nothing would ever reconcile the two.
+        runtime_fields = ('memory', 'cpu', 'swap')
+        if not any(f in patch for f in runtime_fields):
             for field, patch_val in patch.items():
                 if getattr(container, field) != patch_val:
                     setattr(container, field, patch_val)

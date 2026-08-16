@@ -1237,7 +1237,9 @@ swap:
     Swap in MB the container may use on top of its memory limit. 0 forbids
     swap and is the default; -1 allows swap without limit. The runtime is
     told memory and swap as a single total -- that arithmetic belongs to
-    the driver, and no caller has to do it.
+    the driver, and no caller has to do it. It can be changed on a running
+    container, alone or together with memory; the total is recomputed from
+    whichever of the two moved.
   in: body
   required: false
   type: integer

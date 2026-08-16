@@ -1134,10 +1134,14 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
         args = {}
         memory = patch.get('memory')
-        if memory is not None:
+        if memory is not None or 'swap' in patch:
+            # The two travel together whichever of them moved: the runtime
+            # is told a total, and a total sent without the memory it
+            # contains is measured against whatever the runtime still holds.
+            memory = memory if memory is not None else container.memory
             args['mem_limit'] = str(memory) + 'M'
-            # Recomputed against the new memory: the swap the caller asked
-            # for is a quantity of its own and does not change because the
+            # Recomputed rather than carried: the swap the caller asked for
+            # is a quantity of its own and does not change because the
             # memory limit did.
             args['memswap_limit'] = self._memswap_limit(container,
                                                         memory=memory)
