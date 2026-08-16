@@ -1234,9 +1234,13 @@ links:
   type: array
 memory_swap:
   description: |
-    Total of memory plus swap, in MB, the container may use. Pass the
-    memory size itself to forbid swap entirely; -1 allows unlimited swap.
-    Absent means the operator default.
+    Memory plus swap, in MB, as one total -- not the swap on its own. This
+    is what the runtime takes, so it is what the API carries; a caller that
+    thinks in swap adds the memory to it. With memory 512, a swap of 256 is
+    sent as 768, and 512 (the memory itself) forbids swap entirely. -1
+    allows unlimited swap, and absent means the operator default. A value
+    below the memory limit is rejected: it reads like a small allowance and
+    is in fact a contradiction.
   in: body
   required: false
   type: integer
