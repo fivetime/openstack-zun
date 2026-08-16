@@ -1241,6 +1241,12 @@ memory_swap:
     allows unlimited swap, and absent means the operator default. A value
     below the memory limit is rejected: it reads like a small allowance and
     is in fact a contradiction.
+
+    Send memory with it. A total on its own is not a quantity of swap: it
+    is measured against whatever memory ends up applying, and an omitted
+    memory takes the operator's default. The same 768 is 256 of swap on a
+    deployment defaulting to 512, none at all where the default is 768, and
+    a rejected request where it is 1024.
   in: body
   required: false
   type: integer
