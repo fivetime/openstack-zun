@@ -32,6 +32,7 @@ from zun.common import utils
 import zun.conf
 from zun.container import driver
 from zun.container import orphan
+from zun.container.cri import resources as cri_resources
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
 from zun.criapi import tasks_pb2
@@ -415,18 +416,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         working_dir = container.workdir or ""
         labels = container.labels or []
 
-        cpu = 0
-        if container.cpu is not None:
-            cpu = int(1024 * container.cpu)
-        memory = 0
-        if container.memory is not None:
-            memory = int(container.memory) * 1024 * 1024
         linux_config = api_pb2.LinuxContainerConfig(
             security_context=_linux_security_context(container),
-            resources={
-                'cpu_shares': cpu,
-                'memory_limit_in_bytes': memory,
-            }
+            resources=cri_resources.linux_resources(container.cpu, container.memory),
         )
 
         # The attempt number is what distinguishes one incarnation of a
@@ -1494,14 +1486,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     def update(self, context, container):
         """Apply changed cpu and memory limits to a running container."""
         patch = container.obj_get_changes()
-        resources = {}
-        if patch.get('cpu') is not None:
-            resources['cpu_shares'] = int(1024 * patch['cpu'])
-        if patch.get('memory') is not None:
-            resources['memory_limit_in_bytes'] = (
-                int(patch['memory']) * 1024 * 1024)
-        if not resources:
+        if patch.get('cpu') is None and patch.get('memory') is None:
             return container
+        # Fields not in the patch stay as the record holds them: a resource
+        # update is the whole linux block, and sending memory alone would
+        # reset cpu to zero -- unlimited -- on the way past.
+        resources = cri_resources.linux_resources(
+            patch.get('cpu', container.cpu),
+            patch.get('memory', container.memory))
         self.runtime_stub.UpdateContainerResources(
             api_pb2.UpdateContainerResourcesRequest(
                 container_id=container.container_id,
