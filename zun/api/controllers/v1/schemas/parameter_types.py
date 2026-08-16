@@ -128,9 +128,10 @@ pids_limit = {
     'maximum': 32768,
 }
 
-memory_swap = {
-    # MB. -1 = unlimited swap; to forbid swap pass the memory size itself
-    # (docker semantics: swap allowance = memory_swap - memory).
+swap = {
+    # MB of swap on top of the memory limit. 0 forbids swap, -1 allows it
+    # without limit. The runtime is told memory plus swap as one total; that
+    # arithmetic belongs to the driver, not to whoever fills this in.
     'type': ['integer', 'null'],
     'minimum': -1,
 }

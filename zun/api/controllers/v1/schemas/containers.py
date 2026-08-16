@@ -38,7 +38,7 @@ _legacy_container_properties = {
     'hostname': parameter_types.hostname,
     'disk': parameter_types.disk,
     'pids_limit': parameter_types.pids_limit,
-    'memory_swap': parameter_types.memory_swap,
+    'swap': parameter_types.swap,
     'blkio_weight': parameter_types.blkio_weight,
     'device_read_bps': parameter_types.device_bps,
     'device_write_bps': parameter_types.device_bps,

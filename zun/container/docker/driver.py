@@ -379,16 +379,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         if pids is not None:
             host_config['pids_limit'] = pids
 
-        # docker semantics: total = memory + swap; equal to memory = no swap,
-        # -1 = unlimited. Value is MB, same unit the API stores.
-        memswap = container.memory_swap
-        if memswap is None:
-            memswap = CONF.default_memory_swap
-        if memswap is not None:
-            if memswap == -1:
-                host_config['memswap_limit'] = -1
-            else:
-                host_config['memswap_limit'] = str(memswap) + 'M'
+        host_config['memswap_limit'] = self._memswap_limit(container)
 
         if container.blkio_weight is not None:
             host_config['blkio_weight'] = container.blkio_weight
@@ -457,6 +448,29 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
         return orphan.sweep('moby', objects_, is_claimed, remove, min_age,
                             dry_run=dry_run)
+
+    @staticmethod
+    def _memswap_limit(container, memory=None):
+        """What the runtime is told, from the swap the caller asked for.
+
+        The runtime takes memory and swap as one total; nothing above this
+        layer should have to know that. A swap of 0 -- the default, because
+        most workloads want none -- becomes a total equal to the memory,
+        which is how the runtime is told "no swap". -1 stays -1: unlimited
+        is a sentinel, not a quantity to add to anything.
+        """
+        swap = container.swap
+        if swap is None:
+            swap = CONF.docker.default_swap
+        if swap == -1:
+            return -1
+        memory = memory if memory is not None else container.memory
+        try:
+            return str(int(memory) + int(swap)) + 'M'
+        except (TypeError, ValueError):
+            # No memory to add it to; let the runtime keep its own default
+            # rather than send it something invented.
+            return None
 
     @staticmethod
     def _containerd_age(cid):
@@ -1122,13 +1136,11 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         memory = patch.get('memory')
         if memory is not None:
             args['mem_limit'] = str(memory) + 'M'
-            memswap = container.memory_swap
-            if memswap is None:
-                memswap = CONF.default_memory_swap
-            if memswap == -1 or memswap is None:
-                args['memswap_limit'] = -1
-            else:
-                args['memswap_limit'] = str(memswap) + 'M'
+            # Recomputed against the new memory: the swap the caller asked
+            # for is a quantity of its own and does not change because the
+            # memory limit did.
+            args['memswap_limit'] = self._memswap_limit(container,
+                                                        memory=memory)
         cpu = patch.get('cpu')
         if cpu is not None:
             args['cpu_shares'] = int(1024 * cpu)

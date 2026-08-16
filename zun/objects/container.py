@@ -99,7 +99,7 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
         'auto_heal': fields.BooleanField(nullable=True),
         # flavor-driven per-container limits (see BSS flavor mapping)
         'pids_limit': fields.IntegerField(nullable=True),
-        'memory_swap': fields.IntegerField(nullable=True),
+        'swap': fields.IntegerField(nullable=True),
         'blkio_weight': fields.IntegerField(nullable=True),
         'device_read_bps': fields.IntegerField(nullable=True),
         'device_write_bps': fields.IntegerField(nullable=True),
@@ -433,7 +433,9 @@ class Container(ContainerBase):
     # Version 1.44: Add 'entrypoint' attribute
     # Version 1.45: Add flavor limit attributes (pids_limit, memory_swap,
     #               blkio_weight, device_read/write_bps, device_read/write_iops)
-    VERSION = '1.45'
+    # Version 1.46: Rename memory_swap to swap -- the field is the swap
+    #               itself now, not the runtime's memory-plus-swap total
+    VERSION = '1.46'
 
     container_type = consts.TYPE_CONTAINER
 

@@ -500,28 +500,6 @@ class ContainersController(base.Controller):
         container_dict['memory'] = str(container_dict['memory'])
         container_dict['cpu'] = container_dict.get(
             'cpu', CONF.default_cpu)
-        self._check_memory_swap(container_dict)
-
-    @staticmethod
-    def _check_memory_swap(container_dict):
-        """Refuse a swap total that is smaller than the memory it includes.
-
-        memory_swap is a total, not an allowance: the swap a container may
-        use is what is left after its memory. A value below the memory limit
-        is not a small allowance, it is a contradiction, and the runtime only
-        says so at create time -- by which point the caller has a container
-        in Error and an error message about a field it did not send.
-        """
-        memory_swap = container_dict.get('memory_swap')
-        if memory_swap is None or memory_swap == -1:
-            return
-        memory = int(container_dict.get('memory') or 0)
-        if memory_swap < memory:
-            raise exception.InvalidValue(_(
-                'memory_swap (%(swap)s MB) is the total of memory plus swap '
-                'and cannot be smaller than memory (%(mem)s MB). Pass the '
-                'memory size itself to forbid swap, or -1 for unlimited '
-                'swap.') % {'swap': memory_swap, 'mem': memory})
 
     def _create_pci_requests_for_sriov_ports(self, context,
                                              requested_networks):

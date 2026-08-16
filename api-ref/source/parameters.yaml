@@ -1232,21 +1232,12 @@ links:
   in: body
   required: true
   type: array
-memory_swap:
+swap:
   description: |
-    Memory plus swap, in MB, as one total -- not the swap on its own. This
-    is what the runtime takes, so it is what the API carries; a caller that
-    thinks in swap adds the memory to it. With memory 512, a swap of 256 is
-    sent as 768, and 512 (the memory itself) forbids swap entirely. -1
-    allows unlimited swap, and absent means the operator default. A value
-    below the memory limit is rejected: it reads like a small allowance and
-    is in fact a contradiction.
-
-    Send memory with it. A total on its own is not a quantity of swap: it
-    is measured against whatever memory ends up applying, and an omitted
-    memory takes the operator's default. The same 768 is 256 of swap on a
-    deployment defaulting to 512, none at all where the default is 768, and
-    a rejected request where it is 1024.
+    Swap in MB the container may use on top of its memory limit. 0 forbids
+    swap and is the default; -1 allows swap without limit. The runtime is
+    told memory and swap as a single total -- that arithmetic belongs to
+    the driver, and no caller has to do it.
   in: body
   required: false
   type: integer

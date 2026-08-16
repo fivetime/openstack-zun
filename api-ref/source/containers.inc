@@ -68,7 +68,7 @@ Request
   - host: requested_host
   - entrypoint: entrypoint-request
   - pids_limit: pids_limit
-  - memory_swap: memory_swap
+  - swap: swap
   - blkio_weight: blkio_weight
   - device_read_bps: device_read_bps
   - device_write_bps: device_write_bps
@@ -120,7 +120,7 @@ Response
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
   - pids_limit: pids_limit
-  - memory_swap: memory_swap
+  - swap: swap
   - blkio_weight: blkio_weight
   - device_read_bps: device_read_bps
   - device_write_bps: device_write_bps
@@ -206,7 +206,7 @@ Response
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
   - pids_limit: pids_limit
-  - memory_swap: memory_swap
+  - swap: swap
   - blkio_weight: blkio_weight
   - device_read_bps: device_read_bps
   - device_write_bps: device_write_bps
@@ -283,7 +283,7 @@ Response
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
   - pids_limit: pids_limit
-  - memory_swap: memory_swap
+  - swap: swap
   - blkio_weight: blkio_weight
   - device_read_bps: device_read_bps
   - device_write_bps: device_write_bps
@@ -498,7 +498,7 @@ Return new container with updated attributes.
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
   - pids_limit: pids_limit
-  - memory_swap: memory_swap
+  - swap: swap
   - blkio_weight: blkio_weight
   - device_read_bps: device_read_bps
   - device_write_bps: device_write_bps
@@ -803,7 +803,7 @@ Response
   - cpu_policy: cpu_policy
   - entrypoint: entrypoint
   - pids_limit: pids_limit
-  - memory_swap: memory_swap
+  - swap: swap
   - blkio_weight: blkio_weight
   - device_read_bps: device_read_bps
   - device_write_bps: device_write_bps

@@ -165,7 +165,7 @@ class Container(Base):
     # Flavor-driven per-container limits the BSS passes through the API.
     # All nullable: absent means "operator default / runtime default".
     pids_limit = Column(Integer, nullable=True)
-    memory_swap = Column(Integer, nullable=True)       # MB, -1 = unlimited
+    swap = Column(Integer, nullable=True)              # MB, -1 = unlimited
     blkio_weight = Column(Integer, nullable=True)      # 10..1000 relative
     device_read_bps = Column(BigInteger, nullable=True)   # bytes/s on rootfs dev
     device_write_bps = Column(BigInteger, nullable=True)

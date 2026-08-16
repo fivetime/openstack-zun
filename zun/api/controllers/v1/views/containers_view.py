@@ -47,7 +47,7 @@ _basic_keys = (
     'runtime',
     'disk',
     'pids_limit',
-    'memory_swap',
+    'swap',
     'blkio_weight',
     'device_read_bps',
     'device_write_bps',

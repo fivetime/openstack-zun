@@ -57,6 +57,13 @@ docker_opts = [
                default='/var/lib/docker',
                deprecated_for_removal=True,
                help='Root directory of persistent Docker state.'),
+    cfg.IntOpt('default_swap',
+               default=0,
+               help='Swap in MB granted to a container that does not ask '
+                    'for any. Zero, because most workloads want none and a '
+                    'runtime default of twice the memory limit is a great '
+                    'deal of swap to hand out by accident. -1 allows swap '
+                    'without limit.'),
     cfg.IntOpt('default_pids_limit',
                default=-1,
                help='PidsLimit applied to containers that do not carry a '
