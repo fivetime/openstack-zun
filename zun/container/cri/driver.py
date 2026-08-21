@@ -644,12 +644,22 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     container.container_id):
                 return
             container.status = consts.RUNNING
+            new_run = False
             if (container.status_detail or '').startswith('exit:'):
                 # A recorded exit belongs to a previous run of this container
                 # (a probe restart makes a new one under the same record);
                 # carrying it into a running container would report the old
                 # death on the living.
                 container.status_detail = None
+                new_run = True
+            if new_run or not container.started_at:
+                # started_at was only ever written at exit (_record_exit), so
+                # every RUNNING container reported null -- the value exists
+                # solely in the ContainerStatus response, which the listing
+                # this sync reads does not carry. One extra RPC, once per run:
+                # unset means never asked, a cleared exit marker means the
+                # stored time belongs to the previous run.
+                self._record_start(container)
         elif state == api_pb2.ContainerState.CONTAINER_EXITED:
             container.status = consts.STOPPED
             self._record_exit(container)
@@ -696,6 +706,25 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # container before this.
             container.started_at = datetime.datetime.utcfromtimestamp(
                 st.started_at / 1e9)
+
+    def _record_start(self, container):
+        """Read when this run of the container started, from the runtime.
+
+        Failure leaves the field as it was: for a first run that is null
+        ("was never told"), for a restart it is the previous run's time --
+        stale but real, and the next sync retries via the same conditions.
+        """
+        try:
+            resp = self.runtime_stub.ContainerStatus(
+                api_pb2.ContainerStatusRequest(
+                    container_id=container.container_id))
+        except grpc.RpcError as e:
+            LOG.warning('Could not read the start time of %(id)s: %(err)s',
+                        {'id': container.container_id, 'err': e})
+            return
+        if resp.status.started_at:
+            container.started_at = datetime.datetime.utcfromtimestamp(
+                resp.status.started_at / 1e9)
 
     def _still_paused(self, container_id):
         status = self._task_status(container_id)
@@ -940,6 +969,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             counted = 0
             for container in members:
                 old_status = container.status
+                old_started = container.started_at
                 try:
                     self._show_container(context, container)
                 except exception.ZunException:
@@ -970,6 +1000,11 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                               'old': old_status, 'new': container.status})
                     container.save(context)
                     changed = True
+                elif container.started_at != old_started:
+                    # Learned without a state change -- a running container
+                    # whose start time was read this round. Unsaved it would
+                    # be re-read and re-lost every sweep.
+                    container.save(context)
 
             if not counted or not aggregate:
                 # Nothing to roll up: a lone container already saved itself.

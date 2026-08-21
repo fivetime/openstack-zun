@@ -61,6 +61,7 @@ _basic_keys = (
     'entrypoint',
     'created_at',
     'updated_at',
+    'started_at',
 )
 
 
