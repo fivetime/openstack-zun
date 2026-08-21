@@ -37,6 +37,11 @@ _basic_keys = (
     'init_containers',
     'containers',
     'host',
+    # The tier this capsule actually runs under. Serialized so a caller can
+    # verify the runtime it asked for is the one it got -- an asked-for tier
+    # that silently fell back to the default is exactly the failure mode the
+    # template field was added to close.
+    'runtime',
 )
 
 

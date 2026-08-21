@@ -317,6 +317,14 @@ class CapsuleController(base.Controller):
         new_capsule.security_groups = self._resolve_security_groups(
             context, template_json.get('securityGroups'))
 
+        # The tier the caller asked for; absent means the node's configured
+        # default, the same contract as the Container API's runtime field.
+        # Validity is the compute node's to judge -- an unknown handler fails
+        # the capsule there with the runtime's own error, and this API cannot
+        # know which handlers a node it has not chosen yet will offer.
+        if template_json.get('runtime'):
+            new_capsule.runtime = template_json['runtime']
+
         requested_networks_info = template_json.get('nets', [])
         requested_networks = \
             utils.build_requested_networks(context, requested_networks_info)

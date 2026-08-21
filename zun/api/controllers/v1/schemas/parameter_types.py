@@ -768,6 +768,11 @@ capsule_template = {
         # of thing: what the capsule's port is, not what runs inside it. The
         # spec object mirrors a Kubernetes pod, which has no such field.
         "securityGroups": security_groups,
+        # Which runtime handler runs this capsule -- the isolation and rootfs
+        # tier. The Capsule object has carried the column since v1.19; the
+        # template simply never had a way to say it, so every capsule fell to
+        # the node default and a pod's runtimeClassName was silently dropped.
+        "runtime": runtime,
     },
     "additionalProperties": False,
     "required": ['kind', 'spec', 'metadata']
