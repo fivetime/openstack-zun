@@ -707,6 +707,34 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             container.started_at = datetime.datetime.utcfromtimestamp(
                 st.started_at / 1e9)
 
+    def get_available_resources(self):
+        data = super(CriDriver, self).get_available_resources()
+        data['runtimes'] = self._available_runtimes()
+        return data
+
+    def _available_runtimes(self):
+        """The runtime handlers this node actually offers, from the runtime.
+
+        ⚠️ Without this the node reports an empty list, and the scheduler's
+        RuntimeFilter fails every host for any capsule that names a runtime
+        -- measured: the first capsule to carry one died NoValidHost on a
+        cloud whose every node had the handler. The truth is the runtime's
+        own config, which CRI Status carries; a zun.conf list would drift
+        from it the day an operator edits containerd and not zun.
+        """
+        try:
+            resp = self.runtime_stub.Status(api_pb2.StatusRequest())
+        except grpc.RpcError as e:
+            LOG.warning('Could not list runtime handlers: %s', e)
+            return []
+        names = sorted({h.name for h in resp.runtime_handlers if h.name})
+        if names:
+            return names
+        # An older runtime that predates handler reporting: fall back to the
+        # one runtime this host is configured to use, which is the only one
+        # anything could ask it for anyway.
+        return [CONF.container_runtime] if CONF.container_runtime else []
+
     def _record_start(self, container):
         """Read when this run of the container started, from the runtime.
 
