@@ -101,6 +101,8 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
         'pids_limit': fields.IntegerField(nullable=True),
         'swap': fields.IntegerField(nullable=True),
         'exit_code': fields.IntegerField(nullable=True),
+        'dns': fields.ListOfStringsField(nullable=True),
+        'dns_search': fields.ListOfStringsField(nullable=True),
         'blkio_weight': fields.IntegerField(nullable=True),
         'device_read_bps': fields.IntegerField(nullable=True),
         'device_write_bps': fields.IntegerField(nullable=True),
@@ -439,7 +441,11 @@ class Container(ContainerBase):
     # Version 1.47: Add 'exit_code' -- what the container's process
     #                returned. docker reports it and callers script
     #                against it.
-    VERSION = '1.47'
+    # Version 1.48: Add 'dns' and 'dns_search' -- a container that
+    #                does not name its resolver has docker forward
+    #                queries from the host's namespace, where the
+    #                tenant's network cannot be reached.
+    VERSION = '1.48'
 
     container_type = consts.TYPE_CONTAINER
 
@@ -451,8 +457,9 @@ class Capsule(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
+    # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.5: Inherits exit_code from ContainerBase
-    VERSION = '1.5'
+    VERSION = '1.6'
 
     container_type = consts.TYPE_CAPSULE
 
@@ -496,8 +503,9 @@ class CapsuleContainer(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
+    # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.5: Inherits exit_code from ContainerBase
-    VERSION = '1.5'
+    VERSION = '1.6'
 
     container_type = consts.TYPE_CAPSULE_CONTAINER
 
@@ -526,8 +534,9 @@ class CapsuleInitContainer(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
+    # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.5: Inherits exit_code from ContainerBase
-    VERSION = '1.5'
+    VERSION = '1.6'
 
     container_type = consts.TYPE_CAPSULE_INIT_CONTAINER
 

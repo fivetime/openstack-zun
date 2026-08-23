@@ -36,6 +36,8 @@ _legacy_container_properties = {
     'nets': parameter_types.nets,
     'runtime': parameter_types.runtime,
     'hostname': parameter_types.hostname,
+    'dns': parameter_types.dns,
+    'dns_search': parameter_types.dns_search,
     'disk': parameter_types.disk,
     'pids_limit': parameter_types.pids_limit,
     'swap': parameter_types.swap,

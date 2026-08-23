@@ -326,6 +326,14 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 host_config['cpuset_mems'] = str(container.cpuset.cpuset_mems)
             # The time unit in docker of heath checking is us, and the unit
             # of interval and timeout is seconds.
+            # Handed to docker so it writes them into the container's
+            # resolv.conf. Both are needed together: a search domain with
+            # an inherited nameserver still has the query forwarded from
+            # the host's namespace, where the tenant's DNS is not visible.
+            if container.dns:
+                host_config['dns'] = container.dns
+            if container.dns_search:
+                host_config['dns_search'] = container.dns_search
             if container.healthcheck:
                 healthcheck = {}
                 healthcheck['test'] = container.healthcheck.get('test', '')

@@ -40,6 +40,8 @@ _basic_keys = (
     'restart_policy',
     'status_detail',
     'exit_code',
+    'dns',
+    'dns_search',
     'interactive',
     'tty',
     'image_driver',

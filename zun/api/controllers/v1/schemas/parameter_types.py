@@ -413,6 +413,27 @@ exec_command = {
     'minLength': 1,
 }
 
+dns = {
+    'type': ['array', 'null'],
+    'items': {
+        'type': 'string',
+        'minLength': 1,
+        'maxLength': 255,
+    },
+    'maxItems': 3,
+}
+
+dns_search = {
+    'type': ['array', 'null'],
+    'items': {
+        'type': 'string',
+        'minLength': 1,
+        'maxLength': 255,
+    },
+    'maxItems': 6,
+}
+
+
 security_groups = {
     'type': ['array', 'null'],
     'items': {

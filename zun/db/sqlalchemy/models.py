@@ -169,6 +169,12 @@ class Container(Base):
     # What the container's process returned. docker reports it and callers
     # script against it; without it `docker run false` looks like success.
     exit_code = Column(Integer, nullable=True)
+    # Resolvers and search domains for the container. Not merely a
+    # convenience: a container that inherits the host's resolver has its
+    # queries forwarded from the host's namespace, where the tenant's
+    # network -- and so its DNS records -- cannot be reached.
+    dns = Column(JSONEncodedList, nullable=True)
+    dns_search = Column(JSONEncodedList, nullable=True)
     blkio_weight = Column(Integer, nullable=True)      # 10..1000 relative
     device_read_bps = Column(BigInteger, nullable=True)   # bytes/s on rootfs dev
     device_write_bps = Column(BigInteger, nullable=True)
