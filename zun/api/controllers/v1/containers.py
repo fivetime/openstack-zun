@@ -185,13 +185,19 @@ class ContainersController(base.Controller):
 
         container_allowed_filters = ['name', 'image', 'project_id', 'user_id',
                                      'memory', 'host', 'task_state', 'status',
-                                     'auto_remove']
+                                     'auto_remove', 'labels']
         filters = {}
         for filter_key in container_allowed_filters:
             if filter_key in kwargs:
                 policy_action = policies.CONTAINER % ('get_one:' + filter_key)
                 context.can(policy_action, might_not_exist=True)
                 filter_value = kwargs.pop(filter_key)
+                if filter_key == 'labels':
+                    # Given as `labels=k=v,other` -- a repeated query
+                    # parameter is awkward for callers to build, and the
+                    # values themselves never contain a comma.
+                    filter_value = [item for item in
+                                    str(filter_value).split(',') if item]
                 filters[filter_key] = filter_value
         marker_obj = None
         marker = kwargs.pop('marker', None)

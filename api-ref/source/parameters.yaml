@@ -2066,6 +2066,16 @@ status_detail:
   in: body
   required: true
   type: string
+labels_filter:
+  description: |
+    Return only containers carrying every label given, as
+    ``labels=key=value,other``. A label named without a value matches on
+    the key alone. Clients that group their own containers by label --
+    docker compose does, and by nothing else -- would otherwise have to
+    fetch every container in the project and discard most of them.
+  in: query
+  required: false
+  type: string
 dns:
   description: |
     Resolvers written into the container's ``/etc/resolv.conf``. At most

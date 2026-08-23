@@ -147,6 +147,38 @@ class Connection(object):
         return self._add_filters(query, models.Container, filters=filters,
                                  filter_names=filter_names)
 
+    @staticmethod
+    def _filter_by_labels(containers, labels):
+        """Keep the containers carrying every label asked for.
+
+        Applied after the query rather than in it: labels are stored as a
+        serialized column, and matching a key inside one with SQL means
+        matching text, which depends on how the value happened to be
+        written. What this saves is not the database round trip -- that is
+        local to the API -- but sending every container of a project over
+        the wire for the caller to discard, which is what a client with no
+        label filter has to do.
+
+        A label given without a value matches on the key alone, as docker
+        does; several labels must all match.
+        """
+        if not labels:
+            return containers
+        if isinstance(labels, dict):
+            wanted = labels
+        else:
+            wanted = {}
+            for item in labels:
+                key, _sep, value = item.partition('=')
+                wanted[key] = value if _sep else None
+        kept = []
+        for container in containers:
+            have = container.labels or {}
+            if all(key in have and (value is None or have[key] == value)
+                   for key, value in wanted.items()):
+                kept.append(container)
+        return kept
+
     def _add_container_type_filter(self, container_type, query):
         if container_type != consts.TYPE_ANY:
             query = query.filter_by(container_type=container_type)
@@ -158,9 +190,11 @@ class Connection(object):
             query = session.query(models.Container)
             query = self._add_project_filters(context, query)
             query = self._add_container_type_filter(container_type, query)
+            labels = (filters or {}).pop('labels', None)
             query = self._add_containers_filters(query, filters)
-            return _paginate_query(models.Container, limit, marker,
-                                   sort_key, sort_dir, query)
+            containers = _paginate_query(models.Container, limit, marker,
+                                         sort_key, sort_dir, query)
+            return self._filter_by_labels(containers, labels)
 
     def _validate_unique_container_name(self, context, name):
         with _session_for_read() as session:
