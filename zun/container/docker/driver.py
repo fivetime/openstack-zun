@@ -45,6 +45,10 @@ from zun import objects
 CONF = zun.conf.CONF
 LOG = logging.getLogger(__name__)
 ATTACH_FLAG = "/attach/ws?logs=0&stream=1&stdin=1&stdout=1&stderr=1"
+# The same stream with nothing going the other way. A container created
+# without a terminal has no stdin to attach to and refuses the session
+# above; it still writes output, and this is how that output is followed.
+LOGS_FLAG = "/attach/ws?logs=0&stream=1&stdin=0&stdout=%d&stderr=%d"
 
 
 def is_not_found(e):
@@ -1168,6 +1172,22 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
     @check_container_id
     def get_websocket_url(self, context, container):
+        return self._stream_url(container, ATTACH_FLAG)
+
+    @check_container_id
+    def get_logs_url(self, context, container, stdout=True, stderr=True):
+        return self._stream_url(container,
+                                LOGS_FLAG % (int(bool(stdout)),
+                                             int(bool(stderr))))
+
+    def _stream_url(self, container, flag):
+        """Where the daemon serves a stream for this container.
+
+        Not the socket the rest of this driver talks over. A stream outlives
+        the request that asked for it and is read by zun-wsproxy, which runs
+        elsewhere, so it has to be an address that resolves off this node --
+        which is why the daemon is told to listen on a port as well.
+        """
         protocol = "wss" if (not CONF.docker.api_insecure and
                              CONF.docker.ca_file and
                              CONF.docker.key_file and
@@ -1175,10 +1195,9 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         version = CONF.docker.docker_remote_api_version
         remote_api_host = CONF.docker.docker_remote_api_host
         remote_api_port = CONF.docker.docker_remote_api_port
-        url = protocol + "://" + remote_api_host + ":" + remote_api_port \
+        return protocol + "://" + remote_api_host + ":" + remote_api_port \
             + "/v" + version + "/containers/" + container.container_id \
-            + ATTACH_FLAG
-        return url
+            + flag
 
     @check_container_id
     @wrap_docker_error

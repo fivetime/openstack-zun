@@ -950,7 +950,7 @@ class ContainersController(base.Controller):
     @exception.wrap_pecan_controller_exception
     @validation.validate_query_param(pecan.request, schema.query_param_logs)
     def logs(self, container_ident, stdout=True, stderr=True,
-             timestamps=False, tail='all', since=None):
+             timestamps=False, tail='all', since=None, follow=False):
         """Get logs of the given container.
 
         :param container_ident: UUID or Name of a container.
@@ -961,6 +961,8 @@ class ContainersController(base.Controller):
                      (default: get all logs)
         :param since: Show logs since a given datetime or
                      integer epoch (in seconds).
+        :param follow: Return a session that carries output written from
+                       now on, rather than what has been written so far.
         """
         container = api_utils.get_resource('Container', container_ident)
         check_policy_on_container(container.as_dict(), "container:logs")
@@ -974,9 +976,19 @@ class ContainersController(base.Controller):
             raise exception.InvalidValue(_('Valid stdout, stderr and '
                                            'timestamps values are: %s')
                                          % bools)
-        LOG.debug('Calling compute.container_logs with %s', container.uuid)
         context = pecan.request.context
         compute_api = pecan.request.compute_api
+        if strutils.bool_from_string(follow, strict=False):
+            # A stream, not a body: what has been written already is what
+            # this same call without follow returns, and asking for both in
+            # one answer would mean holding the request open for as long as
+            # the container runs.
+            api_utils.version_check('logs_follow', '1.43')
+            LOG.debug('Calling compute.container_logs_url with %s',
+                      container.uuid)
+            return compute_api.container_logs_url(context, container,
+                                                  stdout, stderr)
+        LOG.debug('Calling compute.container_logs with %s', container.uuid)
         return compute_api.container_logs(context, container, stdout, stderr,
                                           timestamps, tail, since)
 

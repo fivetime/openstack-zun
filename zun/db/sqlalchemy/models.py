@@ -157,6 +157,8 @@ class Container(Base):
     image_driver = Column(String(255))
     websocket_url = Column(String(255))
     websocket_token = Column(String(255))
+    logs_url = Column(String(255))
+    logs_token = Column(String(255))
     security_groups = Column(JSONEncodedList)
     auto_remove = Column(Boolean, default=False)
     runtime = Column(String(32))

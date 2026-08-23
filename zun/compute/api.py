@@ -172,6 +172,15 @@ class API(object):
         return self.rpcapi.container_logs(context, container, stdout, stderr,
                                           timestamps, tail, since)
 
+    def container_logs_url(self, context, container, stdout, stderr):
+        answer = self.rpcapi.container_logs_url(context, container,
+                                                stdout, stderr)
+        base = answer.get('proxy_base') or CONF.websocket_proxy.base_url
+        # Same shape attach answers with, plus what tells the proxy which of
+        # a container's two sessions this is.
+        return '%s?token=%s&uuid=%s&stream=logs' % (
+            base, answer.get('token'), container.uuid)
+
     def container_exec(self, context, container, *args):
         data = self.rpcapi.container_exec(context, container, *args)
         token = data.pop('token', None)

@@ -141,7 +141,8 @@ query_param_logs = {
         'stderr': parameter_types.boolean_extended,
         'timestamps': parameter_types.boolean_extended,
         'tail': parameter_types.str_and_int,
-        'since': parameter_types.logs_since
+        'since': parameter_types.logs_since,
+        'follow': parameter_types.boolean_extended
     },
     'additionalProperties': False
 }

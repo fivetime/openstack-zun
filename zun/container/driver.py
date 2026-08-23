@@ -497,6 +497,16 @@ class ContainerDriver(object):
         """Get websocket url of a container."""
         raise NotImplementedError()
 
+    def get_logs_url(self, context, container, stdout=True, stderr=True):
+        """Get the url of a session that follows a container's output.
+
+        Like attach, but one way: nothing is sent to the process, so a
+        container that was created without a terminal can still be followed.
+        What it carries is output written from now on; what was written
+        before it opened is what show_logs returns.
+        """
+        raise NotImplementedError()
+
     def resize(self, context, container, height, weight):
         """Resize tty of a container."""
         raise NotImplementedError()

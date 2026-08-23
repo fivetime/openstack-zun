@@ -1268,6 +1268,57 @@ class TestManager(base.TestCase):
         mock_save.assert_called_once()
         mock_inspect.assert_called_once_with(image.repo)
 
+    @mock.patch.object(Container, 'save')
+    @mock.patch.object(fake_driver, 'get_logs_url')
+    def test_container_logs_url(self, mock_get_url, mock_save):
+        mock_get_url.return_value = 'ws://node:2375/v1.44/containers/id/logs'
+        container = Container(self.context, **utils.get_test_container())
+
+        answer = self.compute_manager.container_logs_url(
+            self.context, container, True, True)
+
+        mock_get_url.assert_called_once_with(self.context, container,
+                                             stdout=True, stderr=True)
+        self.assertEqual('ws://node:2375/v1.44/containers/id/logs',
+                         container.logs_url)
+        self.assertTrue(container.logs_token)
+        self.assertEqual(container.logs_token, answer['token'])
+        mock_save.assert_called_once_with(self.context)
+
+    @mock.patch.object(Container, 'save')
+    @mock.patch.object(fake_driver, 'get_logs_url')
+    @mock.patch.object(fake_driver, 'get_websocket_url')
+    def test_following_logs_leaves_the_attach_session_alone(
+            self, mock_attach_url, mock_logs_url, mock_save):
+        """Two sessions at once is ordinary and must stay possible.
+
+        Somebody watching the output while somebody else is attached is a
+        thing people do. Were the two to share one slot, whichever started
+        second would turn the other's token into a stranger's.
+        """
+        mock_attach_url.return_value = 'ws://node:2375/attach'
+        mock_logs_url.return_value = 'ws://node:2375/logs'
+        container = Container(self.context, **utils.get_test_container())
+
+        attached = self.compute_manager.container_attach(
+            self.context, container)
+        followed = self.compute_manager.container_logs_url(
+            self.context, container, True, True)
+
+        self.assertEqual('ws://node:2375/attach', container.websocket_url)
+        self.assertEqual('ws://node:2375/logs', container.logs_url)
+        self.assertNotEqual(attached['token'], followed['token'])
+        self.assertEqual(attached['token'], container.websocket_token)
+        self.assertEqual(followed['token'], container.logs_token)
+
+    @mock.patch.object(fake_driver, 'get_logs_url')
+    def test_container_logs_url_failed(self, mock_get_url):
+        mock_get_url.side_effect = exception.DockerError
+        container = Container(self.context, **utils.get_test_container())
+        self.assertRaises(exception.DockerError,
+                          self.compute_manager.container_logs_url,
+                          self.context, container, True, True)
+
     @mock.patch.object(fake_driver, 'execute_resize')
     def test_container_exec_resize(self, mock_resize):
         self.compute_manager.container_exec_resize(

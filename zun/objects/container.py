@@ -91,6 +91,8 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
         'image_driver': fields.StringField(nullable=True),
         'websocket_url': fields.StringField(nullable=True),
         'websocket_token': fields.StringField(nullable=True),
+        'logs_url': fields.StringField(nullable=True),
+        'logs_token': fields.StringField(nullable=True),
         'security_groups': fields.ListOfStringsField(nullable=True),
         'runtime': fields.StringField(nullable=True),
         'pci_devices': fields.ListOfObjectsField('PciDevice',
@@ -445,7 +447,9 @@ class Container(ContainerBase):
     #                does not name its resolver has docker forward
     #                queries from the host's namespace, where the
     #                tenant's network cannot be reached.
-    VERSION = '1.48'
+    # Version 1.49: Add 'logs_url' and 'logs_token' -- a session that
+    #               follows the output rather than joining it
+    VERSION = '1.49'
 
     container_type = consts.TYPE_CONTAINER
 
@@ -457,9 +461,10 @@ class Capsule(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
-    # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.5: Inherits exit_code from ContainerBase
-    VERSION = '1.6'
+    # Version 1.6: Inherits dns and dns_search from ContainerBase
+    # Version 1.7: Inherits logs_url and logs_token from ContainerBase
+    VERSION = '1.7'
 
     container_type = consts.TYPE_CAPSULE
 
@@ -503,9 +508,10 @@ class CapsuleContainer(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
-    # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.5: Inherits exit_code from ContainerBase
-    VERSION = '1.6'
+    # Version 1.6: Inherits dns and dns_search from ContainerBase
+    # Version 1.7: Inherits logs_url and logs_token from ContainerBase
+    VERSION = '1.7'
 
     container_type = consts.TYPE_CAPSULE_CONTAINER
 
@@ -534,9 +540,10 @@ class CapsuleInitContainer(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
-    # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.5: Inherits exit_code from ContainerBase
-    VERSION = '1.6'
+    # Version 1.6: Inherits dns and dns_search from ContainerBase
+    # Version 1.7: Inherits logs_url and logs_token from ContainerBase
+    VERSION = '1.7'
 
     container_type = consts.TYPE_CAPSULE_INIT_CONTAINER
 

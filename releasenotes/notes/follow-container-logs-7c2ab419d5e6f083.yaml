@@ -1,0 +1,27 @@
+---
+features:
+  - |
+    A container's logs can now be followed rather than read once. Asking for
+    ``GET /v1/containers/{ident}/logs?follow=true`` at microversion 1.43
+    answers with the websocket url of that session, in the same shape the
+    attach call answers with; connecting there carries the output the
+    container writes from then on.
+
+    History and following are two calls rather than one. ``tail``, ``since``
+    and ``timestamps`` describe output already written, and a single answer
+    that both replayed and stayed open would have to be held for as long as
+    the container runs. A client that wants both asks for the history first
+    and opens the stream second.
+
+    The session is kept apart from the attach one. Being followed while
+    somebody is attached is ordinary, and sharing a slot would mean whichever
+    started second turned the other's token into a stranger's.
+upgrade:
+  - |
+    The ``container`` table gains ``logs_url`` and ``logs_token``.
+  - |
+    Following logs reads a stream the container runtime serves, which is the
+    same thing attach reads. On a compute node running docker that means the
+    daemon has to listen on a port as well as its socket, as the install guide
+    already requires for attach; where it listens on the socket alone, both
+    calls answer with an address that nothing is serving.

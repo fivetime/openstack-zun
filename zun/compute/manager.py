@@ -1037,6 +1037,29 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
+    def container_logs_url(self, context, container, stdout, stderr):
+        LOG.debug('Get logs stream url for the container: %s', container.uuid)
+        try:
+            driver = self._get_driver(container)
+            url = driver.get_logs_url(context, container,
+                                      stdout=stdout, stderr=stderr)
+            token = uuidutils.generate_uuid()
+            # Kept apart from the attach session. Being followed while
+            # someone is attached is ordinary, and one slot for both means
+            # whichever started second makes the other's token a stranger's.
+            container.logs_url = url
+            container.logs_token = token
+            container.save(context)
+            # Which proxy reaches this session, said by the node that knows,
+            # for the reason the attach path above gives.
+            return {'token': token,
+                    'proxy_base': CONF.websocket_proxy.base_url}
+        except Exception as e:
+            LOG.error("Error occurred while getting the logs stream url: %s",
+                      str(e))
+            raise
+
+    @translate_exception
     def container_resize(self, context, container, height, width):
         LOG.debug('Resize tty to the container: %s', container.uuid)
         try:

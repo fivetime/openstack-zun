@@ -230,6 +230,7 @@ class ZunProxyRequestHandlerBase(object):
         token = urlparse.parse_qs(query).get("token", [""]).pop()
         uuid = urlparse.parse_qs(query).get("uuid", [""]).pop()
         exec_id = urlparse.parse_qs(query).get("exec_id", [""]).pop()
+        stream = urlparse.parse_qs(query).get("stream", [""]).pop()
 
         ctx = context.get_admin_context(all_projects=True)
 
@@ -237,6 +238,8 @@ class ZunProxyRequestHandlerBase(object):
 
         if exec_id:
             self._new_exec_client(container, token, uuid, exec_id)
+        elif stream == 'logs':
+            self._new_logs_client(container, token, uuid)
         else:
             self._new_websocket_client(container, token, uuid)
 
@@ -290,6 +293,36 @@ class ZunProxyRequestHandlerBase(object):
                 self.target.ws.close()
                 self.vmsg(_("Websocket client or target closed"))
             raise
+
+    def _new_logs_client(self, container, token, uuid):
+        """Follow what the container writes from here on.
+
+        Its own session rather than the attach one: being followed while
+        somebody is attached is ordinary, and sharing a slot would mean
+        whichever started second turned the other's token into a stranger's.
+        """
+        if not token or token != container.logs_token:
+            raise exception.InvalidWebsocketToken(token)
+
+        access_url = '%s?token=%s&uuid=%s&stream=logs' % (
+            CONF.websocket_proxy.base_url, token, uuid)
+        self._verify_origin(access_url)
+
+        if not container.logs_url:
+            raise exception.InvalidWebsocketUrl()
+
+        raw_url = container.logs_url
+        target_url = _as_websocket_url(raw_url)
+        client = WebSocketClient(host_url=target_url, escape="~",
+                                 close_wait=0.5, **_target_options(raw_url))
+        client.connect()
+        self.target = client
+        try:
+            self.do_websocket_proxy(client.ws)
+        finally:
+            if client.ws:
+                client.ws.close()
+            self.vmsg(_("Closed the logs stream"))
 
     def _new_exec_client(self, container, token, uuid, exec_id):
         exec_instance = None

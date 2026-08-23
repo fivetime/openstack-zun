@@ -1309,6 +1309,7 @@ Request
    - stderr: stderr
    - stdout: stdout
    - since: since
+   - follow: follow
 
 Request Example
 ----------------
@@ -1321,6 +1322,10 @@ Response
 
 This request returns logs string as a response, which is
 not in json format.
+
+With ``follow`` set, it returns instead the websocket url of the session,
+as the attach call does. Connecting to it carries the output the container
+writes from then on.
 
 
 Display the running processes in a container

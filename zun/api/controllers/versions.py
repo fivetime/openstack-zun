@@ -75,10 +75,11 @@ REST_API_VERSION_HISTORY = """REST API Version History:
     * 1.40 - Add support for specifying entrypoint of the image
     * 1.41 - Add exit_code to the container -- what its process returned
     * 1.42 - Filter the container list by label
+    * 1.43 - Follow a container's logs instead of reading them once
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.42'
+CURRENT_MAX_VER = '1.43'
 
 
 class Version(object):

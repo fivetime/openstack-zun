@@ -1712,6 +1712,33 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 'the runtime returned no streaming url for attach'))
         return response.url
 
+    def get_logs_url(self, context, container, stdout=True, stderr=True):
+        """Where to follow this container's output.
+
+        The same Attach the session above opens, asked for without stdin.
+        The runtime's own log file is what show_logs reads, and following a
+        file it appends to would mean watching it from here -- the stream it
+        already serves is the thing being followed, and it is served on the
+        node zun-wsproxy runs on for the same reason attach is.
+        """
+        if not container.container_id:
+            raise exception.ZunException(
+                _('Container %s was never created on this host')
+                % container.uuid)
+        tty = bool(container.tty or container.interactive)
+        response = self.runtime_stub.Attach(api_pb2.AttachRequest(
+            container_id=container.container_id,
+            tty=tty,
+            stdin=False,
+            stdout=bool(stdout),
+            # A terminal merges the two, and asking for both is refused.
+            stderr=bool(stderr) and not tty,
+        ))
+        if not response.url:
+            raise exception.ZunException(_(
+                'the runtime returned no streaming url to follow logs'))
+        return response.url
+
     def pull_image(self, context, repo, tag, image_pull_policy='always',
                    driver_name=None, registry=None):
         """Fetch an image through the runtime, which is where it has to end up.

@@ -63,6 +63,45 @@ class TestDockerDriver(base.DriverTestCase):
         self.dfc_context_manager.__enter__.return_value = self.mock_docker
         self.addCleanup(dfc_patcher.stop)
 
+    def test_get_logs_url(self):
+        CONF.set_override('docker_remote_api_host', '10.0.0.7', 'docker')
+        CONF.set_override('docker_remote_api_port', '2375', 'docker')
+        CONF.set_override('docker_remote_api_version', '1.44', 'docker')
+        container = self.mock_default_container
+        container.container_id = 'abc123'
+
+        url = self.driver.get_logs_url(self.context, container)
+
+        self.assertEqual(
+            'ws://10.0.0.7:2375/v1.44/containers/abc123'
+            '/attach/ws?logs=0&stream=1&stdin=0&stdout=1&stderr=1', url)
+
+    def test_get_logs_url_carries_only_what_was_asked_for(self):
+        CONF.set_override('docker_remote_api_host', '10.0.0.7', 'docker')
+        CONF.set_override('docker_remote_api_port', '2375', 'docker')
+        CONF.set_override('docker_remote_api_version', '1.44', 'docker')
+        container = self.mock_default_container
+        container.container_id = 'abc123'
+
+        url = self.driver.get_logs_url(self.context, container,
+                                       stdout=False, stderr=True)
+
+        self.assertIn('stdout=0&stderr=1', url)
+
+    def test_get_logs_url_never_opens_stdin(self):
+        """Following output must not become a way to type at the process.
+
+        It is also what lets a container made without a terminal be
+        followed at all -- the daemon refuses a session asking for a stdin
+        that container has not got.
+        """
+        CONF.set_override('docker_remote_api_host', '10.0.0.7', 'docker')
+        container = self.mock_default_container
+        container.container_id = 'abc123'
+
+        self.assertIn('stdin=0',
+                      self.driver.get_logs_url(self.context, container))
+
     def test_inspect_image_path_is_none(self):
         self.mock_docker.inspect_image = mock.Mock()
         mock_image = mock.MagicMock()

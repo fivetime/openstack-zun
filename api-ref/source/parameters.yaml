@@ -251,6 +251,17 @@ tag:
   in: query
   required: true
   type: string
+follow:
+  description: |
+    Return a session that carries output written from now on, rather than
+    what has been written so far. The answer is the websocket url of that
+    session, in the same shape the attach call answers with;
+    ``timestamps``, ``tail`` and ``since`` describe output already written
+    and do not apply. To show history and then follow, call this once
+    without ``follow`` and once with. New in version 1.43.
+  in: query
+  required: false
+  type: boolean
 tail:
   description: |
     Number of lines to show from the end of the logs, default is get all logs.

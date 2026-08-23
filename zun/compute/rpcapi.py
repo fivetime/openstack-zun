@@ -120,6 +120,11 @@ class API(rpc_service.API):
                           timestamps=timestamps, tail=tail, since=since)
 
     @check_container_host
+    def container_logs_url(self, context, container, stdout, stderr):
+        return self._call(container.host, 'container_logs_url',
+                          container=container, stdout=stdout, stderr=stderr)
+
+    @check_container_host
     def container_exec(self, context, container, command, run, interactive):
         return self._call(container.host, 'container_exec',
                           container=container, command=command, run=run,

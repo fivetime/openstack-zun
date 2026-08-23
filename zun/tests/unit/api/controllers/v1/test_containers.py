@@ -1261,6 +1261,67 @@ class TestContainerController(api_base.FunctionalTest):
         mock_container_logs.assert_called_once_with(
             mock.ANY, test_container_obj, True, True, False, '1', '100000000')
 
+    @patch('zun.compute.api.API.container_logs_url')
+    @patch('zun.compute.api.API.container_logs')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_get_logs_with_follow(self, mock_get_by_uuid, mock_container_logs,
+                                  mock_logs_url):
+        mock_logs_url.return_value = 'ws://proxy/?token=a-token&stream=logs'
+        test_container = utils.get_test_container()
+        test_container_obj = objects.Container(self.context, **test_container)
+        mock_get_by_uuid.return_value = test_container_obj
+
+        response = self.get(
+            '/v1/containers/%s/logs?follow=True' % test_container.get('uuid'),
+            headers={'OpenStack-API-Version': 'container 1.43'})
+
+        self.assertEqual(200, response.status_int)
+        mock_logs_url.assert_called_once_with(
+            mock.ANY, test_container_obj, True, True)
+        # The body is not asked for as well: what has been written already is
+        # the other call's answer.
+        self.assertFalse(mock_container_logs.called)
+
+    @patch('zun.compute.api.API.container_logs_url')
+    @patch('zun.compute.api.API.container_logs')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_get_logs_follow_needs_the_version_that_has_it(
+            self, mock_get_by_uuid, mock_container_logs, mock_logs_url):
+        """An older client asking to follow is told, not quietly answered.
+
+        Answering with the body it did not ask for would look like a stream
+        that ended at once, which is the same shape as a container with
+        nothing to say.
+        """
+        test_container = utils.get_test_container()
+        test_container_obj = objects.Container(self.context, **test_container)
+        mock_get_by_uuid.return_value = test_container_obj
+
+        self.assertRaises(
+            AppError, self.get,
+            '/v1/containers/%s/logs?follow=True' % test_container.get('uuid'),
+            headers={'OpenStack-API-Version': 'container 1.42'})
+        self.assertFalse(mock_logs_url.called)
+        self.assertFalse(mock_container_logs.called)
+
+    @patch('zun.compute.api.API.container_logs_url')
+    @patch('zun.compute.api.API.container_logs')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_get_logs_without_follow_still_returns_the_body(
+            self, mock_get_by_uuid, mock_container_logs, mock_logs_url):
+        mock_container_logs.return_value = "test"
+        test_container = utils.get_test_container()
+        test_container_obj = objects.Container(self.context, **test_container)
+        mock_get_by_uuid.return_value = test_container_obj
+
+        response = self.get(
+            '/v1/containers/%s/logs?follow=False' % test_container.get('uuid'),
+            headers={'OpenStack-API-Version': 'container 1.43'})
+
+        self.assertEqual(200, response.status_int)
+        self.assertTrue(mock_container_logs.called)
+        self.assertFalse(mock_logs_url.called)
+
     @patch('zun.compute.api.API.container_logs')
     @patch('zun.objects.Container.get_by_uuid')
     def test_get_logs_put_fails(self, mock_get_by_uuid, mock_container_logs):

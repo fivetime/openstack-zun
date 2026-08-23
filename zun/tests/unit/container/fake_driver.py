@@ -102,6 +102,9 @@ class FakeDriver(driver.BaseDriver, driver.ContainerDriver,
     def get_websocket_url(self, context, container):
         pass
 
+    def get_logs_url(self, context, container, stdout=True, stderr=True):
+        pass
+
     @check_container_id
     def resize(self, context, container, height, weight):
         pass

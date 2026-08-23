@@ -84,6 +84,8 @@ def get_test_container(**kwargs):
         'websocket_url': 'ws://127.0.0.1:6784/4c03164962fa/attach/'
                          'ws?logs=0&stream=1&stdin=1&stdout=1&stderr=1',
         'websocket_token': '7878038e-957c-4d52-ae19-1e9561784e7b',
+        'logs_url': kwargs.get('logs_url', None),
+        'logs_token': kwargs.get('logs_token', None),
         'pids_limit': kwargs.get('pids_limit', None),
         'swap': kwargs.get('swap', None),
         'exit_code': kwargs.get('exit_code', None),
