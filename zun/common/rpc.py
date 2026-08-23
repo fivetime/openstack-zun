@@ -29,10 +29,15 @@ from oslo_utils import importutils
 
 from zun.common import context as zun_context
 from zun.common import exception
+import zun.conf
+
+CONF = zun.conf.CONF
 
 profiler = importutils.try_import("osprofiler.profiler")
 
 TRANSPORT = None
+NOTIFICATION_TRANSPORT = None
+NOTIFIER = None
 ALLOWED_EXMODS = [
     exception.__name__,
 ]
@@ -40,10 +45,32 @@ EXTRA_EXMODS = []
 
 
 def init(conf):
-    global TRANSPORT
+    global TRANSPORT, NOTIFICATION_TRANSPORT, NOTIFIER
     exmods = get_allowed_exmods()
     TRANSPORT = messaging.get_rpc_transport(
         conf, allowed_remote_exmods=exmods)
+    # A separate transport, because a deployment may want its
+    # notifications somewhere other than its RPC -- ceilometer reads a bus
+    # that the control plane's own calls have no business sharing.
+    NOTIFICATION_TRANSPORT = messaging.get_notification_transport(
+        conf, allowed_remote_exmods=exmods)
+    serializer = RequestContextSerializer(messaging.JsonPayloadSerializer())
+    NOTIFIER = messaging.Notifier(NOTIFICATION_TRANSPORT,
+                                  serializer=serializer)
+
+
+def get_notifier(service=None, host=None, publisher_id=None):
+    """A notifier for one service, or None before init().
+
+    Returns None rather than raising when notifications were never set up:
+    a container should still be created on a deployment that does not
+    listen for the fact.
+    """
+    if NOTIFIER is None:
+        return None
+    if publisher_id is None:
+        publisher_id = '%s.%s' % (service or 'zun', host or CONF.host)
+    return NOTIFIER.prepare(publisher_id=publisher_id)
 
 
 def set_defaults(control_exchange):

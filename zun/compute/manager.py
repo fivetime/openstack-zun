@@ -34,6 +34,7 @@ from zun.common.utils import wrap_container_event
 from zun.common.utils import wrap_exception
 from zun.compute import compute_node_tracker
 from zun.compute import container_actions
+from zun.compute import notifications
 import zun.conf
 from zun.container import driver as driver_module
 from zun.image.glance import driver as glance
@@ -414,6 +415,8 @@ class Manager(periodic_task.PeriodicTasks):
                              requested_volumes, pci_requests=None,
                              limits=None):
         LOG.debug('Creating container: %s', container.uuid)
+        notifications.notify(context, container, 'create', 'start',
+                             host=self.host)
 
         try:
             rt = self._get_resource_tracker()
@@ -421,6 +424,8 @@ class Manager(periodic_task.PeriodicTasks):
                 created_container = self._do_container_create_base(
                     context, container, requested_networks, requested_volumes,
                     limits)
+                notifications.notify(context, created_container, 'create',
+                                     'end', host=self.host)
                 return created_container
         except exception.ResourcesUnavailable as e:
             with excutils.save_and_reraise_exception():
@@ -563,6 +568,8 @@ class Manager(periodic_task.PeriodicTasks):
     @wrap_container_event(prefix='compute')
     def _do_container_start(self, context, container):
         LOG.debug('Starting container: %s', container.uuid)
+        notifications.notify(context, container, 'start', 'start',
+                             host=self.host)
         with self._update_task_state(context, container,
                                      consts.CONTAINER_STARTING):
             try:
@@ -570,6 +577,8 @@ class Manager(periodic_task.PeriodicTasks):
                 container = self.driver.start(context, container)
                 container.started_at = timeutils.utcnow()
                 container.save(context)
+                notifications.notify(context, container, 'start', 'end',
+                                     host=self.host)
                 return container
             except exception.DockerError as e:
                 with excutils.save_and_reraise_exception():
@@ -587,11 +596,22 @@ class Manager(periodic_task.PeriodicTasks):
         @utils.synchronized(container.uuid)
         def do_container_delete():
             self._do_container_delete(context, container, force)
+            # Sent from here rather than inside, because the delete runs in
+            # a spawned thread and its caller has already returned: without
+            # an end from the thread that did the work, a consumer never
+            # learns the container finally went away.
+            notifications.notify(context, container, 'delete', 'end',
+                                 host=self.host)
 
         utils.spawn_n(do_container_delete)
 
     def _do_container_delete(self, context, container, force):
         LOG.debug('Deleting container: %s', container.uuid)
+        # Sent before the work rather than after: once the row is gone
+        # there is nothing left to describe, and a bill needs to know when
+        # the container stopped costing.
+        notifications.notify(context, container, 'delete', 'start',
+                             host=self.host)
         with self._update_task_state(context, container,
                                      consts.CONTAINER_DELETING):
             reraise = not force
@@ -702,10 +722,14 @@ class Manager(periodic_task.PeriodicTasks):
                           finish_action=container_actions.STOP)
     def _do_container_stop(self, context, container, timeout):
         LOG.debug('Stopping container: %s', container.uuid)
+        notifications.notify(context, container, 'stop', 'start',
+                             host=self.host)
         with self._update_task_state(context, container,
                                      consts.CONTAINER_STOPPING):
             # NOTE(hongbin): capsule shouldn't reach here
             container = self.driver.stop(context, container, timeout)
+            notifications.notify(context, container, 'stop', 'end',
+                                 host=self.host)
             return container
 
     def container_stop(self, context, container, timeout):
