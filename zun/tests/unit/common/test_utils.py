@@ -198,8 +198,9 @@ class TestUtils(base.TestCase):
             utils.capsule_get_volume_spec(params)
 
         with self.assertRaisesRegex(
-                exception.InvalidCapsuleTemplate, "Zun now Only support "
-                                                  "Cinder volume driver"):
+                exception.InvalidCapsuleTemplate,
+                "A capsule volume needs a cinder, file, emptyDir or nfs "
+                "source"):
             params = ({"volumes": [{"name": "test", "other": {}}]})
             utils.capsule_get_volume_spec(params)
 

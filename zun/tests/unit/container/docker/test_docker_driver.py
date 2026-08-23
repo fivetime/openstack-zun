@@ -143,6 +143,10 @@ class TestDockerDriver(base.DriverTestCase):
         host_config['network_mode'] = 'fake-network'
         host_config['storage_opt'] = {'size': '20G'}
         host_config['privileged'] = False
+        # The runtime is told memory-and-swap as one total, always. A swap of
+        # 0 -- the default -- makes that total the memory itself, which is how
+        # it is told there is no swap.
+        host_config['memswap_limit'] = '512M'
         self.mock_docker.create_host_config.assert_called_once_with(
             **host_config)
 
@@ -217,6 +221,10 @@ class TestDockerDriver(base.DriverTestCase):
         host_config['network_mode'] = 'fake-network'
         host_config['storage_opt'] = {'size': '20G'}
         host_config['privileged'] = False
+        # The runtime is told memory-and-swap as one total, always. A swap of
+        # 0 -- the default -- makes that total the memory itself, which is how
+        # it is told there is no swap.
+        host_config['memswap_limit'] = '512M'
         self.mock_docker.create_host_config.assert_called_once_with(
             **host_config)
 
@@ -289,6 +297,10 @@ class TestDockerDriver(base.DriverTestCase):
         host_config['network_mode'] = 'fake-network'
         host_config['storage_opt'] = {'size': '20G'}
         host_config['privileged'] = False
+        # The runtime is told memory-and-swap as one total, always. A swap of
+        # 0 -- the default -- makes that total the memory itself, which is how
+        # it is told there is no swap.
+        host_config['memswap_limit'] = '512M'
         self.mock_docker.create_host_config.assert_called_once_with(
             **host_config)
 

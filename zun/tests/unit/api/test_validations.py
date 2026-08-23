@@ -99,7 +99,9 @@ class TestSchemaValidations(base.BaseTestCase):
                 self.schema_validator.validate(request_to_validate)
 
     def test_create_schema_invalid_name(self):
-        invalid_names = ['a@', 'a', "", '*' * 265, " ", "     ", "a b", 'ab@']
+        # 'a' is absent on purpose: a one-character name is valid now, so
+        # that a capsule can carry a pod's container names unchanged.
+        invalid_names = ['a@', "", '*' * 265, " ", "     ", "a b", 'ab@']
         for value in invalid_names:
             request_to_validate = {'name': value, 'image': 'nginx'}
             with self.assertRaisesRegex(exception.SchemaValidationError,
@@ -394,7 +396,8 @@ class TestCapsuleSchemaValidations(base.BaseTestCase):
             }
         }
         with self.assertRaisesRegex(exception.SchemaValidationError,
-                                    "'cinder' is a required property"):
+                                    "is not valid under any of the "
+                                    "given schemas"):
             self.schema_validator.validate(request_to_validate)
 
     def test_create_schema_capsule_volume_no_name(self):
@@ -416,5 +419,6 @@ class TestCapsuleSchemaValidations(base.BaseTestCase):
             }
         }
         with self.assertRaisesRegex(exception.SchemaValidationError,
-                                    "'name' is a required property"):
+                                    "is not valid under any of the "
+                                    "given schemas"):
             self.schema_validator.validate(request_to_validate)

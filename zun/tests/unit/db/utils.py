@@ -84,6 +84,16 @@ def get_test_container(**kwargs):
         'websocket_url': 'ws://127.0.0.1:6784/4c03164962fa/attach/'
                          'ws?logs=0&stream=1&stdin=1&stdout=1&stderr=1',
         'websocket_token': '7878038e-957c-4d52-ae19-1e9561784e7b',
+        'pids_limit': kwargs.get('pids_limit', None),
+        'swap': kwargs.get('swap', None),
+        'exit_code': kwargs.get('exit_code', None),
+        'dns': kwargs.get('dns', None),
+        'dns_search': kwargs.get('dns_search', None),
+        'blkio_weight': kwargs.get('blkio_weight', None),
+        'device_read_bps': kwargs.get('device_read_bps', None),
+        'device_write_bps': kwargs.get('device_write_bps', None),
+        'device_read_iops': kwargs.get('device_read_iops', None),
+        'device_write_iops': kwargs.get('device_write_iops', None),
         'security_groups': kwargs.get('security_groups', ['default']),
         'auto_remove': kwargs.get('auto_remove', False),
         'runtime': kwargs.get('runtime', 'runc'),
@@ -139,6 +149,10 @@ def get_test_volume_mapping(**kwargs):
         'container_uuid': kwargs.get('container_uuid',
                                      '1aca1705-20f3-4506-8bc3-59685d86a357'),
         'volume_id': kwargs.get('volume_id', 39),
+        'read_bps': kwargs.get('read_bps', None),
+        'write_bps': kwargs.get('write_bps', None),
+        'read_iops': kwargs.get('read_iops', None),
+        'write_iops': kwargs.get('write_iops', None),
     }
 
 
