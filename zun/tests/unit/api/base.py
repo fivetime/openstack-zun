@@ -22,12 +22,13 @@ import pecan
 import pecan.testing
 from urllib import parse as urlparse
 
-from oslo_config import cfg
 
 from zun.api import hooks
 import zun.conf
 from zun.tests.unit.db import base
 
+
+CONF = zun.conf.CONF
 
 PATH_PREFIX = '/v1'
 CURRENT_VERSION = "container 1.40"
@@ -43,22 +44,16 @@ class FunctionalTest(base.DbTestCase):
 
     def setUp(self):
         super(FunctionalTest, self).setUp()
-        # Set only where they still exist. Both were dropped from
-        # keystonemiddleware -- v2.0 identity along with the api itself, and
-        # the admin_* credentials in favour of an auth plugin -- and setting
-        # an option a library no longer registers raises rather than being
-        # ignored, which stops the whole api suite from running against a
-        # current one.
-        # www_authenticate_uri spares the middleware asking an auth plugin
-        # the test has not got where to send a client it turned away.
-        for name, value in (("auth_version", "v2.0"),
-                            ("admin_user", "admin"),
-                            ("www_authenticate_uri", "http://127.0.0.1:5000")):
-            try:
-                zun.conf.CONF.set_override(name, value,
-                                           group='keystone_authtoken')
-            except cfg.NoSuchOptError:
-                pass
+        # ⚠️ The legacy auth_version and admin_* overrides that stood here
+        # are gone from keystonemiddleware, and setting an option a library no
+        # longer registers raises rather than being ignored -- which stopped
+        # the whole api suite from running. Upstream's form is taken over the
+        # defensive one this fork carried: there is no keystonemiddleware left
+        # that wants them back, and matching upstream keeps this file from
+        # conflicting again.
+        CONF.set_override("www_authenticate_uri",
+                          "http://localhost:5000",
+                          group='keystone_authtoken')
         p = mock.patch('zun.scheduler.client.query.SchedulerClient')
         p.start()
         self.addCleanup(p.stop)
