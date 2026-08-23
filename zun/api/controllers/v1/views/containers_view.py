@@ -39,6 +39,7 @@ _basic_keys = (
     'host',
     'restart_policy',
     'status_detail',
+    'exit_code',
     'interactive',
     'tty',
     'image_driver',

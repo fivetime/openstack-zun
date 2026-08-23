@@ -100,6 +100,7 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
         # flavor-driven per-container limits (see BSS flavor mapping)
         'pids_limit': fields.IntegerField(nullable=True),
         'swap': fields.IntegerField(nullable=True),
+        'exit_code': fields.IntegerField(nullable=True),
         'blkio_weight': fields.IntegerField(nullable=True),
         'device_read_bps': fields.IntegerField(nullable=True),
         'device_write_bps': fields.IntegerField(nullable=True),
@@ -435,7 +436,10 @@ class Container(ContainerBase):
     #               blkio_weight, device_read/write_bps, device_read/write_iops)
     # Version 1.46: Rename memory_swap to swap -- the field is the swap
     #               itself now, not the runtime's memory-plus-swap total
-    VERSION = '1.46'
+    # Version 1.47: Add 'exit_code' -- what the container's process
+    #                returned. docker reports it and callers script
+    #                against it.
+    VERSION = '1.47'
 
     container_type = consts.TYPE_CONTAINER
 
@@ -447,7 +451,8 @@ class Capsule(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
-    VERSION = '1.4'
+    # Version 1.5: Inherits exit_code from ContainerBase
+    VERSION = '1.5'
 
     container_type = consts.TYPE_CAPSULE
 
@@ -491,7 +496,8 @@ class CapsuleContainer(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
-    VERSION = '1.4'
+    # Version 1.5: Inherits exit_code from ContainerBase
+    VERSION = '1.5'
 
     container_type = consts.TYPE_CAPSULE_CONTAINER
 
@@ -520,7 +526,8 @@ class CapsuleInitContainer(ContainerBase):
     # Version 1.2: Add 'annotations' attributes
     # Version 1.3: Remove 'meta' attribute
     # Version 1.4: Add 'cni_metadata' attribute
-    VERSION = '1.4'
+    # Version 1.5: Inherits exit_code from ContainerBase
+    VERSION = '1.5'
 
     container_type = consts.TYPE_CAPSULE_INIT_CONTAINER
 

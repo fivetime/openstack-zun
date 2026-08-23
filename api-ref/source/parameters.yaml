@@ -1512,6 +1512,587 @@ status_detail:
   in: body
   required: true
   type: string
+exit_code:
+  description: |
+    The exit code of the command executed in a container.
+  in: body
+  type: dict
+exec_id:
+  description: |
+    The ID of the exec instance.
+  in: body
+  type: dict
+exec_output:
+  description: |
+    The output of the command executed in a container.
+  in: body
+  type: dict
+exec_resize_output:
+  description: |
+    The output of exec_resize, including exec_id and websocket url.
+  in: body
+  type: array
+exec_url:
+  description: |
+    The URL to start an exec instance.
+  in: body
+  type: dict
+exposed_ports:
+  description: |
+    A list of dictionary data to specify how to expose container's ports.
+    If this parameter is specified, Zun will create a security group with
+    a set of rules to open the ports that should be exposed, and associate
+    the security group to the container. The value is in the form of
+    ``{"<port>/<protocol>: {}"}``, where the ``port`` is the container's
+    port and ``protocol`` is either ``tcp`` or ``udp``. If ``protocol``
+    is not provided, ``tcp`` will be used.
+  in: body
+  required: false
+  type: object
+fixed_ips:
+  description: |
+    A list of fixed IP addresses with subnet IDs and other detailed
+    information.
+  in: body
+  required: true
+  type: string
+forced_down:
+  description: |
+    Whether or not this service was forced down manually by an
+    administrator. This value is useful to know that some 3rd party has
+    verified the service should be marked down.
+  in: body
+  required: true
+  type: boolean
+healthcheck:
+  description: |
+    A dict of health check for the container. Specify a test command to
+    perform to check that the container is healthy. Four parameters are
+    supported:
+
+    * cmd: Command to run to check health.
+    * interval: Time between running the check in seconds.
+    * retries: Consecutive failures needed to report unhealthy.
+    * timeout: Maximum time to allow one check to run in seconds.
+  in: body
+  required: true
+  type: object
+healthcheck-request:
+  description: |
+    A dict of health check for the container. Specify a test command to
+    perform to check that the container is healthy. Four parameters are
+    supported:
+
+    * cmd: Command to run to check health.
+    * interval: Time between running the check in seconds.
+    * retries: Consecutive failures needed to report unhealthy.
+    * timeout: Maximum time to allow one check to run in seconds.
+  in: body
+  required: false
+  type: object
+hints:
+  description: |
+    The dictionary of data to send to the scheduler.
+  in: body
+  required: false
+  type: string
+host:
+  description: |
+    The host for the service.
+  in: body
+  required: true
+  type: string
+host-architecture:
+  description: |
+    The architecture of the host operating system.
+  in: body
+  required: true
+  type: string
+host-cpu_used:
+  description: |
+    The used cpus of the host.
+  in: body
+  required: true
+  type: string
+host-cpus:
+  description: |
+    The total cpus of the host.
+  in: body
+  required: true
+  type: string
+host-disk_total:
+  description: |
+    The total amount of disk of the host.
+  in: body
+  required: true
+  type: string
+host-disk_used:
+  description: |
+    The amount of used disk of the host.
+  in: body
+  required: true
+  type: string
+host-hostname:
+  description: |
+    The hostname.
+  in: body
+  required: true
+  type: string
+host-kernel_version:
+  description: |
+    The kernel version of the host.
+  in: body
+  required: true
+  type: string
+host-labels:
+  description: |
+    The labels of the local container engine (i.e. Docker daemon).
+  in: body
+  required: true
+  type: string
+host-mem_total:
+  description: |
+    The total amount of memory of the host.
+  in: body
+  required: true
+  type: string
+host-mem_used:
+  description: |
+    The amount of used memory of the host.
+  in: body
+  required: true
+  type: string
+host-os:
+  description: |
+    The name of host operating system.
+  in: body
+  required: true
+  type: string
+host-os_type:
+  description: |
+    The type of host operating system.
+  in: body
+  required: true
+  type: string
+host-total_containers:
+  description: |
+    The total number of containers in the host.
+  in: body
+  required: true
+  type: string
+host-uuid:
+  description: |
+    The UUID of the host.
+  in: body
+  required: true
+  type: string
+host_list:
+  description: |
+    The host information list, including hostname, uuid, links, labels,
+    cpus, mem_total and os.
+  in: body
+  required: true
+  type: array
+hostname:
+  description: |
+    The hostname of container.
+  in: body
+  required: true
+  type: string
+hostname-request:
+  description: |
+    The hostname of container.
+  in: body
+  required: false
+  type: string
+id_s:
+  description: |
+    The ID of the Zun service.
+  in: body
+  required: true
+  type: string
+image:
+  description: |
+    The name or ID of the image.
+  in: body
+  required: true
+  type: string
+image_driver:
+  description: |
+    The image driver to use to pull container image.
+  in: body
+  required: true
+  type: string
+image_driver-request:
+  description: |
+    The image driver to use to pull container image. Allowed values are
+    ``docker`` to pull the image from Docker Hub and ``glance`` to pull
+    the image from Glance.
+  in: body
+  required: false
+  type: string
+image_pull_policy:
+  description: |
+    The policy which determines if the image should be pulled prior to starting
+    the container. Allowed values are ``ifnotpresent`` that means pull the
+    image if it does not already exist on the node, ``always`` means always
+    pull the image from repository and ``never`` mean never pull the image.
+  in: body
+  required: true
+  type: string
+image_pull_policy-request:
+  description: |
+    The policy which determines if the image should be pulled prior to starting
+    the container. Allowed values are ``ifnotpresent`` that means pull the
+    image if it does not already exist on the node, ``always`` means always
+    pull the image from repository and ``never`` mean never pull the image.
+  in: body
+  required: false
+  type: string
+interactive:
+  description: |
+    Keep STDIN open even if not attached.
+  in: body
+  required: true
+  type: boolean
+interactive-request:
+  description: |
+    Keep STDIN open even if not attached.
+  in: body
+  required: false
+  type: boolean
+ip_address:
+  description: |
+    The IP address.
+  in: body
+  required: true
+  type: string
+labels:
+  description: |
+    A map of labels of the container.
+  in: body
+  required: true
+  type: object
+labels-request:
+  description: |
+    Adds a map of labels to a container.
+  in: body
+  required: false
+  type: object
+links:
+  description: |
+    A list of relative links. Includes the self and
+    bookmark links.
+  in: body
+  required: true
+  type: array
+swap:
+  description: |
+    Swap in MB the container may use on top of its memory limit. 0 forbids
+    swap and is the default; -1 allows swap without limit. The runtime is
+    told memory and swap as a single total -- that arithmetic belongs to
+    the driver, and no caller has to do it. It can be changed on a running
+    container, alone or together with memory; the total is recomputed from
+    whichever of the two moved.
+  in: body
+  required: false
+  type: integer
+memory:
+  description: |
+    The container memory size in MiB.
+  in: body
+  required: true
+  type: integer
+memory-request:
+  description: |
+    The container memory size in MiB.
+  in: body
+  required: false
+  type: integer
+memory-response:
+  description: |
+    The object of detailed memory quota, including in_use,
+    limit number of memory.
+  in: body
+  required: true
+  type: object
+message:
+  description: |
+    The error message about this action when error occurred.
+  in: body
+  required: true
+  type: string
+mount_read_bps:
+  description: |
+    Optional read ceiling, in bytes per second, on the block device this
+    mount resolves to on the node. Applied to the container cgroup, since
+    the local rbd attach cannot be capped by Ceph itself.
+  in: body
+  required: false
+  type: integer
+mount_read_iops:
+  description: |
+    Optional read IOPS ceiling on the device this mount resolves to.
+  in: body
+  required: false
+  type: integer
+mount_write_bps:
+  description: |
+    Optional write ceiling, in bytes per second, on the device this mount
+    resolves to.
+  in: body
+  required: false
+  type: integer
+mount_write_iops:
+  description: |
+    Optional write IOPS ceiling on the device this mount resolves to.
+  in: body
+  required: false
+  type: integer
+mounts:
+  description: |
+    A list of dictionary data to specify how volumes are mounted into the
+    container. The container will mount the volumes at create time.
+    Each item can have an ``type`` attribute that specifies the volume
+    type. The supported volume types are ``volume`` or ``bind``. If this
+    attribute is not specified, the default is ``volume``.
+    To provision a container with pre-existing Cinder volumes bind-mounted,
+    specify the UUID or name of the volume in the ``source`` attribute.
+    Alternatively, Cinder volumes can be dynamically created. In this case,
+    the size of the volume needs to be specified in the ``size`` attribute.
+    Another option is to mount a user-provided file into the container.
+    In this case, the ``type`` attribute should be 'bind' and
+    the content of the file is contained in the ``source`` attribute.
+    The volumes will be mounted into the file system of the container and
+    the path to mount the volume needs to be specified in the ``destination``
+    attribute.
+  in: body
+  type: object
+name:
+  description: |
+    The name of the container.
+  in: body
+  required: true
+  type: string
+name-request:
+  description: |
+    The name of the container.
+  in: body
+  required: false
+  type: string
+net_id:
+  description: |
+    The UUID of network.
+  in: body
+  required: true
+  type: string
+nets:
+  description: |
+    A list of networks for the container. When you do not specify the nets
+    parameter, the container attaches to the only network created for the
+    current tenant. To provision the container with a NIC for a network,
+    specify the UUID or name of the network in the ``network`` attribute.
+    To provision the container with a NIC for an already existing port,
+    specify the port id or name in the ``port`` attribute.
+
+    If multiple networks are defined, the order in which they appear in the
+    container will not necessarily reflect the order in which they are given
+    in the request. Users should therefore not depend on device order
+    to deduce any information about their network devices.
+  in: body
+  type: object
+port_id:
+  description: |
+    The UUID of port of a container.
+  in: body
+  required: true
+  type: string
+pids_limit:
+  description: |
+    Maximum number of processes the container may run, 8-32768. A fork
+    bomb dies at this limit instead of taking the host PID table with it.
+    Absent means the operator default.
+  in: body
+  required: false
+  type: integer
+ports:
+  description: |
+    The ports exposed on the container.
+  in: body
+  required: true
+  type: string
+privileged:
+  description: |
+    Give extended privileges to the container.
+  in: body
+  required: true
+  type: boolean
+privileged-request:
+  description: |
+    Give extended privileges to the container.
+  in: body
+  required: false
+  type: boolean
+project_id_container_action:
+  description: |
+    The UUID of the project that this container belongs to.
+  in: body
+  required: ture
+  type: string
+ps_output:
+  description: |
+    The output of zun top.
+  in: body
+  required: true
+  type: dict
+registry_id:
+  description: |
+    The ID of the image registry used by the container.
+  in: body
+  required: true
+  type: string
+report_count:
+  description: |
+    The total number of report.
+  in: body
+  required: true
+  type: integer
+request_id_body:
+  description: |
+    The request id generated when execute the API of this action.
+  in: body
+  required: true
+  type: string
+requested_host:
+  description: |
+    The name of the host on which the container is to be created.
+    The API will return 400 if no host are found with the given host name.
+    By default, it can be specified by administrators only.
+  in: body
+  required: false
+  type: string
+restart_policy:
+  description: |
+    Restart policy to apply when a container exits. It must contain a
+    ``Name`` key and its allowed values are ``no``, ``on-failure``, ``always``,
+    ``unless-stopped``. Optionally, it can contain a ``MaximumRetryCount`` key
+    and its value is an integer.
+  in: body
+  required: true
+  type: object
+restart_policy-request:
+  description: |
+    Restart policy to apply when a container exits. It must contain a
+    ``Name`` key and its allowed values are ``no``, ``on-failure``, ``always``,
+    ``unless-stopped``. Optionally, it can contain a ``MaximumRetryCount`` key
+    and its value is an integer.
+  in: body
+  required: false
+  type: object
+runtime:
+  description: |
+    The container runtime tool to create container with. You can use
+    the default runtime that is `runc` or any other runtime configured
+    to use with Docker.
+  in: body
+  type: string
+security_groups:
+  description: |
+    Security groups to be added to the container.
+  in: body
+  required: true
+  type: string
+security_groups-request:
+  description: |
+    Security groups to be added to the container.
+  in: body
+  required: false
+  type: string
+service:
+  description: |
+    A Zun service.
+  in: body
+  required: true
+  type: dict
+services:
+  description: |
+    A list of Zun services.
+  in: body
+  required: true
+  type: array
+start_time:
+  description: |
+    The date and time when the action was started. The date and time
+    stamp format is `ISO 8601 <https://en.wikipedia.org/wiki/ISO_8601>`_
+
+    ::
+
+      CCYY-MM-DDThh:mm:ss±hh:mm
+
+    For example, ``2015-08-27T09:49:58-05:00``. The ``±hh:mm``
+    value, if included, is the time zone as an offset from UTC.  In
+    the previous example, the offset value is ``-05:00``.
+  in: body
+  required: true
+  type: string
+stat:
+  description: |
+    The stat information when doing get_archive.
+  in: body
+  required: true
+  type: string
+state:
+  description: |
+    The current state of Zun services.
+  in: body
+  required: true
+  type: string
+stats_info:
+  description: |
+    The stats information of a container,
+    including cpu, memory, blk io and net io.
+  in: body
+  required: true
+  type: dict
+status:
+  description: |
+    The current state of the container.
+  in: body
+  required: true
+  type: string
+status_detail:
+  description: |
+    The status detail of the container.
+  in: body
+  required: true
+  type: string
+dns:
+  description: |
+    Resolvers written into the container's ``/etc/resolv.conf``. At most
+    three, as docker allows. Naming a resolver is what makes the query
+    leave from the container's own network namespace -- a container that
+    inherits the host's resolver has docker forward from the host instead,
+    where the tenant's network, and so the names on it, cannot be reached.
+  in: body
+  required: false
+  type: array
+dns_search:
+  description: |
+    Search domains written into the container's ``/etc/resolv.conf``, so
+    that a bare name resolves. Has no effect on its own: without ``dns``
+    the query is still forwarded from the host's namespace.
+  in: body
+  required: false
+  type: array
+exit_code:
+  description: |
+    What the container's process returned. Present once the container has
+    stopped; null while it is running or has never run. A caller scripting
+    against a container -- a CI job, a shell chaining on ``&&`` -- reads
+    this to tell a container that failed from one that succeeded.
+  in: body
+  required: false
+  type: integer
 status_reason:
   description: |
     The reason of container current status.

@@ -700,6 +700,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             return
         st = resp.status
         container.status_detail = 'exit:%d' % st.exit_code
+        # The same code the docker driver records, so that a caller sees the
+        # container's exit status regardless of which backend ran it.
+        container.exit_code = st.exit_code
         if st.started_at:
             # Nanoseconds since the epoch; kubezun reports it as the
             # container's startedAt, which was null for every capsule

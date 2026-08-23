@@ -887,6 +887,12 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             container.status_detail = None
         elif type(state) is dict:
             status_detail = ''
+            # Recorded whatever the container went on to become: the exit
+            # code is what a caller scripts against, and reading it only in
+            # the branch that formats a message would lose it for every
+            # container that stopped without an error.
+            if 'ExitCode' in state and not state.get('Running'):
+                container.exit_code = state.get('ExitCode')
             if state.get('Error'):
                 if state.get('Status') in ('exited', 'removing'):
                     container.status = consts.STOPPED

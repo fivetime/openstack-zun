@@ -166,6 +166,9 @@ class Container(Base):
     # All nullable: absent means "operator default / runtime default".
     pids_limit = Column(Integer, nullable=True)
     swap = Column(Integer, nullable=True)              # MB, -1 = unlimited
+    # What the container's process returned. docker reports it and callers
+    # script against it; without it `docker run false` looks like success.
+    exit_code = Column(Integer, nullable=True)
     blkio_weight = Column(Integer, nullable=True)      # 10..1000 relative
     device_read_bps = Column(BigInteger, nullable=True)   # bytes/s on rootfs dev
     device_write_bps = Column(BigInteger, nullable=True)
