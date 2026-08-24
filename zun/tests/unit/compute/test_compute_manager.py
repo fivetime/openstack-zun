@@ -1103,8 +1103,11 @@ class TestManager(base.TestCase):
             self, mock_execute_create, mock_execute_run, mock_create):
         mock_execute_create.return_value = 'fake_exec_id'
         container = Container(self.context, **utils.get_test_container())
-        result = self.compute_manager.container_exec(
-            self.context, container, 'fake_cmd', False, True)
+        with mock.patch.object(fake_driver, 'exec_stream_url',
+                               create=True,
+                               return_value='http://127.0.0.1:10250/exec/x'):
+            result = self.compute_manager.container_exec(
+                self.context, container, 'fake_cmd', False, True)
         self.assertIsNone(result.get('output'))
         self.assertIsNone(result.get('exit_code'))
         self.assertEqual('fake_exec_id', result.get('exec_id'))
@@ -1112,6 +1115,27 @@ class TestManager(base.TestCase):
         mock_execute_create.assert_called_once_with(
             self.context, container, 'fake_cmd', True)
         mock_execute_run.assert_not_called()
+
+    @mock.patch.object(ExecInstance, 'create')
+    @mock.patch.object(fake_driver, 'execute_create')
+    def test_interactive_exec_a_runtime_cannot_serve_is_refused(
+            self, mock_execute_create, mock_create):
+        """A session nothing can dial is worse than no session.
+
+        What stood here was the daemon's own address: no path, a scheme no
+        websocket client accepts, and a proxy left holding it that fails
+        with a message about schemes rather than about exec. docker serves
+        no websocket for exec -- it is an HTTP upgrade on /exec/{id}/start,
+        and attach is the only websocket it has -- so a caller is better
+        told, and can run the command the other way.
+        """
+        mock_execute_create.return_value = 'fake_exec_id'
+        container = Container(self.context, **utils.get_test_container())
+
+        self.assertRaises(exception.Conflict,
+                          self.compute_manager.container_exec,
+                          self.context, container, 'fake_cmd', False, True)
+        mock_create.assert_not_called()
 
     @mock.patch.object(fake_driver, 'execute_create')
     def test_container_execute_failed(self, mock_execute_create):

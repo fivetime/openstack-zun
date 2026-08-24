@@ -919,9 +919,25 @@ class Manager(periodic_task.PeriodicTasks):
                 # loopback, which is why something on this node has to proxy
                 # it -- and only a daemon-backed driver falls back to a
                 # configured endpoint.
-                url = getattr(driver, 'exec_stream_url', lambda h: None)(exec_id)
+                url = getattr(driver, 'exec_stream_url',
+                              lambda h: None)(exec_id)
                 if not url:
-                    url = CONF.docker.docker_remote_api_url
+                    # Refused rather than filled in with the daemon's own
+                    # address, which is what stood here. That address is
+                    # not a session: it has no path, its scheme is not one
+                    # a websocket client will dial, and the proxy that
+                    # ends up holding it fails with a message about a
+                    # scheme rather than about exec. A runtime that serves
+                    # no websocket for exec cannot hold an interactive one
+                    # -- docker is such a runtime, its exec being an HTTP
+                    # upgrade on /exec/{id}/start and attach the only
+                    # websocket it offers -- and saying so lets a caller
+                    # run the command the other way instead of watching a
+                    # session that was never going to work.
+                    raise exception.Conflict(_(
+                        'this container runtime serves no interactive '
+                        'exec session; run the command without one, or '
+                        'attach to a container created with -i'))
                 exec_instace = objects.ExecInstance(
                     context, container_id=container.id, exec_id=exec_id,
                     url=url, token=token)
