@@ -20,8 +20,10 @@ driver_opts = [
 Possible values:
 
 * ``docker``
-* ``cri`` (capsule-only compute node: the Container API is not served on this
-  host, but resource reporting works and no docker daemon is required)
+* ``cri`` (containers and capsules over the CRI runtime, no docker daemon
+  required. `docker cp` -- get_archive/put_archive -- is the one thing it
+  does not serve yet, so a fleet mixing this with ``docker`` answers that
+  one command differently depending on where a container landed.)
 
 Services which consume this:
 
