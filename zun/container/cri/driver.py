@@ -319,6 +319,16 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # entirely: there is no stream to attach to after the fact and
             # nothing on disk, so the logs API has nothing to serve.
             log_directory=self._log_directory(),
+            # ⚠️ Without a cgroup parent the runtime has nowhere to hang the
+            # sandbox's own accounting, and PodSandboxStats -- the only call
+            # that carries network counters -- fails outright with "sandbox
+            # has no cgroup parent" before it gets as far as reading them
+            # (containerd internal/cri/server/podsandbox/sandbox_stats_linux
+            # .go, which reads this very field back). Measured: every running
+            # sandbox on the node answered that error, and crictl had been
+            # warning "cgroup_parent is not set" all along.
+            linux=api_pb2.LinuxPodSandboxConfig(
+                cgroup_parent=self._sandbox_cgroup_parent(capsule)),
         )
         if labels:
             # What ties a sandbox back to whoever owns it. A container records
@@ -336,6 +346,29 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # is missing rather than like a resolver setting.
             config.dns_config.searches.extend(dns_searches)
         return config
+
+    @staticmethod
+    def _sandbox_cgroup_parent(capsule):
+        """Where this sandbox's own accounting lives on the host.
+
+        One slice per capsule under a shared parent, so a node's capsules are
+        countable in one place and one capsule's usage is separable from the
+        next. The name is the capsule's uuid because that is what every other
+        record of it is keyed by.
+
+        ⚠️ On a kata capsule the numbers under here describe the virtual
+        machine -- its vcpu time and the memory the VMM holds -- not what runs
+        inside the guest. That is the right figure for a node's accounting and
+        the wrong one for a container's, which is why container stats keep
+        coming from ContainerStats rather than from here.
+        """
+        # ⚠️ Absolute, and clean: the runtime hands this straight to the
+        # cgroup library, which rejects anything not starting with "/"
+        # (cgroup2 VerifyGroupPath) -- and rejects it with "invalid group
+        # path", which reads like the path names something that does not
+        # exist rather than like a path written the wrong way.
+        return '/%s/%s' % (CONF.cri_sandbox_cgroup_parent.strip('/'),
+                           capsule.uuid)
 
     @staticmethod
     def _log_directory():
@@ -1631,11 +1664,54 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 # The runtime accounts for the writable layer, not for block
                 # reads and writes. Reporting its size here would put a real
                 # number under a heading that means something else.
-                "BLOCK I/O(B)": "-/-",
-                # The address is on the tenant's network and the runtime does
-                # not account for it; reporting zeros would read as an idle
-                # link rather than as a figure nobody measured.
-                "NET I/O(B)": "-/-"}
+                # ⚠️ Genuinely unavailable, not merely unfetched: the CRI's
+                # IoUsage carries pressure-stall figures and no byte counts,
+                # and a kata container has no cgroup of its own on the host to
+                # read them from -- containerd's own task metrics return only
+                # pids, cpu and memory for one. Reporting the writable
+                # layer's size here would put a real number under a heading
+                # that means something else.
+                #
+                # "-- / --" rather than a zero, and spelled as docker's own
+                # client spells an unavailable figure (cli/command/container
+                # /formatter_stats.go): zero reads as an idle disk, which is
+                # a claim nobody measured.
+                "BLOCK I/O(B)": self._NO_VALUE_PAIR,
+                "NET I/O(B)": self._net_io(container)}
+
+    # What docker's client prints for a figure it has no value for.
+    _NO_VALUE_PAIR = '-- / --'
+
+    def _net_io(self, container):
+        """Bytes in and out of the capsule's network namespace.
+
+        The counters belong to the sandbox rather than to a container: every
+        container in a capsule shares one namespace, so there is one figure
+        and it is the capsule's. ContainerStats has no network field at all --
+        asking it was why this read "unavailable" for so long.
+
+        Unreadable answers "--" for the same reason a missing block figure
+        does: a zero here would be a claim that nothing crossed the link.
+        """
+        # The sandbox, resolved the way everything else here resolves it --
+        # by owner label, falling back to the container's own listing. A
+        # container id is not a sandbox id, and passing one where the other
+        # belongs asks the runtime about something that does not exist.
+        pod_id = self._sandbox_of(container)
+        if not pod_id:
+            return self._NO_VALUE_PAIR
+        try:
+            resp = self.runtime_stub.PodSandboxStats(
+                api_pb2.PodSandboxStatsRequest(pod_sandbox_id=pod_id))
+        except grpc.RpcError as e:
+            LOG.debug('No network figures for %(id)s: %(err)s',
+                      {'id': pod_id, 'err': e})
+            return self._NO_VALUE_PAIR
+        net = resp.stats.linux.network
+        iface = net.default_interface
+        if not net.HasField('default_interface'):
+            return self._NO_VALUE_PAIR
+        return '%s / %s' % (iface.rx_bytes.value, iface.tx_bytes.value)
 
     def _container_stats(self, container_id):
         response = self.runtime_stub.ContainerStats(
@@ -1826,7 +1902,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         """
         pod_id = capsule.container_id
         if not pod_id:
-            return []
+            return {'stats': [], 'network': None}
 
         response = self.runtime_stub.ListContainerStats(
             api_pb2.ListContainerStatsRequest(
@@ -1852,7 +1928,40 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     entry['memory_usage_bytes'] = \
                         stats.memory.usage_bytes.value
             out.append(entry)
-        return out
+        return {'stats': out, 'network': self._sandbox_network(pod_id)}
+
+    def _sandbox_network(self, pod_id):
+        """Bytes across the capsule's own network namespace.
+
+        One figure for the capsule rather than one per container: the
+        containers share a namespace, so there is one link and it belongs to
+        the sandbox. ⚠️ Only PodSandboxStats carries it -- the container-level
+        messages have no network field at all, which is why this read as
+        unavailable for as long as it was fetched from there.
+
+        None rather than zeros when it cannot be read: a zero is a claim that
+        nothing crossed the link, and the caller has no way to tell that claim
+        from silence.
+        """
+        try:
+            resp = self.runtime_stub.PodSandboxStats(
+                api_pb2.PodSandboxStatsRequest(pod_sandbox_id=pod_id))
+        except grpc.RpcError as e:
+            LOG.debug('No network figures for sandbox %(id)s: %(err)s',
+                      {'id': pod_id, 'err': e})
+            return None
+        net = resp.stats.linux.network
+        if not net.HasField('default_interface'):
+            return None
+        iface = net.default_interface
+        return {
+            'timestamp': net.timestamp,
+            'name': iface.name,
+            'rx_bytes': iface.rx_bytes.value,
+            'rx_errors': iface.rx_errors.value,
+            'tx_bytes': iface.tx_bytes.value,
+            'tx_errors': iface.tx_errors.value,
+        }
 
     def delete_capsule(self, context, capsule, force):
         pod_id = capsule.container_id

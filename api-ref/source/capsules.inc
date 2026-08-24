@@ -547,6 +547,17 @@ CPU is cumulative, not a rate, and is reported as the runtime counts it. Two
 readings make a rate; one does not -- and the counter resets when a container
 restarts, so a rate computed across one is wrong.
 
+``network`` (from microversion 1.46), the capsule's own counters, beside the
+list rather than inside it: every container in a capsule shares one network
+namespace, so the bytes belong to the capsule and summing per-container
+figures would count the same traffic once per container. It carries
+``timestamp``, ``name`` (the interface, normally ``eth0``), ``rx_bytes``,
+``rx_errors``, ``tx_bytes`` and ``tx_errors``, all cumulative.
+
+⚠️ ``null`` when the runtime cannot report it, never zeros: a zero says
+nothing crossed the link, which a caller cannot tell from nobody having
+looked.
+
 
 Replace a capsule file volume's contents
 ========================================

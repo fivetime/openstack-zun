@@ -664,7 +664,11 @@ class CapsuleController(base.Controller):
 
         context = pecan.request.context
         compute_api = pecan.request.compute_api
-        return {'stats': compute_api.capsule_stats(context, capsule)}
+        # The driver answers with the per-container list and the capsule's
+        # own network figures beside it -- one link per capsule, so it cannot
+        # live inside the per-container entries without inviting a caller to
+        # sum it.
+        return compute_api.capsule_stats(context, capsule)
 
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception

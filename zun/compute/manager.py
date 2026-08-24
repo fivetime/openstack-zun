@@ -1215,6 +1215,10 @@ class Manager(periodic_task.PeriodicTasks):
         here: it is a sandbox holding several, and the answer is per-container.
         A capsule driver that cannot report usage says so, rather than
         answering an empty set that reads as "running and using nothing".
+
+        The answer carries the capsule's network counters beside the list:
+        every container in a capsule shares one namespace, so the bytes are
+        the capsule's and there is nowhere per-container to put them.
         """
         LOG.debug('Displaying stats of the capsule: %s', capsule.uuid)
         if not hasattr(self.capsule_driver, 'capsule_stats'):

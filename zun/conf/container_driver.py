@@ -138,6 +138,16 @@ Interdependencies to other options:
                help='Directory the runtime writes capsule container logs to. '
                     'Nothing prunes it, so on a busy compute node give it a '
                     'filesystem that can be rotated independently.'),
+    cfg.StrOpt('cri_sandbox_cgroup_parent',
+               default='zun.slice',
+               help='Cgroup slice each capsule sandbox is placed under, one '
+                    'child per capsule. Naming it is not optional bookkeeping: '
+                    'the runtime reports a sandbox no cgroup as having no '
+                    'accounting at all, and the stats call that carries the '
+                    'network counters fails outright rather than returning '
+                    'what it can. On a kata capsule the figures under here '
+                    'describe the virtual machine, which is the right unit '
+                    'for a node and the wrong one for a container.'),
     cfg.IntOpt('default_disk',
                default=10,
                help='The default disk size a container can use '
