@@ -106,6 +106,7 @@ Response
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - started_at: started_at
   - dns: dns
   - dns_search: dns_search
   - host: host
@@ -197,6 +198,7 @@ Response
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - started_at: started_at
   - dns: dns
   - dns_search: dns_search
   - dns: dns
@@ -279,6 +281,7 @@ Response
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - started_at: started_at
   - dns: dns
   - dns_search: dns_search
   - dns: dns
@@ -499,6 +502,7 @@ Return new container with updated attributes.
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - started_at: started_at
   - dns: dns
   - dns_search: dns_search
   - dns: dns
@@ -811,6 +815,7 @@ Response
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - started_at: started_at
   - dns: dns
   - dns_search: dns_search
   - dns: dns

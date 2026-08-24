@@ -76,10 +76,22 @@ REST_API_VERSION_HISTORY = """REST API Version History:
     * 1.41 - Add exit_code to the container -- what its process returned
     * 1.42 - Filter the container list by label
     * 1.43 - Follow a container's logs instead of reading them once
+    * 1.44 - Add started_at to the container -- when its current run began
+    * 1.45 - Let a capsule template name its runtime, availability zone,
+             architecture and security groups
+
+    ⚠️ The fields this fork adds are served to every caller rather than
+    gated on the requested version: a client asking for 1.40 still receives
+    started_at, and a 1.40 capsule template still accepts a runtime. The
+    numbers above record when a field appeared, which is what a reader of
+    this list needs; they are not a promise that an older version behaves
+    as it did before the field existed. Anything that must not change
+    shape under an old client has to be gated where it is served, and none
+    of these are.
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.43'
+CURRENT_MAX_VER = '1.45'
 
 
 class Version(object):

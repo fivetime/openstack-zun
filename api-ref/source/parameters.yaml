@@ -620,6 +620,62 @@ capsule-restartPolicy-request:
   in: body
   required: false
   type: string
+capsule-runtime-request:
+  description: |
+    The runtime handler this capsule runs under -- the isolation tier. Absent
+    means the compute node's configured default.
+
+    ⚠️ Not validated here. Which handlers exist is each compute node's own
+    truth, reported by its runtime, and the scheduler refuses hosts that do
+    not offer the one named; a name no host offers therefore fails the capsule
+    at scheduling rather than at the API. An API-side list of valid names
+    would go stale the day an operator adds a tier to one node.
+  in: body
+  required: false
+  type: string
+capsule-availabilityZone-request:
+  description: |
+    The availability zone to place the capsule in.
+  in: body
+  required: false
+  type: string
+capsule-architecture-request:
+  description: |
+    The machine architecture the capsule's images are built for, for example
+    ``x86_64`` or ``aarch64``. Placement is asked for a host with the matching
+    trait, so an image that cannot execute on a host is refused while it is
+    still a scheduling decision rather than a container that starts and dies.
+  in: body
+  required: false
+  type: string
+capsule-securityGroups-request:
+  description: |
+    Names or ids of the security groups the capsule's port carries. Resolved
+    when the capsule is created, within the caller's own project, so a name
+    that does not exist is a synchronous error rather than a capsule that
+    reaches a compute node and fails there.
+
+    ⚠️ An empty list is not "no groups": Neutron reads a port created without
+    groups as asking for the project default. To carry no rules at all, name a
+    group that has none.
+  in: body
+  required: false
+  type: array
+capsule-nets-request:
+  description: |
+    The networks or ports the capsule attaches to. Each entry names either a
+    ``network`` to attach a new port on, or a ``port`` already created --
+    naming a port keeps the address across a recreate, since the address
+    belongs to the port rather than to the capsule.
+  in: body
+  required: false
+  type: array
+capsule-capsuleVersion-request:
+  description: |
+    The capsule template version, for example ``beta``.
+  in: body
+  required: false
+  type: string
 capsule-spec-request:
   description: |
     Specification of the desired behavior of the capsule.
@@ -627,6 +683,15 @@ capsule-spec-request:
   in: body
   required: true
   type: object
+capsule-runtime:
+  description: |
+    The runtime handler the capsule runs under. Reported back so a caller can
+    see that the tier it asked for is the tier it got -- a request that fell
+    back to the node default is otherwise indistinguishable from one that was
+    honoured.
+  in: body
+  required: false
+  type: string
 capsule-status:
   description: |
     The current state of the capsule.
@@ -2105,6 +2170,15 @@ dns_search:
   in: body
   required: false
   type: array
+started_at:
+  description: |
+    When the container's current run began. Null before it has ever run, and
+    it moves when a container is restarted -- it describes this run, not the
+    record. A caller computing an uptime or a bill reads this rather than
+    ``created_at``, which is when the record was made and does not move.
+  in: body
+  required: false
+  type: string
 exit_code:
   description: |
     What the container's process returned. Present once the container has

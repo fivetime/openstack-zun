@@ -40,11 +40,17 @@ Capsule Template
 
   - template: capsule-template-request
   - kind: capsule-kind-request
+  - capsuleVersion: capsule-capsuleVersion-request
   - metadata: capsule-metadata-request
   - metadata.labels: capsule-labels-request
   - metadata.name: capsule-name-request
   - metadata.annotations: capsule-annotations-request
   - spec: capsule-spec-request
+  - nets: capsule-nets-request
+  - securityGroups: capsule-securityGroups-request
+  - availabilityZone: capsule-availabilityZone-request
+  - architecture: capsule-architecture-request
+  - runtime: capsule-runtime-request
 
 .. _create-capsule-spec:
 
@@ -123,6 +129,7 @@ Capsule
   - project_id: capsule-project_id
   - status: capsule-status
   - status_reason: capsule-status_reason
+  - runtime: capsule-runtime
   - links: capsule-links
 
 .. _create-capsule-container-response:
@@ -154,6 +161,8 @@ Capsule Container
   - image_driver: image_driver
   - status_detail: status_detail
   - status_reason: status_reason
+  - exit_code: exit_code
+  - started_at: started_at
   - name: name
   - restart_policy: restart_policy
   - cpu: cpu
@@ -216,6 +225,7 @@ Capsule
   - project_id: capsule-project_id
   - status: capsule-status
   - status_reason: capsule-status_reason
+  - runtime: capsule-runtime
   - links: capsule-links
 
 .. _list-capsule-container-response:
@@ -247,6 +257,8 @@ Capsule Container
   - image_driver: image_driver
   - status_detail: status_detail
   - status_reason: status_reason
+  - exit_code: exit_code
+  - started_at: started_at
   - name: name
   - restart_policy: restart_policy
   - cpu: cpu
@@ -312,6 +324,7 @@ Capsule
   - project_id: capsule-project_id
   - status: capsule-status
   - status_reason: capsule-status_reason
+  - runtime: capsule-runtime
   - links: capsule-links
 
 .. _show-capsule-container-response:
@@ -343,6 +356,8 @@ Capsule Container
   - image_driver: image_driver
   - status_detail: status_detail
   - status_reason: status_reason
+  - exit_code: exit_code
+  - started_at: started_at
   - name: name
   - restart_policy: restart_policy
   - cpu: cpu
