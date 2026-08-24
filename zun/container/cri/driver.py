@@ -147,19 +147,35 @@ def _seccomp_profile(profile):
         profile_type=api_pb2.SecurityProfile.Unconfined)
 
 
-def _annotation_list(capsule, key):
-    raw = (capsule.annotations or {}).get(key)
+def _annotation_list(subject, key):
+    raw = (getattr(subject, 'annotations', None) or {}).get(key)
     if not raw:
         return []
     return [s for s in (part.strip() for part in raw.split(',')) if s]
 
 
-def _dns_searches(capsule):
-    return _annotation_list(capsule, DNS_SEARCHES_ANNOTATION)
+def _own_list(subject, field):
+    """A container's own resolvers, which a capsule does not have.
+
+    The sandbox is built from a capsule on one path and from a container
+    on the other, and only the container carries `dns`/`dns_search` -- the
+    fields the Container API grew for them. Read from the annotations
+    alone, a container's request was accepted and then dropped: the
+    tenant asked for a resolver, got no error, and found the host's
+    resolv.conf inside their container. Silently honouring nothing is
+    worse than refusing, because nothing tells them to look.
+    """
+    return list(getattr(subject, field, None) or [])
 
 
-def _dns_servers(capsule):
-    return _annotation_list(capsule, DNS_SERVERS_ANNOTATION)
+def _dns_searches(subject):
+    return (_own_list(subject, 'dns_search')
+            or _annotation_list(subject, DNS_SEARCHES_ANNOTATION))
+
+
+def _dns_servers(subject):
+    return (_own_list(subject, 'dns')
+            or _annotation_list(subject, DNS_SERVERS_ANNOTATION))
 
 
 def _signal_number(signal_name):
