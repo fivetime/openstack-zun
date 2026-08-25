@@ -12,6 +12,8 @@
 
 from unittest import mock
 
+import testtools
+
 from zun.compute import notifications
 from zun.tests import base
 
@@ -87,3 +89,104 @@ class TestSending(base.TestCase):
         called = get_notifier.return_value.error.call_args
         self.assertEqual('container.create.error', called[0][1])
         self.assertIn('no capacity', called[0][2]['reason'])
+
+
+class TestLifecycle(base.TestCase):
+    """start, end and error stay one whole, whichever way the block leaves."""
+
+    def setUp(self):
+        super(TestLifecycle, self).setUp()
+        self.notifier = mock.Mock()
+        p = mock.patch.object(notifications.rpc, 'get_notifier',
+                              return_value=self.notifier)
+        self.mock_notifier = p.start()
+        self.addCleanup(p.stop)
+
+    def _events(self):
+        return [c.args[1] for c in self.notifier.info.call_args_list]
+
+    def test_a_clean_block_sends_start_then_end(self):
+        with notifications.lifecycle({}, FakeContainer(), 'stop'):
+            pass
+        self.assertEqual(['container.stop.start', 'container.stop.end'],
+                         self._events())
+
+    def test_a_failing_block_sends_start_then_error_and_reraises(self):
+        with testtools.ExpectedException(ValueError):
+            with notifications.lifecycle({}, FakeContainer(), 'stop'):
+                raise ValueError('boom')
+        self.assertEqual(['container.stop.start'], self._events())
+        errs = [c.args[1] for c in self.notifier.error.call_args_list]
+        self.assertEqual(['container.stop.error'], errs)
+
+    def test_no_end_is_sent_when_the_block_failed(self):
+        try:
+            with notifications.lifecycle({}, FakeContainer(), 'pause'):
+                raise RuntimeError()
+        except RuntimeError:
+            pass
+        self.assertNotIn('container.pause.end', self._events())
+
+
+class TestStateChange(base.TestCase):
+    """save() announces the state a container reached."""
+
+    def setUp(self):
+        super(TestStateChange, self).setUp()
+        self.notifier = mock.Mock()
+        p = mock.patch.object(notifications.rpc, 'get_notifier',
+                              return_value=self.notifier)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _sent(self, changes):
+        notifications.notify_state_change({}, FakeContainer(), changes)
+        return self.notifier.info.call_args
+
+    def test_a_status_move_is_announced_with_which_field_moved(self):
+        call = self._sent({'status': 'Stopped'})
+        self.assertEqual('container.update', call.args[1])
+        self.assertEqual(['status'], call.args[2]['changed'])
+
+    def test_a_resize_is_announced_too(self):
+        """cpu and memory changes re-rate a bill."""
+        call = self._sent({'memory': 1024, 'cpu': 2.0})
+        self.assertEqual({'cpu', 'memory'}, set(call.args[2]['changed']))
+
+    def test_a_change_of_nothing_billable_is_silent(self):
+        notifications.notify_state_change({}, FakeContainer(),
+                                          {'status_reason': 'x'})
+        self.notifier.info.assert_not_called()
+
+
+class TestUsageIsAlsoExists(base.TestCase):
+    """One report a minute: what is used, and that it was there to use it."""
+
+    def setUp(self):
+        super(TestUsageIsAlsoExists, self).setUp()
+        self.notifier = mock.Mock()
+        p = mock.patch.object(notifications.rpc, 'get_notifier',
+                              return_value=self.notifier)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_it_carries_status_and_bytes_per_container(self):
+        c = FakeContainer()
+        notifications.notify_usage({}, 'compute-1', [c], {c.uuid: 4096})
+        entry = self.notifier.info.call_args.args[2]['containers'][0]
+        self.assertEqual(4096, entry['size_rw'])
+        self.assertEqual('Running', entry['status'])
+
+    def test_an_unmeasured_container_still_reports_that_it_exists(self):
+        c = FakeContainer()
+        notifications.notify_usage({}, 'compute-1', [c], {})
+        entry = self.notifier.info.call_args.args[2]['containers'][0]
+        self.assertIsNone(entry['size_rw'])
+        self.assertEqual('Running', entry['status'])
+
+    def test_the_window_is_carried_so_periods_abut(self):
+        import datetime
+        start = datetime.datetime(2026, 1, 1, 0, 0, 0)
+        notifications.notify_usage({}, 'compute-1', [], {}, start)
+        p = self.notifier.info.call_args.args[2]
+        self.assertEqual(start.isoformat(), p['audit_period_beginning'])
