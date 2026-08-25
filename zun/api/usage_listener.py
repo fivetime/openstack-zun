@@ -78,5 +78,6 @@ def start():
         rpc.NOTIFICATION_TRANSPORT, targets, [UsageEndpoint()],
         executor='threading', pool=CONF.usage_report.listener_pool)
     listener.start()
-    LOG.info('listening for container usage as %s', CONF.usage_report.listener_pool)
+    LOG.info('listening for container usage as %s',
+             CONF.usage_report.listener_pool)
     return listener

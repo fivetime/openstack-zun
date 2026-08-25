@@ -47,7 +47,8 @@ def _region():
         # does not also have to remember to tune the cache to match.
         CONF.set_override(
             'expiration_time',
-            CONF.usage_report.report_interval * CONF.usage_report.retain_reports,
+            (CONF.usage_report.report_interval
+             * CONF.usage_report.retain_reports),
             group='cache')
         if CONF.cache.enabled:
             cache.configure_cache_region(CONF, region)
