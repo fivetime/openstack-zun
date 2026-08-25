@@ -56,7 +56,7 @@ class UsageCacheTest(base.TestCase):
 
     def test_the_lifetime_follows_the_report_interval(self):
         """An operator tuning one must not have to remember the other."""
-        self.config(report_interval=30, retain_reports=4, group='usage')
+        self.config(report_interval=30, retain_reports=4, group='usage_report')
 
         usage_cache._region()
 

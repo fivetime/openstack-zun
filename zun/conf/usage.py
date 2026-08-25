@@ -13,8 +13,11 @@
 from oslo_cache import core as cache
 from oslo_config import cfg
 
+# Not `usage`: oslo.config stores the argparse usage string on the
+# ConfigOpts instance as `usage`, and an instance attribute shadows any
+# group of that name the moment CONF() is called.
 usage_group = cfg.OptGroup(
-    name='usage',
+    name='usage_report',
     title='How much a container is using, reported rather than asked',
     help="""A compute node measures what its containers take and says so
 on the notification bus; the API keeps the latest figure it heard and

@@ -1734,7 +1734,7 @@ class Manager(periodic_task.PeriodicTasks):
             LOG.debug('State sync is not implemented by capsule driver %s',
                       type(self.capsule_driver).__name__)
 
-    @periodic_task.periodic_task(spacing=CONF.usage.report_interval,
+    @periodic_task.periodic_task(spacing=CONF.usage_report.report_interval,
                                  run_immediately=True)
     @context.set_context
     def report_usage(self, ctx):

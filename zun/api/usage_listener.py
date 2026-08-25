@@ -63,11 +63,20 @@ def start():
         LOG.warning('no notification transport; container usage will '
                     'read as unknown')
         return None
+    if not CONF.cache.enabled:
+        # The listener lives in the launcher's parent process and the WSGI
+        # workers are forked before it starts, so a process-local cache is
+        # one the workers can never see: every figure would read unknown
+        # although every report was heard. Only a shared backend works.
+        LOG.warning('[cache] is not enabled; the usage this listener hears '
+                    'is kept in a process-local cache the API workers do '
+                    'not share, so size_rw will read as unknown. Point '
+                    '[cache] at memcached.')
     targets = [messaging.Target(topic=topic)
                for topic in CONF.oslo_messaging_notifications.topics]
     listener = messaging.get_notification_listener(
         rpc.NOTIFICATION_TRANSPORT, targets, [UsageEndpoint()],
-        executor='threading', pool=CONF.usage.listener_pool)
+        executor='threading', pool=CONF.usage_report.listener_pool)
     listener.start()
-    LOG.info('listening for container usage as %s', CONF.usage.listener_pool)
+    LOG.info('listening for container usage as %s', CONF.usage_report.listener_pool)
     return listener

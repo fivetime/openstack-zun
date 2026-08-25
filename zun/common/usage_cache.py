@@ -17,10 +17,13 @@ report intervals and is never written to the database. A figure that is
 lost is replaced by the next report; a figure that has aged out reads as
 unknown, which is right for a node that has stopped reporting.
 
-With [cache] enabled and pointed at memcached the API replicas share one
-view. Left disabled, each replica remembers only what it heard itself --
-a process-local dictionary, the way nova falls back -- which is fine for
-one replica and honest for more.
+[cache] has to point at a shared backend such as memcached. The listener
+that fills this runs in the launcher's parent process and the WSGI workers
+that read it are forked before it starts, so a process-local dictionary
+-- the fallback nova uses for its own caches -- is one the readers can
+never see. It is kept as a fallback so the code runs without a cache
+configured, but every figure then reads unknown, and the listener says
+so at start.
 """
 
 from oslo_cache import core as cache
@@ -44,7 +47,7 @@ def _region():
         # does not also have to remember to tune the cache to match.
         CONF.set_override(
             'expiration_time',
-            CONF.usage.report_interval * CONF.usage.retain_reports,
+            CONF.usage_report.report_interval * CONF.usage_report.retain_reports,
             group='cache')
         if CONF.cache.enabled:
             cache.configure_cache_region(CONF, region)
