@@ -417,6 +417,22 @@ class BaseDriver(object):
         return traits
 
 
+def process_table(text):
+    """`ps` output in the shape the api-ref documents for top.
+
+    The last column is the command and holds spaces, so a row is split
+    into exactly as many fields as there are headings and the remainder
+    stays with the last one.
+    """
+    lines = [line for line in (text or '').splitlines() if line.strip()]
+    if not lines:
+        return {'Titles': [], 'Processes': []}
+    titles = lines[0].split()
+    return {'Titles': titles,
+            'Processes': [line.split(None, len(titles) - 1)
+                          for line in lines[1:]]}
+
+
 class ContainerDriver(object):
     """Interface for container driver."""
 

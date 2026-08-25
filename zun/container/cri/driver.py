@@ -178,22 +178,6 @@ def _dns_servers(subject):
             or _annotation_list(subject, DNS_SERVERS_ANNOTATION))
 
 
-def _as_process_table(text):
-    """`ps` output in the shape the api-ref documents.
-
-    The last column is the command and holds spaces, so a row is split
-    into exactly as many fields as there are headings and the remainder
-    stays with the last one.
-    """
-    lines = [line for line in (text or '').splitlines() if line.strip()]
-    if not lines:
-        return {'Titles': [], 'Processes': []}
-    titles = lines[0].split()
-    return {'Titles': titles,
-            'Processes': [line.split(None, len(titles) - 1)
-                          for line in lines[1:]]}
-
-
 def _signal_number(signal_name):
     """Turn what the API was given into a number the task service takes.
 
@@ -1741,7 +1725,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             raise exception.Invalid(_(
                 'Could not list processes in the container: %s')
                 % ((err or out or '').strip()[:200] or 'ps is not in the image'))
-        return _as_process_table(out)
+        return driver.process_table(out)
 
     def stop(self, context, container, timeout=None):
         if not container.container_id:

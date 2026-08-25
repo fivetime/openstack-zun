@@ -1211,11 +1211,42 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
     @check_container_id
     @wrap_docker_error
     def top(self, context, container, ps_args=None):
+        """The processes in the container, not the ones around it.
+
+        docker answers this from the host, which is right when the
+        container's processes are host processes. Under a VM runtime they
+        are not: the only host process is the VMM, so docker returns the
+        hypervisor's own command line -- and hands the caller the host's
+        memory size, its cpu count and a set of internal paths, none of
+        which is theirs and none of which is what they asked for.
+
+        So the question is put inside the container instead, as the CRI
+        driver already does. It needs `ps` in the image, and says so when
+        there is none rather than returning an empty list of processes.
+        """
         with docker_utils.docker_client() as docker:
-            if ps_args is None or ps_args == 'None':
-                return docker.top(container.container_id)
-            else:
+            if self._runtime_of(container) == 'runc':
+                if ps_args is None or ps_args == 'None':
+                    return docker.top(container.container_id)
                 return docker.top(container.container_id, ps_args)
+            argv = (['ps'] + ps_args.split()
+                    if ps_args and ps_args != 'None' else ['ps', '-ef'])
+            created = docker.exec_create(container.container_id, argv,
+                                         stdout=True, stderr=True, tty=False)
+            output = docker.exec_start(created['Id'], False, False, False)
+            state = docker.exec_inspect(created['Id'])
+            text = output.decode('utf-8', 'replace') if output else ''
+            if state.get('ExitCode'):
+                raise exception.Invalid(_(
+                    'Could not list processes in the container: %s')
+                    % (text.strip()[:200] or 'ps is not in the image'))
+            return driver.process_table(text)
+
+    def _runtime_of(self, container):
+        """Which runtime this container was actually given."""
+        if not self._is_runtime_supported():
+            return 'runc'
+        return container.runtime or CONF.container_runtime
 
     @check_container_id
     @wrap_docker_error
