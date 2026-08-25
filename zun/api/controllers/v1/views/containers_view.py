@@ -65,10 +65,19 @@ _basic_keys = (
     'created_at',
     'updated_at',
     'started_at',
+    'size_rw',
+    'size_measured_at',
 )
 
 
-def format_container(context, url, container):
+def format_container(context, url, container, usage=None):
+    """One container as the API shows it.
+
+    `usage` is what the API last heard about this container from the node
+    running it -- a measurement, held in a cache, never in the database.
+    Absent, the size fields read as null: unknown, which is distinct from
+    zero and is the honest answer for a node that has not reported.
+    """
     def transform(key, value):
         if key not in _basic_keys:
             return
@@ -94,5 +103,9 @@ def format_container(context, url, container):
         else:
             yield (key, value)
 
+    fields = container.as_dict()
+    usage = usage or {}
+    fields['size_rw'] = usage.get('size_rw')
+    fields['size_measured_at'] = usage.get('measured_at')
     return dict(itertools.chain.from_iterable(
-        transform(k, v) for k, v in container.as_dict().items()))
+        transform(k, v) for k, v in fields.items()))

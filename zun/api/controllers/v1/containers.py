@@ -37,6 +37,7 @@ from zun.common import name_generator
 from zun.common.policies import container as policies
 from zun.common import policy
 from zun.common import quota
+from zun.common import usage_cache
 from zun.common import utils
 import zun.conf
 from zun.network import model as network_model
@@ -74,8 +75,12 @@ class ContainerCollection(collection.Collection):
                            expand=False, **kwargs):
         context = pecan.request.context
         collection = ContainerCollection()
+        # One cache round trip for the page, not one per container.
+        usage_by_uuid = usage_cache.recall_many(
+            [p.uuid for p in rpc_containers])
         collection.containers = \
-            [view.format_container(context, url, p)
+            [view.format_container(context, url, p,
+                                   usage=usage_by_uuid.get(p.uuid))
              for p in rpc_containers]
         collection.next = collection.get_next(limit, url=url, **kwargs)
         return collection
@@ -243,7 +248,8 @@ class ContainersController(base.Controller):
                 LOG.error("Failed to get container details: %s", str(e))
 
         return view.format_container(context, pecan.request.host_url,
-                                     container)
+                                     container,
+                                     usage=usage_cache.recall(container.uuid))
 
     def _generate_name_for_container(self):
         """Generate a random name like: zeta-22-container."""

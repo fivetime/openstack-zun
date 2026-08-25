@@ -25,6 +25,7 @@ be fetched with the uuid.
 """
 
 from oslo_log import log as logging
+from oslo_utils import timeutils
 
 from zun.common import rpc
 
@@ -79,6 +80,30 @@ def notify(context, container, event, phase=None, host=None, extra=None):
     except Exception as exc:
         LOG.warning('could not send %s for %s: %s',
                     event_type, container.uuid, exc)
+
+
+def notify_usage(context, host, sizes):
+    """One report of what a host's containers are using.
+
+    Its own event rather than a field on the lifecycle ones: a consumer
+    of container.create.end reads it to know a container exists, and
+    would not want it re-sent every minute with a size attached. This
+    one carries the uuid, the host and the bytes, and a consumer that
+    wants more can fetch it.
+    """
+    notifier = rpc.get_notifier(service=SERVICE, host=host)
+    if notifier is None:
+        return
+    payload = {
+        'host': host,
+        'measured_at': timeutils.utcnow().isoformat(),
+        'containers': [{'uuid': uuid, 'size_rw': size}
+                       for uuid, size in sizes.items()],
+    }
+    try:
+        notifier.info(context, 'container.usage', payload)
+    except Exception as exc:
+        LOG.warning('could not send container.usage for %s: %s', host, exc)
 
 
 def notify_error(context, container, event, exc, host=None):

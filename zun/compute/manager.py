@@ -1734,6 +1734,35 @@ class Manager(periodic_task.PeriodicTasks):
             LOG.debug('State sync is not implemented by capsule driver %s',
                       type(self.capsule_driver).__name__)
 
+    @periodic_task.periodic_task(spacing=CONF.usage.report_interval,
+                                 run_immediately=True)
+    @context.set_context
+    def report_usage(self, ctx):
+        """Say what this host's containers are using, one report per host.
+
+        Reported rather than asked for: measuring a writable layer walks
+        its files, so it is done here on a schedule and the API serves
+        the latest figure it heard. Nothing is written to the database.
+        A figure that is lost is replaced by the next one.
+
+        One notification per host carrying every container, not one per
+        container: the cost of a report is the message, and a node with
+        two hundred containers should not send two hundred of them.
+        """
+        if not isinstance(self.driver, driver_module.ContainerDriver):
+            return
+        containers = objects.Container.list_by_host(ctx, self.host)
+        if not containers:
+            return
+        try:
+            sizes = self.driver.measure_writable_layers(ctx, containers)
+        except Exception as exc:
+            # A host that cannot measure this round says nothing rather
+            # than something wrong; its figures age out and read unknown.
+            LOG.warning('could not measure container usage: %s', exc)
+            return
+        notifications.notify_usage(ctx, self.host, sizes)
+
     def network_detach(self, context, container, network):
         @utils.synchronized(container.uuid)
         def do_network_detach():

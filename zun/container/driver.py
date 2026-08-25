@@ -460,6 +460,22 @@ class ContainerDriver(object):
         """
         return (0, 0, 0)
 
+    def measure_writable_layers(self, context, containers):
+        """Bytes each container has written over its image, by uuid.
+
+        Only what the container itself put there: the image layers are
+        shared and read-only and are accounted for wherever the image
+        lives, so counting them here would charge a tenant twice for the
+        same bytes. A container the driver cannot measure is simply absent
+        from the answer, which the reader shows as unknown rather than as
+        zero -- zero would say it occupies nothing.
+
+        One call for the whole host rather than one per container: this
+        runs on a schedule and the runtime can answer for everything it
+        holds in a single round trip.
+        """
+        return {}
+
     def update_containers_states(self, context, containers, manager):
         """Update containers states."""
         raise NotImplementedError()

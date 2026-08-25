@@ -780,6 +780,28 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                                             filters={'uuid': uuids})
         return containers
 
+    def measure_writable_layers(self, context, containers):
+        wanted = {c.container_id: c.uuid for c in containers
+                  if c.container_id}
+        if not wanted:
+            return {}
+        with docker_utils.docker_client() as docker:
+            # size=True is what makes docker walk each container's upper
+            # directory, and it is asked once for the host. SizeRw is the
+            # writable layer alone; SizeRootFs would add the image and is
+            # deliberately not read.
+            listed = docker.containers(all=True, size=True)
+        found = {}
+        for entry in listed:
+            uuid = wanted.get(entry.get('Id'))
+            if uuid is None:
+                continue
+            size = entry.get('SizeRw')
+            # docker leaves the key out, or null, for a container that has
+            # written nothing. That is a real zero, not an unknown.
+            found[uuid] = int(size) if size else 0
+        return found
+
     def update_containers_states(self, context, containers, manager):
         local_containers, non_existent_containers = self.list(context)
         if not local_containers:

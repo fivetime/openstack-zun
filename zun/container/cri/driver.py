@@ -1697,6 +1697,23 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             return self._NO_VALUE_PAIR
         return '%s / %s' % (iface.rx_bytes.value, iface.tx_bytes.value)
 
+    def measure_writable_layers(self, context, containers):
+        wanted = {c.container_id: c.uuid for c in containers
+                  if c.container_id}
+        if not wanted:
+            return {}
+        response = self.runtime_stub.ListContainerStats(
+            api_pb2.ListContainerStatsRequest())
+        found = {}
+        for st in response.stats:
+            uuid = wanted.get(st.attributes.id)
+            if uuid is None:
+                continue
+            # The runtime accounts for the writable layer as a filesystem
+            # of its own, which is exactly the figure wanted here.
+            found[uuid] = int(st.writable_layer.used_bytes.value)
+        return found
+
     def _container_stats(self, container_id):
         response = self.runtime_stub.ContainerStats(
             api_pb2.ContainerStatsRequest(container_id=container_id))

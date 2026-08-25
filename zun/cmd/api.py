@@ -19,6 +19,7 @@
 
 import sys
 
+from zun.api import usage_listener
 from zun.common import profiler
 from zun.common import service as zun_service
 import zun.conf
@@ -44,6 +45,11 @@ def main():
         CONF.api.enable_ssl_api
     )
     launcher.launch_service(server, workers=server.workers)
+    # One listener per API process, outside the WSGI workers: each worker
+    # is a fork, and a listener in every fork would be N consumers where
+    # one is wanted. The consumer group across replicas takes care of the
+    # rest.
+    usage_listener.start()
     launcher.wait()
 
 

@@ -2170,6 +2170,25 @@ dns_search:
   in: body
   required: false
   type: array
+size_measured_at:
+  description: |
+    When ``size_rw`` was measured, as reported by the host running the
+    container. Null whenever ``size_rw`` is; read it to know how old the
+    figure is.
+  in: body
+  required: false
+  type: string
+size_rw:
+  description: |
+    Bytes the container has written over its image -- its writable layer
+    alone, not the image, which is shared and accounted for where it lives.
+    Reported by the host on a schedule and served from what the API last
+    heard; **never stored**. Null when nothing has been heard, which is
+    distinct from zero: zero means the container has written nothing, null
+    means nobody has measured it lately.
+  in: body
+  required: false
+  type: integer
 started_at:
   description: |
     When the container's current run began. Null before it has ever run, and

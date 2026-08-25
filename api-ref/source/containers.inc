@@ -107,6 +107,8 @@ Response
   - status_detail: status_detail
   - exit_code: exit_code
   - started_at: started_at
+  - size_rw: size_rw
+  - size_measured_at: size_measured_at
   - dns: dns
   - dns_search: dns_search
   - host: host
@@ -199,6 +201,8 @@ Response
   - status_detail: status_detail
   - exit_code: exit_code
   - started_at: started_at
+  - size_rw: size_rw
+  - size_measured_at: size_measured_at
   - dns: dns
   - dns_search: dns_search
   - dns: dns
@@ -282,6 +286,8 @@ Response
   - status_detail: status_detail
   - exit_code: exit_code
   - started_at: started_at
+  - size_rw: size_rw
+  - size_measured_at: size_measured_at
   - dns: dns
   - dns_search: dns_search
   - dns: dns
@@ -503,6 +509,8 @@ Return new container with updated attributes.
   - status_detail: status_detail
   - exit_code: exit_code
   - started_at: started_at
+  - size_rw: size_rw
+  - size_measured_at: size_measured_at
   - dns: dns
   - dns_search: dns_search
   - dns: dns
@@ -816,6 +824,8 @@ Response
   - status_detail: status_detail
   - exit_code: exit_code
   - started_at: started_at
+  - size_rw: size_rw
+  - size_measured_at: size_measured_at
   - dns: dns
   - dns_search: dns_search
   - dns: dns

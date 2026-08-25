@@ -38,6 +38,7 @@ from zun.conf import scheduler
 from zun.conf import services
 from zun.conf import ssl
 from zun.conf import utils
+from zun.conf import usage
 from zun.conf import volume
 from zun.conf import websocket_proxy
 from zun.conf import zun_client
@@ -63,6 +64,7 @@ network.register_opts(CONF)
 websocket_proxy.register_opts(CONF)
 pci.register_opts(CONF)
 quota.register_opts(CONF)
+usage.register_opts(CONF)
 volume.register_opts(CONF)
 cinder_client.register_opts(CONF)
 netconf.register_opts(CONF)
