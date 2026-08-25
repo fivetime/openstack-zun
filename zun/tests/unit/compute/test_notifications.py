@@ -234,3 +234,36 @@ class TestExists(base.TestCase):
         payload = self._sent(size_rw=None).args[2]
         self.assertIsNone(payload['size_rw'])
         self.assertEqual('p-1', payload['project_id'])
+
+
+class TestReportingInterval(base.TestCase):
+    """The interval has to be read when the task runs, not when it is defined.
+
+    A decorator's arguments are evaluated when the class is defined, which
+    is before the config file has been read: `spacing=CONF...` freezes
+    whatever the default happened to be, and an operator's setting never
+    applies. Measured on a live deployment -- exists_interval was set to
+    300 and the task kept its compiled-in 3600.
+    """
+
+    def setUp(self):
+        super(TestReportingInterval, self).setUp()
+        from zun.compute import manager
+        self.manager = manager.Manager.__new__(manager.Manager)
+        self.manager._last_report = {}
+
+    def test_the_first_ask_is_always_due(self):
+        self.assertTrue(self.manager._due('exists', 3600))
+
+    def test_a_second_ask_inside_the_interval_is_not(self):
+        self.manager._due('exists', 3600)
+        self.assertFalse(self.manager._due('exists', 3600))
+
+    def test_a_shorter_interval_takes_effect_at_once(self):
+        """The point of the fix: the number is read now, not at import."""
+        self.manager._due('exists', 3600)
+        self.assertTrue(self.manager._due('exists', 0))
+
+    def test_the_two_reports_keep_their_own_clocks(self):
+        self.manager._due('exists', 3600)
+        self.assertTrue(self.manager._due('usage', 3600))

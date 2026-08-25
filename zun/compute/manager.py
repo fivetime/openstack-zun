@@ -46,12 +46,35 @@ CONF = zun.conf.CONF
 LOG = logging.getLogger(__name__)
 
 
+#: How often the reporting tasks wake to ask whether their interval has
+#: passed. Not the interval itself -- that is read at runtime, because a
+#: decorator's arguments are fixed when the class is defined and the
+#: config file has not been read by then.
+_REPORT_TICK = 30
+
+
 class Manager(periodic_task.PeriodicTasks):
     """Manages the running containers."""
 
     #: The beginning of the audit window carried by the next usage report;
     #: set to now at the top of each report so consecutive windows abut.
     _usage_window = None
+
+    #: When each reporting task last ran, by name. The interval is read
+    #: here rather than given to the decorator: a decorator's arguments
+    #: are evaluated when the class is defined, which is before the config
+    #: file has been read, so `spacing=CONF...` silently freezes whatever
+    #: the default happened to be and an operator's setting never applies.
+    _last_report = {}
+
+    def _due(self, name, interval):
+        """True at most once per interval, measured from the last yes."""
+        now = timeutils.utcnow()
+        last = self._last_report.get(name)
+        if last is not None and (now - last).total_seconds() < interval:
+            return False
+        self._last_report[name] = now
+        return True
 
     #: The beginning of the billing period the next exists report covers.
     #: None until the first tick, which is skipped so that a period is
@@ -1751,8 +1774,7 @@ class Manager(periodic_task.PeriodicTasks):
             LOG.debug('State sync is not implemented by capsule driver %s',
                       type(self.capsule_driver).__name__)
 
-    @periodic_task.periodic_task(spacing=CONF.usage_report.report_interval,
-                                 run_immediately=True)
+    @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=True)
     @context.set_context
     def report_usage(self, ctx):
         """Say what this host's containers are using, one report per host.
@@ -1766,6 +1788,8 @@ class Manager(periodic_task.PeriodicTasks):
         container: the cost of a report is the message, and a node with
         two hundred containers should not send two hundred of them.
         """
+        if not self._due('usage', CONF.usage_report.report_interval):
+            return
         if not isinstance(self.driver, driver_module.ContainerDriver):
             return
         window_start = self._usage_window
@@ -1783,8 +1807,7 @@ class Manager(periodic_task.PeriodicTasks):
         notifications.notify_usage(ctx, self.host, containers, sizes,
                                    window_start)
 
-    @periodic_task.periodic_task(spacing=CONF.usage_report.exists_interval,
-                                 run_immediately=False)
+    @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
     @context.set_context
     def report_exists(self, ctx):
         """The billing heartbeat: one message per container, per period.
@@ -1800,6 +1823,8 @@ class Manager(periodic_task.PeriodicTasks):
         otherwise be reported as beginning at that restart, which would
         bill it short.
         """
+        if not self._due('exists', CONF.usage_report.exists_interval):
+            return
         window_start = self._exists_window
         self._exists_window = timeutils.utcnow()
         if window_start is None:
