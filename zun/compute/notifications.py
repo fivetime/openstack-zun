@@ -143,6 +143,37 @@ def notify(context, container, event, phase=None, host=None, extra=None):
                     event_type, container.uuid, exc)
 
 
+def notify_exists(context, container, size_rw=None, window_start=None,
+                  host=None):
+    """One container, and that it was there for this period. Billing.
+
+    Its own message per container rather than a share of a per-host one,
+    because a meter is made of a container: the fields a bill is rated
+    from -- who owns it, what it was given, how long the period ran --
+    have to travel together for one container, and a consumer that has to
+    take them apart from a batch cannot name the meter it is building.
+    nova's instance.exists, at the same cadence and for the same reason.
+
+    Distinct from container.usage, which is batched per host on a much
+    shorter clock and feeds a cache rather than a bill.
+    """
+    notifier = rpc.get_notifier(service=SERVICE, host=host or container.host)
+    if notifier is None:
+        return
+    now = timeutils.utcnow()
+    payload = _payload(container)
+    payload.update({
+        'audit_period_beginning': (window_start or now).isoformat(),
+        'audit_period_ending': now.isoformat(),
+        'size_rw': size_rw,
+    })
+    try:
+        notifier.info(context, 'container.exists', payload)
+    except Exception as exc:
+        LOG.warning('could not send container.exists for %s: %s',
+                    container.uuid, exc)
+
+
 def notify_usage(context, host, containers, sizes, window_start=None):
     """One report per host: what its containers use, and that they exist.
 

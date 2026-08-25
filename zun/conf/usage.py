@@ -40,6 +40,18 @@ a tenant asking twice costs the node nothing extra."""),
 After this many intervals with nothing heard from a node, the figure is
 gone and the field reads as unknown -- which is right: a node that has
 stopped reporting is a node whose containers may no longer be there."""),
+    cfg.IntOpt('exists_interval',
+               default=3600, min=60,
+               help="""Seconds between one node's exists reports.
+
+An hour, as nova audits instances: this is the billing heartbeat, one
+message per container rather than one per host, so that a meter can be
+made of each container on its own. Frequent enough that a lost message
+costs one period, rare enough that the count of them is the container
+count rather than a multiple of it.
+
+The usage report is a separate thing on a separate clock -- it feeds a
+cache the API reads, is batched per host, and losing one costs nothing."""),
     cfg.StrOpt('listener_pool',
                default='zun-api-usage',
                help="""The consumer group the API listens as.

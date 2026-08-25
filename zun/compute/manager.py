@@ -53,6 +53,11 @@ class Manager(periodic_task.PeriodicTasks):
     #: set to now at the top of each report so consecutive windows abut.
     _usage_window = None
 
+    #: The beginning of the billing period the next exists report covers.
+    #: None until the first tick, which is skipped so that a period is
+    #: never reported as starting at a restart.
+    _exists_window = None
+
     def __init__(self, container_driver=None):
         super(Manager, self).__init__(CONF)
         self.driver = driver_module.load_container_driver(container_driver)
@@ -1777,6 +1782,46 @@ class Manager(periodic_task.PeriodicTasks):
             return
         notifications.notify_usage(ctx, self.host, containers, sizes,
                                    window_start)
+
+    @periodic_task.periodic_task(spacing=CONF.usage_report.exists_interval,
+                                 run_immediately=False)
+    @context.set_context
+    def report_exists(self, ctx):
+        """The billing heartbeat: one message per container, per period.
+
+        Separate from report_usage in cadence and in shape, because the
+        two answer different questions. This one says a container was
+        here for a period and what it was given, which is what a bill is
+        rated from; that one says what a writable layer measures, which
+        is what an API serves. Losing one of these costs a period;
+        losing one of those costs nothing.
+
+        run_immediately is off: the first period after a restart would
+        otherwise be reported as beginning at that restart, which would
+        bill it short.
+        """
+        window_start = self._exists_window
+        self._exists_window = timeutils.utcnow()
+        if window_start is None:
+            return
+        containers = objects.Container.list_by_host(ctx, self.host)
+        if not containers:
+            return
+        sizes = {}
+        if isinstance(self.driver, driver_module.ContainerDriver):
+            try:
+                sizes = self.driver.measure_writable_layers(ctx, containers)
+            except Exception as exc:
+                # A period still has to be reported even when nothing could
+                # be measured: what it cost to exist does not depend on it.
+                LOG.warning('could not measure for the exists report: %s',
+                            exc)
+        for container in containers:
+            notifications.notify_exists(ctx, container,
+                                        size_rw=sizes.get(container.uuid),
+                                        window_start=window_start,
+                                        host=self.host)
+        LOG.debug('reported %d containers as existing', len(containers))
 
     def network_detach(self, context, container, network):
         @utils.synchronized(container.uuid)

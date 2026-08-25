@@ -190,3 +190,47 @@ class TestUsageIsAlsoExists(base.TestCase):
         notifications.notify_usage({}, 'compute-1', [], {}, start)
         p = self.notifier.info.call_args.args[2]
         self.assertEqual(start.isoformat(), p['audit_period_beginning'])
+
+
+class TestExists(base.TestCase):
+    """The billing heartbeat: one message per container, per period.
+
+    Its own message rather than a share of a batch, because a meter is
+    made of a container: what a bill is rated from has to travel together
+    for one of them.
+    """
+
+    def setUp(self):
+        super(TestExists, self).setUp()
+        self.notifier = mock.Mock()
+        p = mock.patch.object(notifications.rpc, 'get_notifier',
+                              return_value=self.notifier)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _sent(self, **kw):
+        notifications.notify_exists({}, FakeContainer(), **kw)
+        return self.notifier.info.call_args
+
+    def test_it_is_its_own_event(self):
+        self.assertEqual('container.exists', self._sent().args[1])
+
+    def test_it_carries_who_owns_it_and_what_it_was_given(self):
+        payload = self._sent().args[2]
+        self.assertEqual('p-1', payload['project_id'])
+        self.assertEqual('u-1', payload['user_id'])
+        self.assertEqual(1.0, payload['cpu'])
+        self.assertEqual(512, payload['memory'])
+
+    def test_the_period_travels_with_the_container(self):
+        import datetime
+        start = datetime.datetime(2026, 1, 1, 0, 0, 0)
+        payload = self._sent(window_start=start).args[2]
+        self.assertEqual(start.isoformat(), payload['audit_period_beginning'])
+        self.assertTrue(payload['audit_period_ending'])
+
+    def test_an_unmeasured_container_is_still_billable(self):
+        """What it cost to exist does not depend on measuring it."""
+        payload = self._sent(size_rw=None).args[2]
+        self.assertIsNone(payload['size_rw'])
+        self.assertEqual('p-1', payload['project_id'])
