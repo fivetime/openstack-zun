@@ -49,6 +49,10 @@ LOG = logging.getLogger(__name__)
 class Manager(periodic_task.PeriodicTasks):
     """Manages the running containers."""
 
+    #: The beginning of the audit window carried by the next usage report;
+    #: set to now at the top of each report so consecutive windows abut.
+    _usage_window = None
+
     def __init__(self, container_driver=None):
         super(Manager, self).__init__(CONF)
         self.driver = driver_module.load_container_driver(container_driver)
@@ -431,6 +435,8 @@ class Manager(periodic_task.PeriodicTasks):
             with excutils.save_and_reraise_exception():
                 LOG.exception("Container resource claim failed: %s",
                               str(e))
+                notifications.notify_error(context, container, 'create', e,
+                                           host=self.host)
                 self._fail_container(context, container, str(e),
                                      unset_host=True)
                 self.reportclient.delete_allocation_for_container(
@@ -454,6 +460,8 @@ class Manager(periodic_task.PeriodicTasks):
             with excutils.save_and_reraise_exception():
                 LOG.exception("Container create failed, releasing its "
                               "placement allocation: %s", str(e))
+                notifications.notify_error(context, container, 'create', e,
+                                           host=self.host)
                 try:
                     self.reportclient.delete_allocation_for_container(
                         context, container.uuid)
@@ -568,17 +576,15 @@ class Manager(periodic_task.PeriodicTasks):
     @wrap_container_event(prefix='compute')
     def _do_container_start(self, context, container):
         LOG.debug('Starting container: %s', container.uuid)
-        notifications.notify(context, container, 'start', 'start',
-                             host=self.host)
-        with self._update_task_state(context, container,
-                                     consts.CONTAINER_STARTING):
+        with notifications.lifecycle(context, container, 'start',
+                                     host=self.host), \
+                self._update_task_state(context, container,
+                                        consts.CONTAINER_STARTING):
             try:
                 # NOTE(hongbin): capsule shouldn't reach here
                 container = self.driver.start(context, container)
                 container.started_at = timeutils.utcnow()
                 container.save(context)
-                notifications.notify(context, container, 'start', 'end',
-                                     host=self.host)
                 return container
             except exception.DockerError as e:
                 with excutils.save_and_reraise_exception():
@@ -625,10 +631,14 @@ class Manager(periodic_task.PeriodicTasks):
                 with excutils.save_and_reraise_exception(reraise=reraise):
                     LOG.error("Error occurred while calling Docker  "
                               "delete API: %s", str(e))
+                    notifications.notify_error(context, container, 'delete',
+                                               e, host=self.host)
                     self._fail_container(context, container, str(e))
             except Exception as e:
                 with excutils.save_and_reraise_exception(reraise=reraise):
                     LOG.exception("Unexpected exception: %s", str(e))
+                    notifications.notify_error(context, container, 'delete',
+                                               e, host=self.host)
                     self._fail_container(context, container, str(e))
 
             self._detach_volumes(context, container, reraise=reraise)
@@ -722,14 +732,12 @@ class Manager(periodic_task.PeriodicTasks):
                           finish_action=container_actions.STOP)
     def _do_container_stop(self, context, container, timeout):
         LOG.debug('Stopping container: %s', container.uuid)
-        notifications.notify(context, container, 'stop', 'start',
-                             host=self.host)
-        with self._update_task_state(context, container,
-                                     consts.CONTAINER_STOPPING):
+        with notifications.lifecycle(context, container, 'stop',
+                                     host=self.host), \
+                self._update_task_state(context, container,
+                                        consts.CONTAINER_STOPPING):
             # NOTE(hongbin): capsule shouldn't reach here
             container = self.driver.stop(context, container, timeout)
-            notifications.notify(context, container, 'stop', 'end',
-                                 host=self.host)
             return container
 
     def container_stop(self, context, container, timeout):
@@ -845,8 +853,10 @@ class Manager(periodic_task.PeriodicTasks):
                           finish_action=container_actions.PAUSE)
     def _do_container_pause(self, context, container):
         LOG.debug('Pausing container: %s', container.uuid)
-        with self._update_task_state(context, container,
-                                     consts.CONTAINER_PAUSING):
+        with notifications.lifecycle(context, container, 'pause',
+                                     host=self.host), \
+                self._update_task_state(context, container,
+                                        consts.CONTAINER_PAUSING):
             # NOTE(hongbin): capsule shouldn't reach here
             container = self.driver.pause(context, container)
             return container
@@ -863,8 +873,10 @@ class Manager(periodic_task.PeriodicTasks):
                           finish_action=container_actions.UNPAUSE)
     def _do_container_unpause(self, context, container):
         LOG.debug('Unpausing container: %s', container.uuid)
-        with self._update_task_state(context, container,
-                                     consts.CONTAINER_UNPAUSING):
+        with notifications.lifecycle(context, container, 'unpause',
+                                     host=self.host), \
+                self._update_task_state(context, container,
+                                        consts.CONTAINER_UNPAUSING):
             # NOTE(hongbin): capsule shouldn't reach here
             container = self.driver.unpause(context, container)
             return container
@@ -1751,6 +1763,8 @@ class Manager(periodic_task.PeriodicTasks):
         """
         if not isinstance(self.driver, driver_module.ContainerDriver):
             return
+        window_start = self._usage_window
+        self._usage_window = timeutils.utcnow()
         containers = objects.Container.list_by_host(ctx, self.host)
         if not containers:
             return
@@ -1761,7 +1775,8 @@ class Manager(periodic_task.PeriodicTasks):
             # than something wrong; its figures age out and read unknown.
             LOG.warning('could not measure container usage: %s', exc)
             return
-        notifications.notify_usage(ctx, self.host, sizes)
+        notifications.notify_usage(ctx, self.host, containers, sizes,
+                                   window_start)
 
     def network_detach(self, context, container, network):
         @utils.synchronized(container.uuid)

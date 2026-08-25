@@ -24,6 +24,8 @@ should be small and stable, and anything a consumer needs beyond this can
 be fetched with the uuid.
 """
 
+import contextlib
+
 from oslo_log import log as logging
 from oslo_utils import timeutils
 
@@ -59,6 +61,65 @@ def _payload(container):
     }
 
 
+@contextlib.contextmanager
+def lifecycle(context, container, event, host=None, extra=None):
+    """Wrap an operation so its notification is a start/end/error whole.
+
+    Entering sends `.start`, leaving cleanly sends `.end`, and leaving by
+    exception sends `.error` before the exception continues -- so the
+    three phases stay in step and no path can send one without the
+    others. The same shape nova gives every action.
+
+    Driver-agnostic on purpose: the container handed in is a Container or
+    a Capsule, and neither this nor the caller knows or cares which
+    runtime is underneath. The place to describe what happened to a
+    container is above the driver, not inside each one.
+    """
+    notify(context, container, event, 'start', host=host, extra=extra)
+    try:
+        yield
+    except Exception as exc:
+        notify_error(context, container, event, exc, host=host)
+        raise
+    notify(context, container, event, 'end', host=host, extra=extra)
+
+
+def notify_state_change(context, container, changes):
+    """A container's state changed, whoever changed it.
+
+    Sent from save(), so it fires for a status a compute node synced back
+    after the container stopped on its own as readily as for one an
+    operation set -- which is the event a bill needs and the lifecycle
+    pairs alone do not carry: a container that exited by itself sends no
+    `.end` for anything. nova's instance.update.
+
+    `changes` is what obj_get_changes returned; a move of status,
+    task_state, cpu, memory or disk is worth a message -- the first two
+    for the lifecycle a container reaches on its own, the last three
+    because a resize changes what it costs. A container that exited by
+    itself, or was resized, both come through here without any operation
+    having sent a lifecycle pair.
+    """
+    changed = [k for k in ('status', 'task_state', 'cpu', 'memory', 'disk')
+               if k in changes]
+    if not changed:
+        return
+    notifier = rpc.get_notifier(service=SERVICE, host=container.host)
+    if notifier is None:
+        return
+    payload = _payload(container)
+    # Which fields moved, so a consumer can tell a status change from a
+    # resize without diffing; the new values are already in the payload.
+    # obj_get_changes carries new values, not old, so no before-state is
+    # claimed here.
+    payload['changed'] = changed
+    try:
+        notifier.info(context, 'container.update', payload)
+    except Exception as exc:
+        LOG.warning('could not send container.update for %s: %s',
+                    container.uuid, exc)
+
+
 def notify(context, container, event, phase=None, host=None, extra=None):
     """Send one lifecycle notification.
 
@@ -82,23 +143,34 @@ def notify(context, container, event, phase=None, host=None, extra=None):
                     event_type, container.uuid, exc)
 
 
-def notify_usage(context, host, sizes):
-    """One report of what a host's containers are using.
+def notify_usage(context, host, containers, sizes, window_start=None):
+    """One report per host: what its containers use, and that they exist.
 
-    Its own event rather than a field on the lifecycle ones: a consumer
-    of container.create.end reads it to know a container exists, and
-    would not want it re-sent every minute with a size attached. This
-    one carries the uuid, the host and the bytes, and a consumer that
-    wants more can fetch it.
+    Two things a bill needs, in one message a minute rather than two.
+    Each entry carries the writable-layer bytes (unknown until a node has
+    measured it) and the container's status, so a consumer learns both
+    what was used and that the container was there in this window to use
+    it -- nova's usage-exists audit, at the granularity zun already pays
+    for by reporting at all.
+
+    The window is [previous report, now]: consecutive reports abut, so a
+    consumer can sum them into a billing period without gaps or overlap.
     """
     notifier = rpc.get_notifier(service=SERVICE, host=host)
     if notifier is None:
         return
+    now = timeutils.utcnow()
     payload = {
         'host': host,
-        'measured_at': timeutils.utcnow().isoformat(),
-        'containers': [{'uuid': uuid, 'size_rw': size}
-                       for uuid, size in sizes.items()],
+        'measured_at': now.isoformat(),
+        'audit_period_beginning': (window_start or now).isoformat(),
+        'audit_period_ending': now.isoformat(),
+        'containers': [{'uuid': c.uuid,
+                        'size_rw': sizes.get(c.uuid),
+                        'status': c.status,
+                        'cpu': c.cpu,
+                        'memory': c.memory}
+                       for c in containers],
     }
     try:
         notifier.info(context, 'container.usage', payload)

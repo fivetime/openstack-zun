@@ -305,6 +305,17 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
         dbapi.update_container(context, self.container_type, self.uuid,
                                updates)
 
+        # After the row is written, not before: a state change announced
+        # and then not persisted would be a lie a consumer cannot take
+        # back. `changes` still holds the fields as of this save because
+        # obj_reset_changes has not run yet. Lazy import -- notifications
+        # is a compute-layer module and importing it at the top would tie
+        # the object model to it.
+        changes = self.obj_get_changes()
+        from zun.compute import notifications
+        notifications.notify_state_change(context or self._context, self,
+                                          changes)
+
         self.obj_reset_changes()
 
     @base.remotable
