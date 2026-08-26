@@ -428,6 +428,7 @@ Request
 .. rest_parameters:: parameters.yaml
 
   - container_ident: container_ident
+  - raw: raw_stats_query
 
 Response
 --------

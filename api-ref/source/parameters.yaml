@@ -2170,6 +2170,23 @@ dns_search:
   in: body
   required: false
   type: array
+raw_stats_query:
+  description: |
+    Return the counters themselves rather than figures worked out from
+    them. ``stats`` answers with a percentage and totals, which is what a
+    person reads; a program drawing a graph, or one translating for a
+    client that does its own arithmetic, needs what those were computed
+    from and cannot recover it from a rounded percentage.
+
+    A driver leaves out what its runtime does not measure rather than
+    reporting a zero: an absent key says nobody looked, a zero says
+    somebody looked and found nothing, and those are different claims. A
+    runtime that offers no counters at all is an error, not an empty
+    document.
+  in: query
+  required: false
+  type: boolean
+  min_version: 1.48
 size_measured_at:
   description: |
     When ``size_rw`` was measured, as reported by the host running the

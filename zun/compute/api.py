@@ -242,6 +242,9 @@ class API(object):
     def container_stats(self, context, container):
         return self.rpcapi.container_stats(context, container)
 
+    def container_raw_stats(self, context, container):
+        return self.rpcapi.container_raw_stats(context, container)
+
     def capsule_stats(self, context, capsule):
         return self.rpcapi.capsule_stats(context, capsule)
 

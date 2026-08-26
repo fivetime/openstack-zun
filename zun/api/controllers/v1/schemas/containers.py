@@ -193,6 +193,14 @@ query_param_execute_command = {
     'additionalProperties': False
 }
 
+query_param_stats = {
+    'type': 'object',
+    'properties': {
+        'raw': parameter_types.boolean_extended,
+    },
+    'additionalProperties': False,
+}
+
 query_param_commit = {
     'type': 'object',
     'properties': {

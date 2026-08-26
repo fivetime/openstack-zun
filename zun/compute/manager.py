@@ -1298,6 +1298,22 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
+    def container_raw_stats(self, context, container):
+        """The counters, before anything is computed from them.
+
+        A driver whose runtime cannot offer them says so rather than
+        inventing a shape, and the caller gets an error naming the reason
+        instead of a document full of zeroes.
+        """
+        LOG.debug('Displaying raw stats of the container: %s', container.uuid)
+        try:
+            # NOTE(hongbin): capsule shouldn't reach here
+            return self.driver.raw_stats(context, container)
+        except NotImplementedError:
+            raise exception.OperationNotSupported(_(
+                'The runtime on this host does not report the counters '
+                'behind container stats'))
+
     def container_commit(self, context, container, repository, tag=None):
         LOG.debug('Committing the container: %s', container.uuid)
         snapshot_image = None

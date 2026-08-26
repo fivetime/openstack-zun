@@ -452,6 +452,12 @@ def cpu_percent(total_ns, previous_total_ns, system_ns, previous_system_ns,
     return (delta_total / delta_system) * (online_cpus or 1) * 100.0
 
 
+#: The keys a raw stats reading uses. A driver fills what its runtime
+#: measures and leaves out the rest: a key that is absent says nobody
+#: looked, where a zero would say somebody looked and found nothing.
+RAW_STATS_KEYS = ('timestamp', 'cpu', 'memory', 'networks', 'blkio', 'pids')
+
+
 def cpu_percent_over_time(cpu_ns, previous_cpu_ns, elapsed_ns):
     """The same figure from a CPU counter and a wall clock.
 
@@ -533,6 +539,26 @@ class ContainerDriver(object):
 
         Only the local copy. Nothing is removed from a registry, and a
         removed image is pulled again the next time it is wanted.
+        """
+        raise NotImplementedError()
+
+    def raw_stats(self, context, container):
+        """The counters themselves, before anything is computed from them.
+
+        `stats` answers with figures already worked out -- a percentage, a
+        total in MiB -- which is what a person reads. A program that draws
+        a graph, or one translating for a client that does its own
+        arithmetic, needs what those were computed from, and cannot get it
+        back from a rounded percentage.
+
+        Shape: {'timestamp': iso8601, 'cpu': {...}, 'memory': {...},
+        'networks': {iface: {...}}, 'blkio': {...}, 'pids': {...}}. A
+        driver leaves out what its runtime does not measure rather than
+        filling a zero -- absent means nobody looked; zero means somebody
+        looked and found nothing, and those are different claims.
+
+        A driver that cannot answer at all raises, and the API says so,
+        rather than inventing a shape.
         """
         raise NotImplementedError()
 

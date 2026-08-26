@@ -108,6 +108,19 @@ def wrap_docker_error(function):
     return decorated_function
 
 
+def _cache_usage(memory_stats):
+    """Page cache inside a container's memory figure.
+
+    Counted as used by the kernel and reclaimable in practice, so what a
+    reader means by "memory used" excludes it. The key differs between
+    cgroup versions, which is the only reason this is not one lookup.
+    """
+    stats = (memory_stats or {}).get('stats') or {}
+    return (stats.get('total_inactive_file')      # cgroup v1
+            or stats.get('inactive_file')         # cgroup v2
+            or 0)
+
+
 class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                    driver.CapsuleDriver):
     """Implementation of container drivers for Docker."""
@@ -780,6 +793,56 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                                             filters={'uuid': uuids})
         return containers
 
+    @check_container_id
+    @wrap_docker_error
+    def raw_stats(self, context, container):
+        with docker_utils.docker_client() as docker:
+            res = docker.stats(container.container_id, decode=False,
+                               stream=False)
+        cpu = res.get('cpu_stats') or {}
+        previous = res.get('precpu_stats') or {}
+        memory = res.get('memory_stats') or {}
+        out = {
+            'timestamp': res.get('read'),
+            'previous_timestamp': res.get('preread'),
+            'cpu': {
+                'total_ns': (cpu.get('cpu_usage') or {}).get('total_usage'),
+                'previous_total_ns': (
+                    (previous.get('cpu_usage') or {}).get('total_usage')),
+                'system_ns': cpu.get('system_cpu_usage'),
+                'previous_system_ns': previous.get('system_cpu_usage'),
+                'online_cpus': cpu.get('online_cpus'),
+            },
+            'memory': {
+                'usage': memory.get('usage'),
+                'limit': memory.get('limit'),
+                'cache': _cache_usage(memory),
+            },
+            'pids': {'current': (res.get('pids_stats') or {}).get('current')},
+        }
+        networks = res.get('networks') or {}
+        if networks:
+            out['networks'] = {
+                name: {'rx_bytes': v.get('rx_bytes'),
+                       'tx_bytes': v.get('tx_bytes'),
+                       'rx_packets': v.get('rx_packets'),
+                       'tx_packets': v.get('tx_packets')}
+                for name, v in networks.items()}
+        # Left out rather than zeroed when the runtime only offered the
+        # placeholder entries; see stats() for how those are told apart.
+        measured = [i for i in
+                    ((res.get('blkio_stats') or {})
+                     .get('io_service_bytes_recursive') or [])
+                    if i.get('major') or i.get('minor')]
+        if measured:
+            out['blkio'] = {
+                'read_bytes': sum(i['value'] for i in measured
+                                  if i['op'].lower() == 'read'),
+                'write_bytes': sum(i['value'] for i in measured
+                                   if i['op'].lower() == 'write'),
+            }
+        return out
+
     def list_local_images(self):
         with docker_utils.docker_client() as docker:
             listed = docker.images(all=False)
@@ -1357,18 +1420,8 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 res['cpu_stats'].get('online_cpus'))
 
             # Subtract the Cache Usage from total memory Usage
-            cache_usage = 0
-            if res['memory_stats'].get('stats'):
-                if res['memory_stats']['stats'].get('total_inactive_file'):
-                    # For Cgroup V1
-                    cache_usage = res['memory_stats']['stats'].get(
-                        'total_inactive_file')
-                elif res['memory_stats']['stats'].get('inactive_file'):
-                    # For Cgroup V2
-                    cache_usage = res['memory_stats']['stats'].get(
-                        'inactive_file')
-
-            mem_usage = res['memory_stats']['usage'] - cache_usage
+            mem_usage = (res['memory_stats']['usage']
+                         - _cache_usage(res['memory_stats']))
             mem_usage = mem_usage / 1024 / 1024
             mem_limit = res['memory_stats']['limit'] / 1024 / 1024
             mem_percent = float(mem_usage) / float(mem_limit) * 100

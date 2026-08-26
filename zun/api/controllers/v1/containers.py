@@ -1204,17 +1204,25 @@ class ContainersController(base.Controller):
 
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception
-    def stats(self, container_ident):
+    @validation.validate_query_param(pecan.request, schema.query_param_stats)
+    def stats(self, container_ident, **kwargs):
         """Display stats snapshot of the container.
 
         :param container_ident: UUID or Name of a container.
+        :param raw: return the counters themselves rather than figures
+            worked out from them. Since 1.48.
         """
         container = api_utils.get_resource('Container', container_ident)
         check_policy_on_container(container.as_dict(), "container:stats")
         utils.validate_container_state(container, 'stats')
-        LOG.debug('Calling compute.container_stats with %s', container.uuid)
         context = pecan.request.context
         compute_api = pecan.request.compute_api
+        if strutils.bool_from_string(kwargs.get('raw', False), strict=False):
+            api_utils.version_check('raw', '1.48')
+            LOG.debug('Calling compute.container_raw_stats with %s',
+                      container.uuid)
+            return compute_api.container_raw_stats(context, container)
+        LOG.debug('Calling compute.container_stats with %s', container.uuid)
         return compute_api.container_stats(context, container)
 
     @pecan.expose('json')
