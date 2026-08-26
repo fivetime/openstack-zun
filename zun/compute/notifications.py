@@ -174,7 +174,27 @@ def notify_exists(context, container, size_rw=None, window_start=None,
                     container.uuid, exc)
 
 
-def notify_usage(context, host, containers, sizes, window_start=None):
+def _usage_entry(container, sizes, counters):
+    """One container's line in a host's report.
+
+    The counters travel raw. What a reader wants -- a percentage, a share
+    of a limit -- is worked out from two of these readings, and only the
+    reader knows which two it holds; sending a figure already worked out
+    would answer a question about an interval nobody asked about.
+    """
+    entry = {'uuid': container.uuid,
+             'size_rw': sizes.get(container.uuid),
+             'status': container.status,
+             'cpu': container.cpu,
+             'memory': container.memory}
+    sampled = counters.get(container.uuid)
+    if sampled:
+        entry['counters'] = sampled
+    return entry
+
+
+def notify_usage(context, host, containers, sizes, window_start=None,
+                 counters=None):
     """One report per host: what its containers use, and that they exist.
 
     Two things a bill needs, in one message a minute rather than two.
@@ -196,11 +216,7 @@ def notify_usage(context, host, containers, sizes, window_start=None):
         'measured_at': now.isoformat(),
         'audit_period_beginning': (window_start or now).isoformat(),
         'audit_period_ending': now.isoformat(),
-        'containers': [{'uuid': c.uuid,
-                        'size_rw': sizes.get(c.uuid),
-                        'status': c.status,
-                        'cpu': c.cpu,
-                        'memory': c.memory}
+        'containers': [_usage_entry(c, sizes, counters or {})
                        for c in containers],
     }
     try:

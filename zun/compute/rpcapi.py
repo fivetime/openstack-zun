@@ -182,10 +182,6 @@ class API(rpc_service.API):
         return self._call(container.host, 'container_stats',
                           container=container)
 
-    def container_raw_stats(self, context, container):
-        return self._call(container.host, 'container_raw_stats',
-                          container=container)
-
     @check_container_host
     def capsule_stats(self, context, capsule):
         return self._call(capsule.host, 'capsule_stats', capsule=capsule)

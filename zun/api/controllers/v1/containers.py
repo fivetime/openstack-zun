@@ -132,6 +132,40 @@ class ContainersActionsController(base.Controller):
         return action
 
 
+def _raw_stats_from_reports(container):
+    """The last two readings the container's node sent.
+
+    Served from what the nodes report rather than fetched when asked. A
+    container's counters live on the node running it, so answering a
+    request would mean reaching out to that node and waiting -- about two
+    seconds each, because a runtime asked for a rate samples twice -- and
+    a tenant with containers spread over a hundred nodes would pay that a
+    hundred times over, every time anything read them.
+
+    Both readings are here because a rate is the difference between two,
+    and a caller cannot take two of its own: each request would land on
+    whichever reading the node had most recently sent.
+    """
+    held = usage_cache.recall(container.uuid)
+    if not held or not held.get('counters'):
+        raise exception.OperationNotSupported(_(
+            'No counters have been reported for container %s yet. They '
+            'arrive with the next report from the node running it.')
+            % container.uuid)
+    current = dict(held['counters'])
+    previous = held.get('previous_counters') or {}
+    # A first reading has nothing before it, and a rate computed against
+    # nothing is zero rather than wrong.
+    current['previous_timestamp'] = held.get('previous_measured_at')
+    current['cpu'] = dict(current.get('cpu') or {})
+    current['cpu']['previous_total_ns'] = (
+        (previous.get('cpu') or {}).get('total_ns'))
+    current['cpu']['previous_system_ns'] = (
+        (previous.get('cpu') or {}).get('system_ns'))
+    current['reported_at'] = held.get('measured_at')
+    return current
+
+
 class ContainersController(base.Controller):
     """Controller for Containers."""
 
@@ -1219,9 +1253,7 @@ class ContainersController(base.Controller):
         compute_api = pecan.request.compute_api
         if strutils.bool_from_string(kwargs.get('raw', False), strict=False):
             api_utils.version_check('raw', '1.48')
-            LOG.debug('Calling compute.container_raw_stats with %s',
-                      container.uuid)
-            return compute_api.container_raw_stats(context, container)
+            return _raw_stats_from_reports(container)
         LOG.debug('Calling compute.container_stats with %s', container.uuid)
         return compute_api.container_stats(context, container)
 

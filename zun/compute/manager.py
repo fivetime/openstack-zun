@@ -1298,22 +1298,6 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
-    def container_raw_stats(self, context, container):
-        """The counters, before anything is computed from them.
-
-        A driver whose runtime cannot offer them says so rather than
-        inventing a shape, and the caller gets an error naming the reason
-        instead of a document full of zeroes.
-        """
-        LOG.debug('Displaying raw stats of the container: %s', container.uuid)
-        try:
-            # NOTE(hongbin): capsule shouldn't reach here
-            return self.driver.raw_stats(context, container)
-        except NotImplementedError:
-            raise exception.OperationNotSupported(_(
-                'The runtime on this host does not report the counters '
-                'behind container stats'))
-
     def container_commit(self, context, container, repository, tag=None):
         LOG.debug('Committing the container: %s', container.uuid)
         snapshot_image = None
@@ -1836,8 +1820,14 @@ class Manager(periodic_task.PeriodicTasks):
             # than something wrong; its figures age out and read unknown.
             LOG.warning('could not measure container usage: %s', exc)
             return
+        try:
+            counters = self.driver.sample_counters(ctx, containers)
+        except Exception as exc:
+            # Sizes are still worth sending without them.
+            LOG.warning('could not sample container counters: %s', exc)
+            counters = {}
         notifications.notify_usage(ctx, self.host, containers, sizes,
-                                   window_start)
+                                   window_start, counters)
 
     @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
     @context.set_context

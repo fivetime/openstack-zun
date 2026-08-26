@@ -43,10 +43,26 @@ class UsageEndpoint(object):
             uuid = entry.get('uuid')
             if not uuid:
                 continue
+            # The reading before this one is kept beside it. A rate is
+            # the difference between two readings, and a node sends one
+            # at a time, so if the pair is not assembled here nobody can
+            # assemble it: a reader gets whichever single reading it
+            # happened to ask during, and no two of them are its own.
+            held = usage_cache.recall(uuid) or {}
+            sampled = entry.get('counters')
             usage_cache.remember(uuid, {
                 'size_rw': entry.get('size_rw'),
                 'measured_at': measured_at,
                 'host': host,
+                # Absent when the node could not sample this one; the
+                # reader tells that apart from a container using nothing.
+                'counters': sampled,
+                'previous_counters': (held.get('counters')
+                                      if sampled else
+                                      held.get('previous_counters')),
+                'previous_measured_at': (held.get('measured_at')
+                                         if sampled else
+                                         held.get('previous_measured_at')),
             })
         LOG.debug('kept usage for %d containers from %s', len(entries), host)
         return messaging.NotificationResult.HANDLED

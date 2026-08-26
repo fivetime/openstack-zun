@@ -26,13 +26,22 @@ not state, and a figure that is lost is replaced by the next one.""")
 
 usage_opts = [
     cfg.IntOpt('report_interval',
-               default=60, min=10,
+               default=15, min=5,
                help="""Seconds between one node's usage reports.
 
-Measuring a container's writable layer walks its upper directory, so the
-cost grows with the number of files there rather than the bytes. This is
-why the figure is reported on a schedule instead of computed when asked:
-a tenant asking twice costs the node nothing extra."""),
+Short, because these figures are read as if they were live: `docker
+stats` shows a table that updates, and a reader takes what is in it for
+what is happening now. Fifteen seconds is close enough to now to act on
+and far enough apart to cost nothing -- a reading is about five
+milliseconds a container, so two hundred containers spend one second a
+quarter minute.
+
+Reported on a schedule rather than computed when asked because a
+container's counters live on the node running it: answering a request
+would mean reaching out to every node a tenant has containers on and
+waiting for the slowest, which grows with the tenant and again with each
+reader. A report costs the same whether nobody reads it or everybody
+does."""),
     cfg.IntOpt('retain_reports',
                default=3, min=1,
                help="""How many report intervals a figure stays served for.

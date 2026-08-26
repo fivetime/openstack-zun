@@ -542,25 +542,20 @@ class ContainerDriver(object):
         """
         raise NotImplementedError()
 
-    def raw_stats(self, context, container):
-        """The counters themselves, before anything is computed from them.
+    def sample_counters(self, context, containers):
+        """One cheap reading per container, for the whole host at once.
 
-        `stats` answers with figures already worked out -- a percentage, a
-        total in MiB -- which is what a person reads. A program that draws
-        a graph, or one translating for a client that does its own
-        arithmetic, needs what those were computed from, and cannot get it
-        back from a rounded percentage.
+        Meant to be called on a schedule, not per request: it takes a
+        single sample and does not wait for a second one, because the
+        caller compares its own consecutive readings rather than asking
+        the runtime to do it. That is the difference between five
+        milliseconds a container and two seconds a container.
 
-        Shape: {'timestamp': iso8601, 'cpu': {...}, 'memory': {...},
-        'networks': {iface: {...}}, 'blkio': {...}, 'pids': {...}}. A
-        driver leaves out what its runtime does not measure rather than
-        filling a zero -- absent means nobody looked; zero means somebody
-        looked and found nothing, and those are different claims.
-
-        A driver that cannot answer at all raises, and the API says so,
-        rather than inventing a shape.
+        Answers {uuid: counters} in the shape raw_stats uses, minus the
+        previous sample -- there is none in a single reading. A container
+        that cannot be sampled is absent rather than zeroed.
         """
-        raise NotImplementedError()
+        return {}
 
     def measure_writable_layers(self, context, containers):
         """Bytes each container has written over its image, by uuid.

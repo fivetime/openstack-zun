@@ -108,6 +108,55 @@ def wrap_docker_error(function):
     return decorated_function
 
 
+def _counters(res):
+    """The fields one reading carries.
+
+    A single sample: the previous-reading fields are left for whoever
+    holds the reading before this one, which is the cache the reports go
+    into. one_shot leaves them empty here, and filling them with what
+    docker would have sampled a second ago would be a rate over an
+    interval nobody asked about.
+    """
+    cpu = res.get('cpu_stats') or {}
+    memory = res.get('memory_stats') or {}
+    out = {
+        'timestamp': res.get('read'),
+        'cpu': {
+            'total_ns': (cpu.get('cpu_usage') or {}).get('total_usage'),
+            'system_ns': cpu.get('system_cpu_usage'),
+            'online_cpus': cpu.get('online_cpus'),
+        },
+        'memory': {
+            'usage': memory.get('usage'),
+            'limit': memory.get('limit'),
+            'cache': _cache_usage(memory),
+        },
+        'pids': {'current': (res.get('pids_stats') or {}).get('current')},
+    }
+    networks = res.get('networks') or {}
+    if networks:
+        out['networks'] = {
+            name: {'rx_bytes': v.get('rx_bytes'),
+                   'tx_bytes': v.get('tx_bytes'),
+                   'rx_packets': v.get('rx_packets'),
+                   'tx_packets': v.get('tx_packets')}
+            for name, v in networks.items()}
+    # Left out rather than zeroed when the runtime only offered the
+    # placeholder entries; see stats() for how those are told apart.
+    measured = [i for i in
+                ((res.get('blkio_stats') or {})
+                 .get('io_service_bytes_recursive') or [])
+                if i.get('major') or i.get('minor')]
+    if measured:
+        out['blkio'] = {
+            'read_bytes': sum(i['value'] for i in measured
+                              if i['op'].lower() == 'read'),
+            'write_bytes': sum(i['value'] for i in measured
+                               if i['op'].lower() == 'write'),
+        }
+    return out
+
+
 def _cache_usage(memory_stats):
     """Page cache inside a container's memory figure.
 
@@ -793,55 +842,29 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                                             filters={'uuid': uuids})
         return containers
 
-    @check_container_id
-    @wrap_docker_error
-    def raw_stats(self, context, container):
+    def sample_counters(self, context, containers):
+        wanted = {c.container_id: c.uuid for c in containers
+                  if c.container_id}
+        if not wanted:
+            return {}
+        found = {}
         with docker_utils.docker_client() as docker:
-            res = docker.stats(container.container_id, decode=False,
-                               stream=False)
-        cpu = res.get('cpu_stats') or {}
-        previous = res.get('precpu_stats') or {}
-        memory = res.get('memory_stats') or {}
-        out = {
-            'timestamp': res.get('read'),
-            'previous_timestamp': res.get('preread'),
-            'cpu': {
-                'total_ns': (cpu.get('cpu_usage') or {}).get('total_usage'),
-                'previous_total_ns': (
-                    (previous.get('cpu_usage') or {}).get('total_usage')),
-                'system_ns': cpu.get('system_cpu_usage'),
-                'previous_system_ns': previous.get('system_cpu_usage'),
-                'online_cpus': cpu.get('online_cpus'),
-            },
-            'memory': {
-                'usage': memory.get('usage'),
-                'limit': memory.get('limit'),
-                'cache': _cache_usage(memory),
-            },
-            'pids': {'current': (res.get('pids_stats') or {}).get('current')},
-        }
-        networks = res.get('networks') or {}
-        if networks:
-            out['networks'] = {
-                name: {'rx_bytes': v.get('rx_bytes'),
-                       'tx_bytes': v.get('tx_bytes'),
-                       'rx_packets': v.get('rx_packets'),
-                       'tx_packets': v.get('tx_packets')}
-                for name, v in networks.items()}
-        # Left out rather than zeroed when the runtime only offered the
-        # placeholder entries; see stats() for how those are told apart.
-        measured = [i for i in
-                    ((res.get('blkio_stats') or {})
-                     .get('io_service_bytes_recursive') or [])
-                    if i.get('major') or i.get('minor')]
-        if measured:
-            out['blkio'] = {
-                'read_bytes': sum(i['value'] for i in measured
-                                  if i['op'].lower() == 'read'),
-                'write_bytes': sum(i['value'] for i in measured
-                                   if i['op'].lower() == 'write'),
-            }
-        return out
+            for container_id, uuid in wanted.items():
+                try:
+                    # one_shot: take the reading and return. Without it
+                    # docker waits for a second sample so it can fill in
+                    # precpu, which costs a second per container and is
+                    # work we do not need -- the caller compares its own
+                    # readings, taken a reporting interval apart.
+                    res = docker.stats(container_id, decode=False,
+                                       stream=False, one_shot=True)
+                except Exception as exc:                    # noqa: BLE001
+                    # One container the runtime would not answer about
+                    # must not cost the host its whole report.
+                    LOG.debug('could not sample %s: %s', uuid, exc)
+                    continue
+                found[uuid] = _counters(res)
+        return found
 
     def list_local_images(self):
         with docker_utils.docker_client() as docker:
