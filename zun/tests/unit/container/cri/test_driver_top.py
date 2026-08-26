@@ -18,7 +18,7 @@ dashboard, anything built on the API -- to guess the shape from whatever
 it happened to receive.
 """
 
-from zun.container.cri import driver
+from zun.container import driver as container_driver
 from zun.tests import base
 
 
@@ -28,13 +28,13 @@ class TestProcessTable(base.TestCase):
         self.assertEqual(
             {'Titles': ['PID', 'USER', 'COMMAND'],
              'Processes': [['1', 'root', 'sh'], ['9', 'root', 'ps -ef']]},
-            driver._as_process_table('PID   USER     COMMAND\n'
+            container_driver.process_table('PID   USER     COMMAND\n'
                                      '    1 root     sh\n'
                                      '    9 root     ps -ef\n'))
 
     def test_the_command_keeps_its_spaces(self):
         """The last column is a command line, not one word."""
-        table = driver._as_process_table(
+        table = container_driver.process_table(
             'PID CMD\n1 sh -c "echo a; echo b"\n')
 
         self.assertEqual([['1', 'sh -c "echo a; echo b"']],
@@ -42,8 +42,8 @@ class TestProcessTable(base.TestCase):
 
     def test_headings_only_means_no_processes(self):
         self.assertEqual({'Titles': ['PID', 'CMD'], 'Processes': []},
-                         driver._as_process_table('PID CMD\n'))
+                         container_driver.process_table('PID CMD\n'))
 
     def test_nothing_at_all_is_an_empty_table(self):
         self.assertEqual({'Titles': [], 'Processes': []},
-                         driver._as_process_table(''))
+                         container_driver.process_table(''))
