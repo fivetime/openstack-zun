@@ -1658,12 +1658,13 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         time.sleep(1)
         second = self._container_stats(container.container_id)
 
-        cpu_percent = 0.0
-        elapsed = second['timestamp'] - first['timestamp']
-        if elapsed > 0:
-            cores = os.cpu_count() or 1
-            burned = second['cpu_ns'] - first['cpu_ns']
-            cpu_percent = float(burned) / float(elapsed) / cores * 100
+        # docker's scale: 100% is one CPU fully used, not a share of the
+        # whole machine. Dividing by the host's core count answered on a
+        # different scale from the docker driver -- the same load, reported
+        # thirty-two times smaller on a thirty-two core host.
+        cpu_percent = driver.cpu_percent_over_time(
+            second['cpu_ns'], first['cpu_ns'],
+            second['timestamp'] - first['timestamp'])
 
         mem_usage = second['memory'] / 1024 / 1024
         mem_limit = 0
@@ -1691,11 +1692,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 # client spells an unavailable figure (cli/command/container
                 # /formatter_stats.go): zero reads as an idle disk, which is
                 # a claim nobody measured.
-                "BLOCK I/O(B)": self._NO_VALUE_PAIR,
+                "BLOCK I/O(B)": driver.NO_VALUE_PAIR,
                 "NET I/O(B)": self._net_io(container)}
 
-    # What docker's client prints for a figure it has no value for.
-    _NO_VALUE_PAIR = '-- / --'
 
     def _net_io(self, container):
         """Bytes in and out of the capsule's network namespace.
@@ -1714,18 +1713,18 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # belongs asks the runtime about something that does not exist.
         pod_id = self._sandbox_of(container)
         if not pod_id:
-            return self._NO_VALUE_PAIR
+            return driver.NO_VALUE_PAIR
         try:
             resp = self.runtime_stub.PodSandboxStats(
                 api_pb2.PodSandboxStatsRequest(pod_sandbox_id=pod_id))
         except grpc.RpcError as e:
             LOG.debug('No network figures for %(id)s: %(err)s',
                       {'id': pod_id, 'err': e})
-            return self._NO_VALUE_PAIR
+            return driver.NO_VALUE_PAIR
         net = resp.stats.linux.network
         iface = net.default_interface
         if not net.HasField('default_interface'):
-            return self._NO_VALUE_PAIR
+            return driver.NO_VALUE_PAIR
         return '%s / %s' % (iface.rx_bytes.value, iface.tx_bytes.value)
 
     def list_local_images(self):

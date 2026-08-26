@@ -1348,7 +1348,13 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
             cpu_usage = res['cpu_stats']['cpu_usage']['total_usage']
             system_cpu_usage = res['cpu_stats']['system_cpu_usage']
-            cpu_percent = float(cpu_usage) / float(system_cpu_usage) * 100
+            previous = res.get('precpu_stats') or {}
+            cpu_percent = driver.cpu_percent(
+                cpu_usage,
+                (previous.get('cpu_usage') or {}).get('total_usage'),
+                system_cpu_usage,
+                previous.get('system_cpu_usage'),
+                res['cpu_stats'].get('online_cpus'))
 
             # Subtract the Cache Usage from total memory Usage
             cache_usage = 0
@@ -1367,14 +1373,22 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             mem_limit = res['memory_stats']['limit'] / 1024 / 1024
             mem_percent = float(mem_usage) / float(mem_limit) * 100
 
+            # A VM runtime reports the entries with zero in them rather
+            # than leaving them out, and a zero here reads as "the disk was
+            # idle" -- a claim nobody measured. Told apart by whether any
+            # entry carries a device: real accounting names the device it
+            # came from, the placeholder is major 0 minor 0.
             blk_stats = res['blkio_stats']['io_service_bytes_recursive']
-            io_read = 0
-            io_write = 0
-            for item in (blk_stats or []):
-                if item['op'].lower() == 'read':
-                    io_read = io_read + item['value']
-                if item['op'].lower() == 'write':
-                    io_write = io_write + item['value']
+            io_read = io_write = None
+            measured = [i for i in (blk_stats or [])
+                        if i.get('major') or i.get('minor')]
+            if measured:
+                io_read = io_write = 0
+                for item in measured:
+                    if item['op'].lower() == 'read':
+                        io_read = io_read + item['value']
+                    if item['op'].lower() == 'write':
+                        io_write = io_write + item['value']
 
             # Note(hongbin): CNI network won't have this key
             net_stats = res.get('networks', {})
@@ -1384,12 +1398,14 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 net_rxb = net_rxb + v['rx_bytes']
                 net_txb = net_txb + v['tx_bytes']
 
+            block_io = (driver.NO_VALUE_PAIR if io_read is None
+                        else str(io_read) + "/" + str(io_write))
             stats = {"CONTAINER": container.name,
                      "CPU %": cpu_percent,
                      "MEM USAGE(MiB)": mem_usage,
                      "MEM LIMIT(MiB)": mem_limit,
                      "MEM %": mem_percent,
-                     "BLOCK I/O(B)": str(io_read) + "/" + str(io_write),
+                     "BLOCK I/O(B)": block_io,
                      "NET I/O(B)": str(net_rxb) + "/" + str(net_txb)}
             return stats
 

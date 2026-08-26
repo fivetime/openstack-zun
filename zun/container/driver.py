@@ -417,6 +417,55 @@ class BaseDriver(object):
         return traits
 
 
+#: What a figure nobody measured looks like. Spelled the way docker's own
+#: client spells one (cli/command/container/formatter_stats.go), because a
+#: zero here reads as an idle disk -- a claim nobody made.
+NO_VALUE_PAIR = '-- / --'
+
+
+def cpu_percent(total_ns, previous_total_ns, system_ns, previous_system_ns,
+                online_cpus):
+    """What share of the machine a container used between two samples.
+
+    A ratio of two counters is not a percentage: both have been climbing
+    since boot, so `total / system` answers "what fraction of all CPU time
+    ever spent went to this container", which tends to zero on a host that
+    has been up a while and says nothing about now. What a reader means by
+    "CPU %" is the share used *between two readings*, which is the change
+    in the container's time over the change in the machine's, times the
+    number of CPUs that time was spread over.
+
+    The scale is docker's: 100% is one CPU fully used, so a container
+    with four busy cores reads 400%. Both drivers have to agree on this or
+    the same key means different things -- and they did not: one answered
+    on this scale and the other as a share of the whole machine, which on
+    a 32-core host is the same load reported thirty-two times smaller.
+
+    Returns 0.0 when there is nothing to compare against -- a first
+    reading, or two readings with no time between them -- because a share
+    of no elapsed time is not a number.
+    """
+    delta_total = (total_ns or 0) - (previous_total_ns or 0)
+    delta_system = (system_ns or 0) - (previous_system_ns or 0)
+    if delta_total <= 0 or delta_system <= 0:
+        return 0.0
+    return (delta_total / delta_system) * (online_cpus or 1) * 100.0
+
+
+def cpu_percent_over_time(cpu_ns, previous_cpu_ns, elapsed_ns):
+    """The same figure from a CPU counter and a wall clock.
+
+    A runtime that reports CPU time and a timestamp, rather than the
+    machine's total CPU time, arrives at the same answer this way: CPU
+    nanoseconds spent per nanosecond elapsed is the number of CPUs kept
+    busy, and docker calls one busy CPU 100%.
+    """
+    burned = (cpu_ns or 0) - (previous_cpu_ns or 0)
+    if burned <= 0 or not elapsed_ns or elapsed_ns <= 0:
+        return 0.0
+    return (burned / elapsed_ns) * 100.0
+
+
 def process_table(text):
     """`ps` output in the shape the api-ref documents for top.
 
