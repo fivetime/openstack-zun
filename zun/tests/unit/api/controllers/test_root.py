@@ -15,10 +15,8 @@ from oslo_config import cfg
 import webtest
 
 from zun.api import app
-from zun.tests.unit.api import base as api_base
-
-
 from zun.api.controllers import versions
+from zun.tests.unit.api import base as api_base
 
 CURRENT_VERSION = api_base.CURRENT_VERSION
 
