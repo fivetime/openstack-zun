@@ -87,10 +87,19 @@ class ReclaimUnusedImagesTest(base.TestCase):
         self.assertEqual([], self._removed())
 
     def test_an_image_another_runtime_user_holds_is_kept(self):
-        """in_use comes from the runtime, so this is somebody else's."""
+        """in_use comes from the runtime, so this is somebody else's.
+
+        The listing loses what was removed, as a real runtime's would, so
+        that the sweep after a removal is the one a node actually sees.
+        """
+        held = [image('theirs'), image('ours')]
+
+        def forget(image_id):
+            held[:] = [i for i in held if i['id'] != image_id]
+        self.manager.driver.remove_local_image.side_effect = forget
+
         for _ in range(4):
-            self._sweep([image('theirs'), image('ours')],
-                        in_use=['theirs'])
+            self._sweep(list(held), in_use=['theirs'])
 
         self.assertEqual(['ours'], self._removed())
 
