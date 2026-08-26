@@ -67,6 +67,10 @@ class Manager(periodic_task.PeriodicTasks):
     #: the default happened to be and an operator's setting never applies.
     _last_report = {}
 
+    #: How many sweeps running each image has been seen unused. In memory
+    #: on purpose: a restart delays a removal rather than hastening one.
+    _unused_images = {}
+
     def _due(self, name, interval):
         """True at most once per interval, measured from the last yes."""
         now = timeutils.utcnow()
@@ -1847,6 +1851,69 @@ class Manager(periodic_task.PeriodicTasks):
                                         window_start=window_start,
                                         host=self.host)
         LOG.debug('reported %d containers as existing', len(containers))
+
+    @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
+    @context.set_context
+    def reclaim_unused_images(self, ctx):
+        """Remove images nothing on this node is using any more.
+
+        A container gets a quota for what it writes; the layers underneath
+        it get none, and until now nothing ever removed them. A node
+        therefore filled up at the pace its tenants pulled, and when it
+        filled it failed for every tenant on it -- including the ones who
+        had pulled nothing. That is the shape of the problem: the cost
+        lands on people who did not cause it.
+
+        What is in use is asked of the runtime, not of Zun's records, so
+        an image belonging to something else sharing this runtime is kept.
+        Stopped containers count: their image is what they would start
+        from. An image the runtime marks as pinned is left alone.
+
+        Removal waits for an image to be seen unused several sweeps
+        running. That covers the case a timestamp would have covered --
+        an image pulled for a container that does not exist yet -- without
+        needing one, which matters because the CRI reports no creation
+        time for an image at all.
+        """
+        if not CONF.compute.reclaim_unused_images:
+            return
+        if not self._due('images',
+                         CONF.compute.reclaim_unused_images_interval):
+            return
+        try:
+            images = self.driver.list_local_images()
+            in_use = self.driver.images_in_use()
+        except Exception as exc:
+            # A node that cannot see what it holds removes nothing.
+            LOG.warning('could not list images for reclaim: %s', exc)
+            return
+
+        unused = {img['id'] for img in images
+                  if img['id'] not in in_use and not img.get('pinned')}
+        # Anything used again, or gone, starts its count over.
+        self._unused_images = {k: v for k, v in self._unused_images.items()
+                               if k in unused}
+        needed = CONF.compute.reclaim_unused_images_sweeps
+        by_id = {img['id']: img for img in images}
+        for image_id in unused:
+            seen = self._unused_images.get(image_id, 0) + 1
+            self._unused_images[image_id] = seen
+            if seen < needed:
+                continue
+            img = by_id[image_id]
+            try:
+                self.driver.remove_local_image(image_id)
+            except Exception as exc:
+                # Left for the next sweep rather than retried here: an
+                # image in use by something this node cannot see fails
+                # every time, and saying so once an hour is enough.
+                LOG.warning('could not remove unused image %s (%s): %s',
+                            image_id[:19], img.get('tags'), exc)
+                continue
+            self._unused_images.pop(image_id, None)
+            LOG.info('reclaimed unused image %s (%s), %d bytes',
+                     image_id[:19], ', '.join(img.get('tags') or []) or
+                     'untagged', img.get('size') or 0)
 
     def network_detach(self, context, container, network):
         @utils.synchronized(container.uuid)

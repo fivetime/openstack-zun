@@ -460,6 +460,33 @@ class ContainerDriver(object):
         """
         return (0, 0, 0)
 
+    def list_local_images(self):
+        """Images the runtime holds, as {'id', 'tags', 'size', 'pinned'}.
+
+        What this runtime has on this node, not what any catalogue says
+        exists. A driver that cannot answer returns nothing and its node
+        simply never reclaims, which is the safe direction.
+        """
+        return []
+
+    def images_in_use(self):
+        """Image ids some container on this node still needs, as a set.
+
+        Asked of the runtime rather than of Zun's own records, so that a
+        container belonging to something else sharing this runtime keeps
+        its image too. Stopped containers count: an image is what they
+        would start from.
+        """
+        return set()
+
+    def remove_local_image(self, image_id):
+        """Remove one image from this node's runtime.
+
+        Only the local copy. Nothing is removed from a registry, and a
+        removed image is pulled again the next time it is wanted.
+        """
+        raise NotImplementedError()
+
     def measure_writable_layers(self, context, containers):
         """Bytes each container has written over its image, by uuid.
 

@@ -54,6 +54,37 @@ Possible values:
 * Any positive integer in seconds, or zero to disable refresh.
 """),
     cfg.BoolOpt(
+        'reclaim_unused_images',
+        default=True,
+        help='Whether to remove images no container on this node is using. '
+             'A container gets a quota for what it writes; the image layers '
+             'underneath it get none, and nothing ever removes them, so a '
+             'node fills up at the pace its tenants pull -- and when it does '
+             'it '
+             'fails for every tenant on it, including the ones who pulled '
+             'nothing. Removing an unused image costs a re-pull if it is '
+             'wanted again, which is latency; keeping it costs a node. Only '
+             'what the runtime itself reports as unused is considered, so '
+             'images belonging to workloads outside Zun on the same runtime '
+             'are safe.'),
+    cfg.IntOpt(
+        'reclaim_unused_images_interval',
+        default=3600,
+        help='Seconds between sweeps for images nothing is using. Listing '
+             'every image and every container on the host is not free, and an '
+             'unused image harms nothing for an hour.'),
+    cfg.IntOpt(
+        'reclaim_unused_images_sweeps',
+        default=2, min=1,
+        help='How many consecutive sweeps an image must be seen unused before '
+             'it is removed. Counted in sweeps rather than in seconds '
+             'because the CRI reports no creation time for an image -- there '
+             'is no age to compare against -- and because what matters is the '
+             'same either way: an image pulled for a container still being '
+             'created has not been seen unused twice in a row. The count is '
+             'kept in memory, so a restart delays a removal rather than '
+             'hastening one.'),
+    cfg.BoolOpt(
         'reclaim_orphan_ports',
         default=True,
         help='Whether to delete Neutron ports whose container no longer '

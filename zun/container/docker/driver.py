@@ -780,6 +780,34 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                                             filters={'uuid': uuids})
         return containers
 
+    def list_local_images(self):
+        with docker_utils.docker_client() as docker:
+            listed = docker.images(all=False)
+        out = []
+        for entry in listed:
+            image_id = entry.get('Id')
+            if not image_id:
+                continue
+            out.append({
+                'id': image_id,
+                'tags': entry.get('RepoTags') or [],
+                'size': int(entry.get('Size') or 0),
+                # docker has no notion of a pinned image; the CRI does.
+                'pinned': False,
+            })
+        return out
+
+    def images_in_use(self):
+        with docker_utils.docker_client() as docker:
+            # all=True: a stopped container is one somebody may start, and
+            # its image is what it would start from.
+            listed = docker.containers(all=True)
+        return {c.get('ImageID') for c in listed if c.get('ImageID')}
+
+    def remove_local_image(self, image_id):
+        with docker_utils.docker_client() as docker:
+            docker.remove_image(image_id)
+
     def measure_writable_layers(self, context, containers):
         wanted = {c.container_id: c.uuid for c in containers
                   if c.container_id}

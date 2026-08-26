@@ -1697,6 +1697,39 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             return self._NO_VALUE_PAIR
         return '%s / %s' % (iface.rx_bytes.value, iface.tx_bytes.value)
 
+    def list_local_images(self):
+        response = self.image_stub.ListImages(api_pb2.ListImagesRequest())
+        out = []
+        for img in response.images:
+            if not img.id:
+                continue
+            out.append({
+                'id': img.id,
+                'tags': list(img.repo_tags),
+                'size': int(img.size),
+                # The runtime marks an image it must keep -- one a sandbox
+                # is built from, typically. Asked rather than guessed.
+                'pinned': bool(getattr(img, 'pinned', False)),
+            })
+        return out
+
+    def images_in_use(self):
+        response = self.runtime_stub.ListContainers(
+            api_pb2.ListContainersRequest())
+        in_use = {c.image_ref for c in response.containers if c.image_ref}
+        # A sandbox holds an image of its own, and it is not a container.
+        sandboxes = self.runtime_stub.ListPodSandbox(
+            api_pb2.ListPodSandboxRequest())
+        for sandbox in sandboxes.items:
+            ref = getattr(sandbox, 'image_ref', None)
+            if ref:
+                in_use.add(ref)
+        return in_use
+
+    def remove_local_image(self, image_id):
+        self.image_stub.RemoveImage(
+            api_pb2.RemoveImageRequest(image=api_pb2.ImageSpec(image=image_id)))
+
     def measure_writable_layers(self, context, containers):
         wanted = {c.container_id: c.uuid for c in containers
                   if c.container_id}
