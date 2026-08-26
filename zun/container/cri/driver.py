@@ -1560,6 +1560,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         does not move. CPU time stops being spent; nothing is given back. A
         product calling this "pause" should not let anyone read it as "stops
         costing money".
+
+        Not a divergence from the docker driver: it freezes too, and gives
+        back just as little. The same note is on both, because finding it on
+        one of them reads as a fault of that one.
         """
         self.task_stub.Pause(
             tasks_pb2.PauseTaskRequest(container_id=container.container_id),

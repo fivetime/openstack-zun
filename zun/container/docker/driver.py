@@ -1109,6 +1109,19 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
     @check_container_id
     @wrap_docker_error
     def pause(self, context, container):
+        """Freeze the container.
+
+        ⚠️ Frozen, not released -- and not a difference between runtimes.
+        This is the freezer cgroup, which stops processes being scheduled
+        and gives nothing back: the memory stays allocated, and under a VM
+        runtime the VMM still holds the whole of the guest's. The placement
+        claim does not move either. CPU time stops being spent; that is all.
+
+        docker means the same thing by the word, so this is not a divergence
+        to fix. It is worth saying twice because a cloud charges for what is
+        held, and a tenant reading "pause" may reasonably expect to stop
+        paying. What they stop is the work, not the bill.
+        """
         with docker_utils.docker_client() as docker:
             docker.pause(container.container_id)
             container.status = consts.PAUSED
