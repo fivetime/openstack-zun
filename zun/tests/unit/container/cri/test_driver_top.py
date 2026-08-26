@@ -29,8 +29,8 @@ class TestProcessTable(base.TestCase):
             {'Titles': ['PID', 'USER', 'COMMAND'],
              'Processes': [['1', 'root', 'sh'], ['9', 'root', 'ps -ef']]},
             container_driver.process_table('PID   USER     COMMAND\n'
-                                     '    1 root     sh\n'
-                                     '    9 root     ps -ef\n'))
+                                           '    1 root     sh\n'
+                                           '    9 root     ps -ef\n'))
 
     def test_the_command_keeps_its_spaces(self):
         """The last column is a command line, not one word."""
