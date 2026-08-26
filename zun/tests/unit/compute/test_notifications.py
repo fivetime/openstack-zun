@@ -267,3 +267,31 @@ class TestReportingInterval(base.TestCase):
     def test_the_two_reports_keep_their_own_clocks(self):
         self.manager._due('exists', 3600)
         self.assertTrue(self.manager._due('usage', 3600))
+
+
+class TestRebuiltNotification(base.TestCase):
+    """A changed container id is the fact itself.
+
+    The record names one container id. A runtime that rebuilt an exited
+    container leaves a different one there, so the manager can see it
+    happened without any driver having to report it -- which keeps
+    notifications out of the drivers, where they do not belong.
+    """
+
+    def setUp(self):
+        super(TestRebuiltNotification, self).setUp()
+        self.notifier = mock.Mock()
+        p = mock.patch.object(notifications.rpc, 'get_notifier',
+                              return_value=self.notifier)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_the_event_carries_the_id_that_was_replaced(self):
+        notifications.notify({}, FakeContainer(), 'rebuilt',
+                             extra={'previous_container_id': 'old-id',
+                                    'reason': 'because'})
+
+        call = self.notifier.info.call_args
+        self.assertEqual('container.rebuilt', call.args[1])
+        self.assertEqual('old-id', call.args[2]['previous_container_id'])
+        self.assertEqual('because', call.args[2]['reason'])

@@ -613,10 +613,22 @@ class Manager(periodic_task.PeriodicTasks):
                 self._update_task_state(context, container,
                                         consts.CONTAINER_STARTING):
             try:
+                # A runtime that will not restart an exited container may
+                # rebuild it instead, and what comes back is then a new
+                # container from the same image -- same address, same
+                # volumes, nothing that was written inside it. The record
+                # names one container id, so a changed id is the fact
+                # itself, and no driver has to report it separately.
+                was = container.container_id
                 # NOTE(hongbin): capsule shouldn't reach here
                 container = self.driver.start(context, container)
                 container.started_at = timeutils.utcnow()
                 container.save(context)
+                if was and container.container_id != was:
+                    notifications.notify(
+                        context, container, 'rebuilt', host=self.host,
+                        extra={'previous_container_id': was,
+                               'reason': container.status_reason})
                 return container
             except exception.DockerError as e:
                 with excutils.save_and_reraise_exception():

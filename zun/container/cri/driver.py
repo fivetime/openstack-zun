@@ -1438,6 +1438,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         if not container.container_id:
             raise exception.ZunException(_(
                 'Container %s was never created on this host') % container.uuid)
+        rebuilt = False
         try:
             self.runtime_stub.StartContainer(
                 api_pb2.StartContainerRequest(
@@ -1453,12 +1454,32 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # promise, and keeps the address: the address belongs to the
             # sandbox, not to the container.
             self._restart_exited(context, container)
+            rebuilt = True
         container.status = consts.RUNNING
-        container.status_reason = None
+        if not rebuilt:
+            # A reason left over from an earlier failure would outlive it.
+            # The one _restart_exited just set has to survive, though: it
+            # describes the container that is running now.
+            container.status_reason = None
         return container
 
+    #: Said to whoever starts a container the runtime would not restart.
+    #: Not an error -- the container is running -- but the thing now running
+    #: is not the thing that stopped, and nobody would guess that.
+    REBUILT_REASON = _(
+        'This container had exited, and the runtime does not start an exited '
+        'container again. It was rebuilt from its image in the sandbox it '
+        'died in, so its address and its volumes are unchanged and anything '
+        'written inside the container itself is not.')
+
     def _restart_exited(self, context, container):
-        """Give an exited container a fresh incarnation in its own sandbox."""
+        """Give an exited container a fresh incarnation in its own sandbox.
+
+        Said out loud rather than done quietly: what comes back is a new
+        container from the same image, and a caller who wrote something
+        into the old one and got a successful start would otherwise have
+        no way to learn it is gone.
+        """
         sandbox = self._sandbox_of(container)
         if sandbox is None:
             raise exception.ZunException(_(
@@ -1494,6 +1515,12 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 # truer thing to say than the sandbox id it was holding.
                 container.container_id = dead
         self._remove_container(dead)
+        LOG.warning('Container %(uuid)s had exited and was rebuilt as a new '
+                    'instance %(new)s in place of %(old)s; anything written '
+                    'inside the container itself did not survive',
+                    {'uuid': container.uuid,
+                     'new': container.container_id, 'old': dead})
+        container.status_reason = self.REBUILT_REASON
 
     def _attempt_of(self, container_id):
         """Which incarnation the runtime thinks this container is."""
