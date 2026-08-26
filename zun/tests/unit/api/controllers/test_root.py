@@ -18,6 +18,8 @@ from zun.api import app
 from zun.tests.unit.api import base as api_base
 
 
+from zun.api.controllers import versions
+
 CURRENT_VERSION = api_base.CURRENT_VERSION
 
 
@@ -28,8 +30,8 @@ class TestRootController(api_base.FunctionalTest):
             'default_version':
             {'id': 'v1',
              'links': [{'href': 'http://localhost/v1/', 'rel': 'self'}],
-             'max_version': '1.43',
-             'min_version': '1.1',
+             'max_version': versions.CURRENT_MAX_VER,
+             'min_version': versions.BASE_VER,
              'status': 'CURRENT'},
             'description': 'Zun is an OpenStack project which '
             'aims to provide containers service.',
@@ -37,8 +39,8 @@ class TestRootController(api_base.FunctionalTest):
             'versions': [{'id': 'v1',
                           'links': [{'href': 'http://localhost/v1/',
                                      'rel': 'self'}],
-                          'max_version': '1.43',
-                          'min_version': '1.1',
+                          'max_version': versions.CURRENT_MAX_VER,
+                          'min_version': versions.BASE_VER,
                           'status': 'CURRENT'}]}
 
         self.v1_expected = {
