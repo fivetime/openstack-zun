@@ -50,9 +50,17 @@ docker_opts = [
                default='2375',
                help='Defines the remote api port for the docker daemon.'),
     cfg.IntOpt('execute_timeout',
-               default=5,
-               help='Timeout in seconds for executing a command in a docker '
-                    'container.'),
+               default=30,
+               help='Seconds a command run through the exec endpoint may take '
+                    'before it is killed. The same limit the CRI driver keeps '
+                    'as [container_driver] cri_exec_timeout, because the two '
+                    'answer the same request and a caller cannot tell which '
+                    'driver is behind it. Keep it below [DEFAULT] '
+                    'rpc_response_timeout: a command that outlives that never '
+                    'sends a reply, so the caller sees a server error instead '
+                    'of the timeout that actually happened. Five, the old '
+                    'default, is short enough that ordinary commands hit it -- '
+                    'anything that waits on the network usually does.'),
     cfg.StrOpt('docker_data_root',
                default='/var/lib/docker',
                deprecated_for_removal=True,
