@@ -16,11 +16,13 @@ import errno
 import eventlet
 import functools
 import os
+import shutil
 import types
 
 from docker import errors
 from neutronclient.common import exceptions as n_exc
 from oslo_log import log as logging
+from oslo_utils import fileutils
 from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
@@ -400,6 +402,12 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 host_config['dns'] = container.dns
             if container.dns_search:
                 host_config['dns_search'] = container.dns_search
+            resolv_conf = self._write_resolv_conf(container)
+            if resolv_conf:
+                binds[resolv_conf] = {'bind': '/etc/resolv.conf',
+                                      'ro': True}
+                host_config['binds'] = binds
+                kwargs['volumes'] = [b['bind'] for b in binds.values()]
             if container.healthcheck:
                 healthcheck = {}
                 healthcheck['test'] = container.healthcheck.get('test', '')
@@ -701,6 +709,53 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
     def _get_secgorup_name(self, container_uuid):
         return consts.NAME_PREFIX + container_uuid
 
+    def _write_resolv_conf(self, container):
+        """A resolver the container can actually reach, or None.
+
+        docker puts its own resolver at 127.0.0.11 in the resolv.conf of
+        any container on a user-defined network, and keeps whatever was
+        asked for as that resolver's upstream. That works when the
+        container shares the host's network namespace, because the
+        resolver listens there. Under a VM runtime it does not: the
+        loopback address inside the guest has nothing behind it, and
+        every lookup fails with connection refused -- so a compose file's
+        `db` resolves nowhere while the network itself is fine.
+
+        Bind-mounting the file is docker's own answer to this: a mount at
+        /etc/resolv.conf makes it leave the file alone. The address
+        written here does not have to be one that answers, because OVN
+        intercepts the query whatever it is addressed to; what matters is
+        that it is reachable from inside the guest, which 127.0.0.11 is
+        not.
+
+        Only when the container asked for a resolver. Without that there
+        is nothing better than docker's own arrangement to offer.
+        """
+        if not container.dns:
+            return None
+        directory = os.path.join(CONF.state_path, 'resolv',
+                                 container.uuid)
+        fileutils.ensure_tree(directory)
+        path = os.path.join(directory, 'resolv.conf')
+        lines = ['nameserver %s' % server for server in container.dns]
+        if container.dns_search:
+            lines.append('search %s' % ' '.join(container.dns_search))
+        # A container's own name is one label, and the default of one dot
+        # would send it to the search domain only after trying it whole.
+        lines.append('options ndots:0')
+        with open(path, 'w') as handle:
+            handle.write('\n'.join(lines) + '\n')
+        os.chmod(path, 0o644)
+        return path
+
+    def _remove_resolv_conf(self, container):
+        """Take the file away with the container that used it."""
+        directory = os.path.join(CONF.state_path, 'resolv', container.uuid)
+        try:
+            shutil.rmtree(directory, ignore_errors=True)
+        except Exception as exc:                            # noqa: BLE001
+            LOG.warning('could not remove %s: %s', directory, exc)
+
     def _get_binds(self, context, requested_volumes):
         binds = {}
         for volume in requested_volumes:
@@ -738,8 +793,10 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 if container.container_id:
                     docker.remove_container(container.container_id,
                                             force=force)
+                self._remove_resolv_conf(container)
             except errors.APIError as api_error:
                 if is_not_found(api_error):
+                    self._remove_resolv_conf(container)
                     return
                 if is_not_connected(api_error):
                     return

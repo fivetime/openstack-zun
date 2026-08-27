@@ -11,7 +11,10 @@
 # under the License.
 
 from collections import defaultdict
+import os
 from unittest import mock
+
+import fixtures
 
 from docker import errors
 from oslo_utils import units
@@ -964,3 +967,73 @@ class TestDockerDriver(base.DriverTestCase):
         self.assertEqual({'dev.type': 'product'}, data['labels'])
         self.assertEqual(80, data['disk_total'])
         self.assertEqual(['runc'], data['runtimes'])
+
+
+class TestResolvConfForAVmRuntime(base.DriverTestCase):
+    """The resolver a container can actually reach.
+
+    docker puts its own at 127.0.0.11 for any container on a
+    user-defined network and keeps what was asked for as that resolver's
+    upstream. Under a VM runtime the loopback address inside the guest
+    has nothing behind it, so every lookup fails with connection refused
+    -- a compose file's `db` resolves nowhere while the network is fine.
+    Bind-mounting the file is docker's own answer: a mount at
+    /etc/resolv.conf makes it leave the file alone.
+    """
+
+    @mock.patch('zun.container.docker.driver.DockerDriver.'
+                '_get_host_storage_info')
+    def setUp(self, mock_get):
+        super(TestResolvConfForAVmRuntime, self).setUp()
+        self.driver = DockerDriver()
+        self.state = self.useFixture(fixtures.TempDir()).path
+        conf.CONF.set_override('state_path', self.state)
+
+    def _container(self, dns=None, dns_search=None):
+        return mock.Mock(uuid='c-1', dns=dns, dns_search=dns_search)
+
+    def test_no_file_when_no_resolver_was_asked_for(self):
+        """Without one there is nothing better than docker's own to offer."""
+        self.assertIsNone(
+            self.driver._write_resolv_conf(self._container()))
+
+    def test_the_resolver_and_the_search_domain_are_written(self):
+        path = self.driver._write_resolv_conf(
+            self._container(dns=['1.1.1.1'], dns_search=['example.local']))
+
+        written = open(path).read()
+        self.assertIn('nameserver 1.1.1.1', written)
+        self.assertIn('search example.local', written)
+
+    def test_several_resolvers_each_get_a_line(self):
+        path = self.driver._write_resolv_conf(
+            self._container(dns=['1.1.1.1', '8.8.8.8']))
+
+        written = open(path).read()
+        self.assertIn('nameserver 1.1.1.1', written)
+        self.assertIn('nameserver 8.8.8.8', written)
+
+    def test_a_single_label_is_tried_in_the_search_domain_first(self):
+        """A service name is one label, and the default of one dot would
+        send it whole to the resolver before the search domain."""
+        path = self.driver._write_resolv_conf(
+            self._container(dns=['1.1.1.1'], dns_search=['example.local']))
+
+        self.assertIn('options ndots:0', open(path).read())
+
+    def test_it_is_readable_by_the_container(self):
+        path = self.driver._write_resolv_conf(
+            self._container(dns=['1.1.1.1']))
+
+        self.assertEqual(0o644, os.stat(path).st_mode & 0o777)
+
+    def test_removing_the_container_takes_the_file(self):
+        container = self._container(dns=['1.1.1.1'])
+        path = self.driver._write_resolv_conf(container)
+
+        self.driver._remove_resolv_conf(container)
+
+        self.assertFalse(os.path.exists(path))
+
+    def test_removing_one_that_was_never_written_is_quiet(self):
+        self.driver._remove_resolv_conf(self._container())
