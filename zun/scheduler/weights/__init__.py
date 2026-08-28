@@ -23,9 +23,17 @@ a static list of weighers, no config plumbing. The anti-affinity weigher is
 platform-default-on because the default it replaces was measured actively
 harmful -- first-fit stacked eight capsules, three of them one StatefulSet,
 onto one host while two sat empty.
+
+⚠️ Anti-affinity speaks only for capsules carrying an owner label, so for a
+long while everything else was still first-fit -- measured again on a
+three-node deployment, thirty containers in a row onto one host with two
+idle. The spread weigher covers what anti-affinity has no opinion about; the
+two are meant to be read together, and a weigher that answers for only some
+containers is not a default for all of them.
 """
 
 from zun.scheduler.weights.anti_affinity import OwnerAntiAffinityWeigher
+from zun.scheduler.weights.spread import FreeMemoryWeigher
 
 
 class BaseWeigher(object):
@@ -36,7 +44,7 @@ class BaseWeigher(object):
 
 
 def all_weighers():
-    return [OwnerAntiAffinityWeigher()]
+    return [OwnerAntiAffinityWeigher(), FreeMemoryWeigher()]
 
 
 def order_hosts(context, hosts, container):
