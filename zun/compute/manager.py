@@ -50,7 +50,15 @@ LOG = logging.getLogger(__name__)
 #: passed. Not the interval itself -- that is read at runtime, because a
 #: decorator's arguments are fixed when the class is defined and the
 #: config file has not been read by then.
-_REPORT_TICK = 30
+#: How often the reporting tasks are *asked* whether they are due. It
+#: has to be at least as fine as the shortest interval they can be
+#: configured with, because `_due` can only answer on a tick: with a
+#: coarser one, `report_interval = 15` silently became 30 and any
+#: setting below the tick was rounded up to it. Reading the interval at
+#: runtime instead of in the decorator fixes half of this problem; this
+#: is the other half. A tick that is not due returns immediately, so the
+#: only cost of a fine one is the asking.
+_REPORT_TICK = 5
 
 
 class Manager(periodic_task.PeriodicTasks):

@@ -99,3 +99,26 @@ class TestRemovingAContainerStuckCreating(base.TestCase):
         self.assertRaises(exception.InvalidStateException,
                           utils.validate_container_state,
                           container, 'delete_after_stop')
+
+
+class TestTheReportingTickIsFineEnough(base.TestCase):
+    """The configured interval was silently doubled.
+
+    `_due` can only answer on a tick, so a tick coarser than the
+    shortest configurable interval rounds every finer setting up to
+    itself. With a thirty second tick, `report_interval = 15` reported
+    every thirty -- measured on a live stream, where two consecutive
+    readings were exactly thirty seconds apart.
+
+    Reading the interval at runtime rather than in the decorator fixes
+    the half where the default froze. This is the other half.
+    """
+
+    def test_the_tick_is_no_coarser_than_the_shortest_interval(self):
+        from zun.compute import manager
+        import zun.conf
+
+        shortest = [opt.type.min for opt in zun.conf.usage.usage_opts
+                    if opt.name == 'report_interval'][0]
+
+        self.assertLessEqual(manager._REPORT_TICK, shortest)
