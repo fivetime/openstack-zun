@@ -311,9 +311,9 @@ class RuntimeTimeout(ZunException):
     """
     message = _("The container runtime did not finish this within "
                 "[docker] default_timeout. The container was left as it "
-                "was; some changes cannot be made to a running container "
-                "on this runtime and have to be made by creating a new "
-                "one.")
+                "was, and the same request may well succeed on another "
+                "try -- this runtime occasionally stops answering for one "
+                "container while the rest of the node is unaffected.")
     code = 504
 
 
