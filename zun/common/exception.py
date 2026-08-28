@@ -115,12 +115,14 @@ def wrap_controller_exception(func, func_server_error, func_client_error):
             # detail, it is the answer.
             if isinstance(excp, oslo_messaging.MessagingTimeout):
                 excp = ComputeNodeUnresponsive()
+            elif _RUNTIME_TIMEOUT.search(str(excp)):
+                excp = RuntimeTimeout()
             if isinstance(excp, ZunException):
                 http_error_code = excp.code
             else:
                 http_error_code = 500
 
-            if isinstance(excp, ComputeNodeUnresponsive):
+            if isinstance(excp, (ComputeNodeUnresponsive, RuntimeTimeout)):
                 # A 5xx whose message is meant to be read. Obfuscation
                 # protects a caller from internals it should not see, and
                 # this message has none -- it says only that a node went
@@ -291,6 +293,27 @@ class ComputeNodeUnresponsive(ZunException):
                 "[DEFAULT] rpc_response_timeout. The container it holds "
                 "may still be starting or stuck; the request was neither "
                 "accepted nor refused.")
+    code = 504
+
+
+#: What a runtime read timeout looks like by the time it reaches the
+#: controller: wrapped, and carrying the connection pool's own wording.
+_RUNTIME_TIMEOUT = re.compile(r'read timed out', re.I)
+
+
+class RuntimeTimeout(ZunException):
+    """The container runtime did not finish the request in time.
+
+    Named because the alternative is a five hundred carrying a
+    connection pool's description of a unix socket -- true, useless to
+    the caller, and suppressed by anything that filters internals, so
+    what arrives is a bare server error for something quite specific.
+    """
+    message = _("The container runtime did not finish this within "
+                "[docker] default_timeout. The container was left as it "
+                "was; some changes cannot be made to a running container "
+                "on this runtime and have to be made by creating a new "
+                "one.")
     code = 504
 
 
