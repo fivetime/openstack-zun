@@ -122,3 +122,27 @@ class TestTheReportingTickIsFineEnough(base.TestCase):
                     if opt.name == 'report_interval'][0]
 
         self.assertLessEqual(manager._REPORT_TICK, shortest)
+
+
+class TestTheRuntimeGivesUpBeforeTheRpcDoes(base.TestCase):
+    """Two timeouts of the same length expire together, and the RPC loses.
+
+    At sixty seconds each, a runtime call that hung reached the caller
+    as `the node stopped answering` -- the reply had not been sent when
+    the RPC gave up, so whatever the runtime eventually said was never
+    delivered. Seen with `docker update --cpus` on a VM runtime, where
+    the runtime hangs for the full sixty.
+    """
+
+    def test_the_runtime_timeout_is_the_shorter_of_the_two(self):
+        from oslo_messaging.rpc import client as rpc_client
+        import zun.conf
+
+        runtime = [opt.default for opt in zun.conf.docker.docker_opts
+                   if opt.name == 'default_timeout'][0]
+        # Read from oslo.messaging's own option rather than from the
+        # config: this has to hold for a deployment that sets neither.
+        rpc = [opt.default for opt in rpc_client._client_opts
+               if opt.name == 'rpc_response_timeout'][0]
+
+        self.assertLess(runtime, rpc)

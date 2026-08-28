@@ -22,9 +22,16 @@ docker_opts = [
                help='Docker remote api version. Override it according to '
                     'specific docker api version in your environment.'),
     cfg.IntOpt('default_timeout',
-               default=60,
-               help='Default timeout in seconds for docker client '
-                    'operations.'),
+               default=45,
+               help='Seconds a call to the container runtime may take '
+                    'before the client gives up. Keep it below [DEFAULT] '
+                    'rpc_response_timeout: at sixty, the same as that one, '
+                    'the two expire together and the RPC always loses -- so '
+                    'every slow runtime call reached the caller as "the node '
+                    'stopped answering" rather than as what actually went '
+                    'wrong. Seen with `docker update --cpus` on a VM '
+                    'runtime, where the runtime hangs and the real error was '
+                    'never delivered.'),
     cfg.StrOpt('api_url',
                default='unix:///var/run/docker.sock',
                help='API endpoint of docker daemon'),

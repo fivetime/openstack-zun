@@ -145,8 +145,8 @@ class TestManager(base.TestCase):
         container = Container(self.context, **utils.get_test_container())
         container.task_state = consts.CONTAINER_REBOOTING
         self.compute_manager._init_container(self.context, container)
-        mock_container_reboot.assert_called_once_with(self.context,
-                                                      container, 60)
+        mock_container_reboot.assert_called_once_with(
+            self.context, container, zun.conf.CONF.docker.default_timeout)
 
     @mock.patch.object(manager.Manager, 'container_start')
     @mock.patch.object(Container, 'save')
@@ -178,8 +178,11 @@ class TestManager(base.TestCase):
         container = Container(self.context, **utils.get_test_container())
         container.task_state = consts.CONTAINER_STOPPING
         self.compute_manager._init_container(self.context, container)
-        mock_container_stop.assert_called_once_with(self.context,
-                                                    container, 60)
+        # The configured runtime timeout, not the number it happens to
+        # be: hard-coding it made this fail when the default changed for
+        # reasons that had nothing to do with what is asserted here.
+        mock_container_stop.assert_called_once_with(
+            self.context, container, zun.conf.CONF.docker.default_timeout)
 
     @mock.patch.object(manager.Manager, 'container_delete')
     @mock.patch.object(Container, 'save')
