@@ -87,6 +87,35 @@ class DockerDriver(driver.ContainerImageDriver):
                     'repo': repo, 'tag': tag}
                 raise exception.ZunException(message)
 
+    def push_image(self, context, repo, tag, registry):
+        """Send a local image to the registry it is named for.
+
+        The other half of _pull_image, and the same credential: a commit
+        that stayed on the node it was made on would be an image only one
+        machine in the cloud can run, which is not what an image is.
+        """
+        auth_config = None
+        if registry and registry.username:
+            auth_config = {'username': registry.username,
+                           'password': registry.password}
+        with docker_utils.docker_client() as docker:
+            try:
+                # Streamed, and read to the end: the client reports a
+                # failed push in the stream rather than by raising, so a
+                # push that was refused looks like one that worked if
+                # nobody reads what came back.
+                for line in docker.push(repo, tag=tag,
+                                        auth_config=auth_config,
+                                        stream=True, decode=True):
+                    if isinstance(line, dict) and line.get('error'):
+                        raise exception.ZunException(
+                            _('Error on pushing image: %s') % line['error'])
+            except errors.APIError:
+                LOG.exception('Error on pushing image')
+                message = _('Error on pushing image: %(repo)s:%(tag)s') % {
+                    'repo': repo, 'tag': tag}
+                raise exception.ZunException(message)
+
     def pull_image(self, context, repo, tag, image_pull_policy, registry):
         image_loaded = True
         image = self._search_image_on_host(repo, tag)

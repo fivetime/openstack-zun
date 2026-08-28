@@ -37,6 +37,7 @@ from zun.compute import container_actions
 from zun.compute import notifications
 import zun.conf
 from zun.container import driver as driver_module
+from zun.image import driver as img_driver
 from zun.image.glance import driver as glance
 from zun.network import neutron
 from zun import objects
@@ -59,6 +60,26 @@ LOG = logging.getLogger(__name__)
 #: is the other half. A tick that is not due returns immediately, so the
 #: only cost of a fine one is the asking.
 _REPORT_TICK = 5
+
+
+def _names_a_registry(repository):
+    """Whether the target says where the image should live.
+
+    docker's own rule for telling a registry from a path: the first
+    element is one only if it looks like a host -- it has a dot or a
+    port. `myteam/app` is a path; `harbor.example.com/app` is not.
+    """
+    if not repository:
+        return False
+    head = str(repository).split('/')[0]
+    return '.' in head or ':' in head
+
+
+def _image_id_of(committed):
+    """The id the runtime answered a commit with, however it wrapped it."""
+    if isinstance(committed, dict):
+        return committed.get('Id') or committed.get('id') or ''
+    return str(committed or '')
 
 
 class Manager(periodic_task.PeriodicTasks):
@@ -1308,6 +1329,13 @@ class Manager(periodic_task.PeriodicTasks):
     @translate_exception
     def container_commit(self, context, container, repository, tag=None):
         LOG.debug('Committing the container: %s', container.uuid)
+        if _names_a_registry(repository):
+            # A repository that names a registry is asking for the image
+            # to end up there. Uploading it to an image service this
+            # deployment does not read would make an image nobody can
+            # run: absent from a listing, unusable by name.
+            return self._commit_to_registry(context, container, repository,
+                                            tag)
         snapshot_image = None
         try:
             # NOTE(miaohb): Glance is the only driver that support image
@@ -1328,6 +1356,48 @@ class Manager(periodic_task.PeriodicTasks):
 
         utils.spawn_n(do_container_commit)
         return {"uuid": snapshot_image.id}
+
+    def _commit_to_registry(self, context, container, repository, tag):
+        """Commit, then send it where its name says it belongs.
+
+        Two steps and one of them is slow, so only the first is waited
+        for: the commit is local and quick and yields the id a client
+        expects back, and the push carries on after. A push that fails
+        is logged rather than swallowed -- the image is the thing that
+        was asked for, and its absence needs explaining.
+        """
+        tag = tag or 'latest'
+        unpause = False
+        if container.status == consts.RUNNING:
+            container = self.driver.pause(context, container)
+            container.save(context)
+            unpause = True
+        try:
+            committed = self.driver.commit(context, container, repository,
+                                           tag)
+        finally:
+            if unpause:
+                try:
+                    container = self.driver.unpause(context, container)
+                    container.save(context)
+                except Exception as exc:                    # noqa: BLE001
+                    LOG.exception('Unexpected exception: %s', str(exc))
+
+        registry = container.registry
+
+        def push():
+            try:
+                self.driver.push_image(
+                    context, repository, tag, registry,
+                    img_driver.load_image_driver('docker'))
+                LOG.info('pushed %s:%s, committed from %s', repository, tag,
+                         container.uuid)
+            except Exception as exc:                        # noqa: BLE001
+                LOG.error('could not push %s:%s, committed from %s: %s',
+                          repository, tag, container.uuid, exc)
+
+        utils.spawn_n(push)
+        return {'uuid': _image_id_of(committed)}
 
     def _do_container_image_upload(self, context, snapshot_image,
                                    container_image_id, data, tag):

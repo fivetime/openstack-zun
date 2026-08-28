@@ -279,6 +279,15 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                           'for image: %s', str(e))
             raise exception.ZunException(str(e))
 
+    def push_image(self, context, repo, tag, registry, image_driver):
+        """Send a committed image to the registry it is named for."""
+        try:
+            image_driver.push_image(context, repo, tag, registry)
+        except Exception as e:
+            LOG.exception('Unknown exception occurred while pushing '
+                          'image: %s', str(e))
+            raise exception.ZunException(str(e))
+
     def create_image(self, context, image_name, image_driver):
         try:
             img = image_driver.create_image(context, image_name)

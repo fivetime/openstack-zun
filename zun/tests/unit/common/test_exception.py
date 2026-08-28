@@ -146,3 +146,38 @@ class TestTheRuntimeGivesUpBeforeTheRpcDoes(base.TestCase):
                if opt.name == 'rpc_response_timeout'][0]
 
         self.assertLess(runtime, rpc)
+
+
+class TestCommitTargetTellsWhereItGoes(base.TestCase):
+    """A repository that names a registry is asking to end up there.
+
+    Uploading it to an image service the deployment does not read makes
+    an image nobody can run: absent from a listing, unusable by name,
+    unexamined by whatever gates images. The name is the instruction.
+    """
+
+    def test_a_host_is_a_registry(self):
+        from zun.compute import manager
+
+        for repository in ('harbor.example.com/team/app',
+                           'registry:5000/app',
+                           'harbor.example.com/app'):
+            self.assertTrue(manager._names_a_registry(repository),
+                            repository)
+
+    def test_a_bare_path_is_not(self):
+        from zun.compute import manager
+
+        for repository in ('myteam/app', 'app', '', None):
+            self.assertFalse(manager._names_a_registry(repository),
+                             repository)
+
+    def test_the_committed_id_is_read_whatever_wraps_it(self):
+        from zun.compute import manager
+
+        self.assertEqual('sha256:abc',
+                         manager._image_id_of({'Id': 'sha256:abc'}))
+        self.assertEqual('sha256:abc',
+                         manager._image_id_of({'id': 'sha256:abc'}))
+        self.assertEqual('sha256:abc', manager._image_id_of('sha256:abc'))
+        self.assertEqual('', manager._image_id_of(None))
