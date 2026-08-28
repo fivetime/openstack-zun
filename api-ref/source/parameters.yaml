@@ -187,7 +187,11 @@ ps_args:
   type: string
 repository:
   description: |
-    The reposiroty of the container image.
+    The repository for the new image. A repository whose first element
+    names a host -- one containing a dot or a colon, which is docker's own
+    rule -- is a request to put the image in that registry: the image is
+    made on the node and pushed there, with the credential belonging to
+    that host. Anything else is uploaded to the configured image service.
   in: query
   required: true
   type: string

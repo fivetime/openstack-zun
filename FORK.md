@@ -105,6 +105,22 @@ kubezun(virtual-kubelet provider)驱动。
   `RemovePodSandbox` 要强制终止里面还在跑的东西)。实测:那批 8-06 起删不掉的,
   `DELETE` 从 500 变 204,租户 capsule 从 29 个降到 5 个(全部有 pod 在跑)。
 
+### 3.4 镜像
+
+- **`commit` 能推到 registry**(2026-08-28)。上游把上传目标**硬编码成 glance**
+  (源码注释:*"Glance is the only driver that support image uploading"*)。
+  镜像面是 registry 的部署上,这产出的是**存在但看不见的镜像** —— 不出现在镜像列表、
+  不能按名字跑、不经任何镜像门禁。现在**仓库名指明了 registry** 就在节点上 commit 完
+  再 push(判据用 docker 自己的规则:首段含点或冒号),其余仍走 glance,上游行为不变。
+  - push 必须**流式读到底**:客户端把失败写在流里而不是抛出来,不读的话
+    **被 registry 拒绝的上传会以成功收场**,调用方被告知有个并不存在的镜像在等它。
+  - 凭据按**目标 host** 选,不按容器自己的 registry(那是镜像的**来源**)。
+    拿一个 host 的凭据去推另一个,被拒为 `malformed HTTP Authorization header` ——
+    既不点名 host 也不点名凭据,读起来像客户端坏了。没有匹配凭据就匿名推,
+    失败是 `unauthorized`,说的是真话。
+  - commit 同步、push 异步:commit 快且产出调用方要的 id,push 慢且与 id 无关。
+    所以 202 的含义是"镜像做出来了",不是"已经到位了"。
+
 ## 四、双驱动:capsule 给 K8s,container 给 Horizon
 
 **2026-08-11 定案。**
@@ -158,7 +174,7 @@ ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
 | **pause / unpause / kill(带信号)** | 已实现并实测(**containerd task API**,见 §4.3.2) |
 | **resize**(tty 尺寸) | **做不到**,见下 |
 | **network_attach / network_detach** | **做不到**,见下 |
-| commit / get_archive / put_archive | 做不到,且无需求 |
+| commit / get_archive / put_archive | **CriDriver 没有这些方法**,落到基类的 `NotImplementedError`。⚠️ `commit` **现在有需求了** —— DaaS 网关 2026-08-28 开通了 `docker commit`,走 DockerDriver 的实现;CRI 路径要用得先补 `commit`/`push_image` |
 
 #### 真正做不到的两项(以及为什么不是"还没做")
 

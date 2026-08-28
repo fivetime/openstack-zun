@@ -991,6 +991,12 @@ Commit a container
 
 Create a new image from a container's changes.
 
+Where the image is put depends on the repository asked for. One that names
+a registry is committed on the node holding the container and then pushed
+there; the push happens after the response, so a 202 means the image was
+made rather than that it has arrived, and a push that fails is logged.
+Anything else is uploaded to the configured image service.
+
 Response Codes
 --------------
 
