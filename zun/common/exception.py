@@ -26,6 +26,7 @@ import sys
 from keystoneclient import exceptions as keystone_exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
+import oslo_messaging
 from oslo_utils import excutils
 from oslo_utils import uuidutils
 import pecan
@@ -108,10 +109,24 @@ def wrap_controller_exception(func, func_server_error, func_client_error):
         try:
             return func(*args, **kwargs)
         except Exception as excp:
+            # Named before the obfuscation below swallows it. Hiding the
+            # detail of a server error is right in general and wrong for
+            # this one: that a node stopped answering is not an internal
+            # detail, it is the answer.
+            if isinstance(excp, oslo_messaging.MessagingTimeout):
+                excp = ComputeNodeUnresponsive()
             if isinstance(excp, ZunException):
                 http_error_code = excp.code
             else:
                 http_error_code = 500
+
+            if isinstance(excp, ComputeNodeUnresponsive):
+                # A 5xx whose message is meant to be read. Obfuscation
+                # protects a caller from internals it should not see, and
+                # this message has none -- it says only that a node went
+                # quiet, which is the whole point of raising it.
+                LOG.warning('%s', excp)
+                return func_client_error(excp, http_error_code)
 
             if http_error_code >= 500:
                 # log the error message with its associated
@@ -261,6 +276,22 @@ class IncompatibleObjectVersion(ZunException):
 
 class OrphanedObjectError(ZunException):
     message = _('Cannot call %(method)s on orphaned %(objtype)s object')
+
+
+class ComputeNodeUnresponsive(ZunException):
+    """The node holding this container did not answer in time.
+
+    Distinguished from an ordinary server error because it is the one
+    fact whoever is waiting can act on: the request was not rejected and
+    may still be running, so retrying can duplicate work, and what needs
+    looking at is the node rather than the request. Left unnamed it
+    arrives as the same obfuscated 500 as every other failure.
+    """
+    message = _("The compute node did not answer within "
+                "[DEFAULT] rpc_response_timeout. The container it holds "
+                "may still be starting or stuck; the request was neither "
+                "accepted nor refused.")
+    code = 504
 
 
 class Invalid(ZunException):
