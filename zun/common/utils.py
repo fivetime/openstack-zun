@@ -59,8 +59,17 @@ VALID_STATES = {
                      consts.RUNNING, consts.STOPPED, consts.UNKNOWN,
                      consts.DELETED, consts.DEAD, consts.RESTARTING,
                      consts.REBUILDING, consts.DELETING],
-    'delete_after_stop': [consts.RUNNING, consts.CREATED, consts.ERROR,
-                          consts.STOPPED, consts.DELETED, consts.DEAD],
+    # CREATING is here because it is the state that most needs removing
+    # and was the only one left out. A create whose reply never came
+    # leaves a container in it with no host, and this endpoint calls the
+    # compute node only when there is one -- so for that container the
+    # delete is a record to drop and nothing else. Left out, the owner
+    # could not remove it by any means: the wider delete_force covers the
+    # state but is admin-only, so the tenant was told no by both, and the
+    # name stayed taken for good.
+    'delete_after_stop': [consts.RUNNING, consts.CREATED, consts.CREATING,
+                          consts.ERROR, consts.STOPPED, consts.DELETED,
+                          consts.DEAD],
     'start': [consts.CREATED, consts.STOPPED, consts.ERROR],
     'stop': [consts.RUNNING],
     'reboot': [consts.CREATED, consts.RUNNING, consts.STOPPED, consts.ERROR],

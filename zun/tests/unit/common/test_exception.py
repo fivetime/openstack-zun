@@ -16,7 +16,9 @@ from unittest import mock
 
 import oslo_messaging
 
+from zun.common import consts
 from zun.common import exception
+from zun.common import utils
 from zun.tests import base
 
 
@@ -65,3 +67,35 @@ class TestComputeNodeUnresponsive(base.TestCase):
 
     def test_the_exception_carries_the_code_by_itself(self):
         self.assertEqual(504, exception.ComputeNodeUnresponsive.code)
+
+
+class TestRemovingAContainerStuckCreating(base.TestCase):
+    """A create whose reply never came leaves a container nobody can drop.
+
+    It has no host -- the endpoint calls a compute node only when there
+    is one -- so the delete is a record to drop and nothing else. But
+    CREATING was the one state left out of delete_after_stop, and the
+    wider delete_force that does cover it is admin-only. The owner was
+    told no by both, and the name stayed taken for good.
+    """
+
+    def test_the_owner_can_remove_it(self):
+        self.assertIn(consts.CREATING,
+                      utils.VALID_STATES['delete_after_stop'])
+
+    def test_the_states_that_were_already_allowed_still_are(self):
+        for state in (consts.RUNNING, consts.CREATED, consts.ERROR,
+                      consts.STOPPED, consts.DELETED, consts.DEAD):
+            self.assertIn(state, utils.VALID_STATES['delete_after_stop'])
+
+    def test_it_passes_validation_now(self):
+        container = mock.Mock(uuid='u-1', status=consts.CREATING)
+
+        utils.validate_container_state(container, 'delete_after_stop')
+
+    def test_a_state_that_was_never_allowed_is_still_refused(self):
+        container = mock.Mock(uuid='u-1', status=consts.PAUSED)
+
+        self.assertRaises(exception.InvalidStateException,
+                          utils.validate_container_state,
+                          container, 'delete_after_stop')
