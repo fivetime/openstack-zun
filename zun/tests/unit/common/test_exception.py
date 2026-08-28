@@ -231,7 +231,24 @@ class TestPushingWithTheCredentialThatCanWriteThere(base.TestCase):
 
         self.assertIsNone(chosen)
 
-    def test_a_lookup_that_fails_falls_back_rather_than_losing_the_push(self):
+    def test_another_hosts_credential_is_never_offered(self):
+        """It is refused as `malformed HTTP Authorization header`.
+
+        Which names neither the host nor the credential and reads like a
+        broken client, so the one thing wrong is the one thing not said.
+        Pushing anonymously instead fails as `unauthorized`.
+        """
+        from zun.compute import manager
+
+        container = self._container('ghcr.io')
+        with mock.patch.object(manager.objects.Registry, 'list',
+                               return_value=[]):
+            chosen = manager._credential_for(
+                mock.Mock(), 'harbor.example.com/team/app', container)
+
+        self.assertIsNone(chosen)
+
+    def test_a_lookup_that_fails_does_not_guess_either(self):
         from zun.compute import manager
 
         container = self._container('ghcr.io')
@@ -240,4 +257,4 @@ class TestPushingWithTheCredentialThatCanWriteThere(base.TestCase):
             chosen = manager._credential_for(
                 mock.Mock(), 'harbor.example.com/team/app', container)
 
-        self.assertIs(container.registry, chosen)
+        self.assertIsNone(chosen)

@@ -79,23 +79,27 @@ def _credential_for(context, repository, container):
     """The credential for where the image is going, not where it came from.
 
     A container pulled from a registry the tenant logged in to
-    themselves carries that registry, and pushing a commit with it
-    would offer one host's credential to another -- refused, and
-    reported as a push that failed for no stated reason. The
-    registries are the tenant's own, so the one matching the target
-    host is the one that can write there.
+    themselves carries that registry, and offering that host's
+    credential to another one is refused -- as `malformed HTTP
+    Authorization header`, which names neither the host nor the
+    credential and reads like a broken client.
+
+    So a credential is used only for the host it belongs to. Having
+    none for the target means an anonymous push, which fails as
+    `unauthorized` and says what is actually wrong.
     """
     host = repository.split('/')[0]
     if container.registry and container.registry.domain == host:
         return container.registry
     try:
-        found = objects.Registry.list(
-            context, filters={'domain': host})
-    except Exception as exc:                            # noqa: BLE001
-        LOG.warning('could not look up a credential for %s: %s',
-                    host, exc)
-        return container.registry
-    return found[0] if found else container.registry
+        found = objects.Registry.list(context, filters={'domain': host})
+    except Exception as exc:                                # noqa: BLE001
+        LOG.warning('could not look up a credential for %s: %s', host, exc)
+        return None
+    if found:
+        return found[0]
+    LOG.info('no credential for %s; pushing anonymously', host)
+    return None
 
 
 def _image_id_of(committed):
