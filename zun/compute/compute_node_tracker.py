@@ -496,7 +496,12 @@ class ComputeNodeTracker(object):
         """Remove usage from the given container."""
         self._update_usage_from_container_update(context, old_container,
                                                  new_container)
-        self._update(self.compute_node)
+        # With the context, like every other caller. Without it this
+        # raised TypeError, and because it is the path taken when an
+        # update has already failed, the failure never got as far as
+        # being reported: the reply was never sent and the caller waited
+        # out the RPC timeout instead.
+        self._update(context, self.compute_node)
 
     @utils.synchronized(COMPUTE_RESOURCE_SEMAPHORE)
     def remove_usage_from_container(self, context, container,
