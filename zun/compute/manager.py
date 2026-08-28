@@ -75,6 +75,29 @@ def _names_a_registry(repository):
     return '.' in head or ':' in head
 
 
+def _credential_for(context, repository, container):
+    """The credential for where the image is going, not where it came from.
+
+    A container pulled from a registry the tenant logged in to
+    themselves carries that registry, and pushing a commit with it
+    would offer one host's credential to another -- refused, and
+    reported as a push that failed for no stated reason. The
+    registries are the tenant's own, so the one matching the target
+    host is the one that can write there.
+    """
+    host = repository.split('/')[0]
+    if container.registry and container.registry.domain == host:
+        return container.registry
+    try:
+        found = objects.Registry.list(
+            context, filters={'domain': host})
+    except Exception as exc:                            # noqa: BLE001
+        LOG.warning('could not look up a credential for %s: %s',
+                    host, exc)
+        return container.registry
+    return found[0] if found else container.registry
+
+
 def _image_id_of(committed):
     """The id the runtime answered a commit with, however it wrapped it."""
     if isinstance(committed, dict):
@@ -1383,7 +1406,7 @@ class Manager(periodic_task.PeriodicTasks):
                 except Exception as exc:                    # noqa: BLE001
                     LOG.exception('Unexpected exception: %s', str(exc))
 
-        registry = container.registry
+        registry = _credential_for(context, repository, container)
 
         def push():
             try:

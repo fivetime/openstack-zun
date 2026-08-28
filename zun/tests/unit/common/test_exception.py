@@ -181,3 +181,63 @@ class TestCommitTargetTellsWhereItGoes(base.TestCase):
                          manager._image_id_of({'id': 'sha256:abc'}))
         self.assertEqual('sha256:abc', manager._image_id_of('sha256:abc'))
         self.assertEqual('', manager._image_id_of(None))
+
+
+class TestPushingWithTheCredentialThatCanWriteThere(base.TestCase):
+    """A commit is pushed to where its name says, not where it came from.
+
+    A container pulled from a registry the tenant logged in to
+    themselves carries that registry. Committing it into their own
+    project offered the first host's credential to the second, which is
+    refused -- and reported only as a push that failed, with no way to
+    tell why from the outside.
+    """
+
+    def _container(self, domain=None):
+        registry = mock.Mock(domain=domain) if domain else None
+        return mock.Mock(registry=registry)
+
+    def test_the_registry_matching_the_target_host_is_chosen(self):
+        from zun.compute import manager
+
+        wanted = mock.Mock(domain='harbor.example.com')
+        with mock.patch.object(manager.objects.Registry, 'list',
+                               return_value=[wanted]):
+            chosen = manager._credential_for(
+                mock.Mock(), 'harbor.example.com/team/app',
+                self._container('ghcr.io'))
+
+        self.assertIs(wanted, chosen)
+
+    def test_the_containers_own_is_kept_when_it_already_matches(self):
+        """No lookup at all for the ordinary case."""
+        from zun.compute import manager
+
+        container = self._container('harbor.example.com')
+        with mock.patch.object(manager.objects.Registry, 'list') as listed:
+            chosen = manager._credential_for(
+                mock.Mock(), 'harbor.example.com/team/app', container)
+
+        self.assertIs(container.registry, chosen)
+        listed.assert_not_called()
+
+    def test_no_credential_anywhere_is_an_anonymous_push_not_a_crash(self):
+        from zun.compute import manager
+
+        with mock.patch.object(manager.objects.Registry, 'list',
+                               return_value=[]):
+            chosen = manager._credential_for(
+                mock.Mock(), 'harbor.example.com/team/app', self._container())
+
+        self.assertIsNone(chosen)
+
+    def test_a_lookup_that_fails_falls_back_rather_than_losing_the_push(self):
+        from zun.compute import manager
+
+        container = self._container('ghcr.io')
+        with mock.patch.object(manager.objects.Registry, 'list',
+                               side_effect=RuntimeError('db is away')):
+            chosen = manager._credential_for(
+                mock.Mock(), 'harbor.example.com/team/app', container)
+
+        self.assertIs(container.registry, chosen)
