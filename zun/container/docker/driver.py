@@ -21,6 +21,7 @@ import types
 
 from docker import errors
 from neutronclient.common import exceptions as n_exc
+from oslo_concurrency import lockutils
 from oslo_log import log as logging
 from oslo_utils import fileutils
 from oslo_serialization import jsonutils
@@ -170,6 +171,11 @@ def _cache_usage(memory_stats):
     return (stats.get('total_inactive_file')      # cgroup v1
             or stats.get('inactive_file')         # cgroup v2
             or 0)
+
+
+def _network_lock(neutron_net_id):
+    """One lock per (host, neutron network), shared by provision and release."""
+    return '%snetwork-%s' % (consts.NAME_PREFIX, neutron_net_id)
 
 
 class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
@@ -712,8 +718,13 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def _provision_network(self, context, network_driver, requested_networks):
         for rq_network in requested_networks:
-            network_driver.get_or_create_network(context,
-                                                 rq_network['network'])
+            # Same lock as the release on delete: without it a container
+            # being created here can find the network present, and then
+            # find it gone, because the last container on it was removed
+            # in between.
+            with lockutils.lock(_network_lock(rq_network['network'])):
+                network_driver.get_or_create_network(context,
+                                                     rq_network['network'])
 
     def _get_secgorup_name(self, container_uuid):
         return consts.NAME_PREFIX + container_uuid
@@ -792,6 +803,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         return addresses
 
     def delete(self, context, container, force):
+        neutron_nets = list((container.addresses or {}).keys())
         with docker_utils.docker_client() as docker:
             try:
                 network_driver = zun_network.driver(context=context,
@@ -806,10 +818,55 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             except errors.APIError as api_error:
                 if is_not_found(api_error):
                     self._remove_resolv_conf(container)
+                    self._release_networks_left_unused(context, docker,
+                                                       neutron_nets)
                     return
                 if is_not_connected(api_error):
                     return
                 raise
+            self._release_networks_left_unused(context, docker, neutron_nets)
+
+    def _release_networks_left_unused(self, context, docker, neutron_net_ids):
+        """Drop this node's docker network for each one nothing here uses.
+
+        The docker network is this node's wrapper for a neutron network,
+        made on demand the first time a container here needs it
+        (_provision_network). Its lifetime is that of the containers using
+        it: when the last one goes, so does it -- the same way it came.
+
+        That is what makes libnetwork release the subnetpool the IPAM
+        driver made for it, and nothing else does. A network never
+        removed is a pool never released, and enough of those with one
+        name and the driver refuses to make the next, at which point no
+        network can be created at all. Measured on a three-node
+        deployment: 26 orphan networks and 54 unreleased pools, all
+        because removal was left to an admin call nothing ever made.
+
+        dockerd is asked which containers are still on the network,
+        rather than the database: the two differ mid-delete, and
+        dockerd's answer is the one that decides whether the remove
+        would succeed. Under the same lock as provisioning, so a create
+        on this node cannot slip in between the check and the remove.
+        """
+        for neutron_net_id in neutron_net_ids:
+            with lockutils.lock(_network_lock(neutron_net_id)):
+                try:
+                    inspected = docker.inspect_network(neutron_net_id)
+                except errors.APIError as api_error:
+                    if is_not_found(api_error):
+                        inspected = None
+                    else:
+                        raise
+                if inspected is not None:
+                    if inspected.get('Containers'):
+                        continue
+                    docker.remove_network(neutron_net_id)
+                    LOG.info('Removed docker network %s: no container on '
+                             'this host uses it', neutron_net_id)
+                for row in objects.ZunNetwork.list(
+                        context, filters={'neutron_net_id': neutron_net_id,
+                                          'host': CONF.host}):
+                    row.destroy()
 
     @wrap_docker_error
     def _cleanup_network_for_container(self, container, network_driver):

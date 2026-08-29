@@ -14,8 +14,6 @@
 
 import functools
 
-from oslo_log import log as logging
-
 from zun.api import servicegroup
 from zun.common import exception
 from zun.common import profiler
@@ -23,8 +21,6 @@ from zun.common.i18n import _
 from zun.common import rpc_service
 import zun.conf
 from zun import objects
-
-LOG = logging.getLogger(__name__)
 
 
 def check_container_host(func):
@@ -253,45 +249,6 @@ class API(rpc_service.API):
                           neutron_net_id=neutron_net_id)
 
     def network_delete(self, context, network):
-        """Remove the docker network from every node that could hold it.
-
-        A container lands on whichever host the scheduler picked, and the
-        docker network is made there, on demand, the first time one does.
-        Over a deployment's life that is potentially every host -- so
-        asking one of them to remove it leaves the rest holding a network
-        whose neutron network is gone.
-
-        That residue is not only untidy. The docker network is what makes
-        libnetwork call the IPAM driver's ReleasePool, so a network that
-        is never removed is a subnetpool that is never reclaimed; enough
-        of those with the same name and the driver refuses to make the
-        next one, which stops networks being created at all. Measured on
-        a three-node deployment: 26 orphan networks, and removing them
-        released 54 pools with no other action.
-
-        Sent to each host in turn rather than fanned out, because a host
-        that does not have it answers quickly and a failure on one host
-        must not hide the others.
-        """
-        failures = []
-        for host in self._compute_hosts(context):
-            try:
-                self._call(host, 'network_delete', network=network)
-            except Exception as exc:                        # noqa: BLE001
-                LOG.warning('could not remove network %s on %s: %s',
-                            getattr(network, 'name', network), host, exc)
-                failures.append(host)
-        if failures:
-            LOG.warning('network %s may still exist on: %s',
-                        getattr(network, 'name', network),
-                        ', '.join(failures))
-
-    def _compute_hosts(self, context):
-        """Every host running a compute service, up or not.
-
-        A host that is down still has the network on its disk and will
-        answer for it when it comes back, so skipping it would leave the
-        residue this is meant to remove. It costs one timed-out RPC.
-        """
-        return [service.host for service in
-                objects.ZunService.list_by_binary(context, 'zun-compute')]
+        host = None
+        return self._call(host, 'network_delete',
+                          network=network)
