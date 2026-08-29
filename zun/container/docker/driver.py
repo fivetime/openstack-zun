@@ -174,7 +174,7 @@ def _cache_usage(memory_stats):
 
 
 def _network_lock(neutron_net_id):
-    """One lock per (host, neutron network), shared by provision and release."""
+    """One lock per (host, neutron network); provision and release share it."""
     return '%snetwork-%s' % (consts.NAME_PREFIX, neutron_net_id)
 
 

@@ -163,9 +163,11 @@ class TestDeleteReleases(base.TestCase):
         removed, so the network is still in use and must not be touched.
         """
         response = mock.Mock(status_code=500)
+        # The driver classifies by str(e), which docker-py builds from the
+        # response and the explanation -- not from the message.
         self.docker.remove_container.side_effect = errors.APIError(
-            '500 Server Error: Internal Server Error ("container c1 is not '
-            'connected to the network net-1")', response=response)
+            'server error', response=response,
+            explanation='container c1 is not connected to the network net-1')
 
         self.driver.delete(mock.Mock(), self.container, True)
 
