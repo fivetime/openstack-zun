@@ -17,6 +17,7 @@ import shlex
 
 from neutronclient.common import exceptions as n_exc
 from oslo_log import log as logging
+from oslo_utils import excutils
 from oslo_utils import strutils
 from oslo_utils import uuidutils
 import pecan
@@ -480,16 +481,34 @@ class ContainersController(base.Controller):
         extra_spec['requested_host'] = requested_host
         new_container = objects.Container(context, **container_dict)
         new_container.create(context)
+        try:
 
-        kwargs = {}
-        kwargs['extra_spec'] = extra_spec
-        kwargs['requested_networks'] = requested_networks
-        kwargs['requested_volumes'] = (
-            self._build_requested_volumes(context, new_container, mounts))
-        if pci_req.requests:
-            kwargs['pci_requests'] = pci_req
-        kwargs['run'] = run
-        compute_api.container_create(context, new_container, **kwargs)
+            kwargs = {}
+            kwargs['extra_spec'] = extra_spec
+            kwargs['requested_networks'] = requested_networks
+            kwargs['requested_volumes'] = (
+                self._build_requested_volumes(context, new_container, mounts))
+            if pci_req.requests:
+                kwargs['pci_requests'] = pci_req
+            kwargs['run'] = run
+            compute_api.container_create(context, new_container, **kwargs)
+        except Exception:
+            # The record exists from the create above, and everything after
+            # it can still refuse -- a volume in use is the common case. A
+            # refusal that left the record behind left a container in
+            # CREATING that no node had heard of: it held the name, could not
+            # be stopped ("in Creating state"), and the caller's retry with
+            # the same name was refused as a conflict with it. The record
+            # goes with the request it belonged to.
+            with excutils.save_and_reraise_exception():
+                try:
+                    new_container.destroy(context)
+                except Exception as exc:                    # noqa: BLE001
+                    # By name: the uuid is a field create() sets, and
+                    # reading a field that was never set raises.
+                    LOG.warning('could not drop the record of %s after its '
+                                'create was refused: %s',
+                                container_dict.get('name'), exc)
         # Set the HTTP Location Header
         pecan.response.location = link.build_url('containers',
                                                  new_container.uuid)
