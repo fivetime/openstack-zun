@@ -103,6 +103,7 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
         'pids_limit': fields.IntegerField(nullable=True),
         'swap': fields.IntegerField(nullable=True),
         'exit_code': fields.IntegerField(nullable=True),
+        'health': fields.StringField(nullable=True),
         'dns': fields.ListOfStringsField(nullable=True),
         'dns_search': fields.ListOfStringsField(nullable=True),
         'blkio_weight': fields.IntegerField(nullable=True),
@@ -460,7 +461,10 @@ class Container(ContainerBase):
     #                tenant's network cannot be reached.
     # Version 1.49: Add 'logs_url' and 'logs_token' -- a session that
     #               follows the output rather than joining it
-    VERSION = '1.49'
+    # Version 1.50: Add 'health' -- what the runtime's healthcheck last
+    #               concluded, which is what a caller waiting for a
+    #               dependency to be ready reads
+    VERSION = '1.50'
 
     container_type = consts.TYPE_CONTAINER
 
@@ -475,7 +479,8 @@ class Capsule(ContainerBase):
     # Version 1.5: Inherits exit_code from ContainerBase
     # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.7: Inherits logs_url and logs_token from ContainerBase
-    VERSION = '1.7'
+    # Version 1.8: Inherits health from ContainerBase
+    VERSION = '1.8'
 
     container_type = consts.TYPE_CAPSULE
 
@@ -522,7 +527,8 @@ class CapsuleContainer(ContainerBase):
     # Version 1.5: Inherits exit_code from ContainerBase
     # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.7: Inherits logs_url and logs_token from ContainerBase
-    VERSION = '1.7'
+    # Version 1.8: Inherits health from ContainerBase
+    VERSION = '1.8'
 
     container_type = consts.TYPE_CAPSULE_CONTAINER
 
@@ -554,7 +560,8 @@ class CapsuleInitContainer(ContainerBase):
     # Version 1.5: Inherits exit_code from ContainerBase
     # Version 1.6: Inherits dns and dns_search from ContainerBase
     # Version 1.7: Inherits logs_url and logs_token from ContainerBase
-    VERSION = '1.7'
+    # Version 1.8: Inherits health from ContainerBase
+    VERSION = '1.8'
 
     container_type = consts.TYPE_CAPSULE_INIT_CONTAINER
 

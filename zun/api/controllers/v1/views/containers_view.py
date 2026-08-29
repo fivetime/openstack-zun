@@ -40,6 +40,7 @@ _basic_keys = (
     'restart_policy',
     'status_detail',
     'exit_code',
+    'health',
     'dns',
     'dns_search',
     'interactive',

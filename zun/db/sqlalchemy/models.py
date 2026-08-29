@@ -171,6 +171,7 @@ class Container(Base):
     # What the container's process returned. docker reports it and callers
     # script against it; without it `docker run false` looks like success.
     exit_code = Column(Integer, nullable=True)
+    health = Column(String(16), nullable=True)
     # Resolvers and search domains for the container. Not merely a
     # convenience: a container that inherits the host's resolver has its
     # queries forwarded from the host's namespace, where the tenant's

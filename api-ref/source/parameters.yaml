@@ -1090,6 +1090,15 @@ forced_down:
   in: body
   required: true
   type: boolean
+health:
+  description: |
+    The runtime's verdict on the container's healthcheck: ``starting``,
+    ``healthy`` or ``unhealthy``. Null when the container has no
+    healthcheck. Read from the runtime whenever the container is shown,
+    so it is as current as the last check. New in microversion 1.49.
+  in: body
+  required: true
+  type: string
 healthcheck:
   description: |
     A dict of health check for the container. Specify a test command to

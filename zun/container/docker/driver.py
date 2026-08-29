@@ -1158,6 +1158,11 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             container.status_detail = None
         elif type(state) is dict:
             status_detail = ''
+            # The runtime's verdict on the healthcheck the container was
+            # created with. None when there is no healthcheck; otherwise
+            # docker's own words -- starting, healthy, unhealthy -- which is
+            # what a caller waiting for a dependency reads.
+            container.health = (state.get('Health') or {}).get('Status')
             # Recorded whatever the container went on to become: the exit
             # code is what a caller scripts against, and reading it only in
             # the branch that formats a message would lose it for every

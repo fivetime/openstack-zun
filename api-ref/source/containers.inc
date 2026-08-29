@@ -106,6 +106,7 @@ Response
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - health: health
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -200,6 +201,7 @@ Response
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - health: health
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -285,6 +287,7 @@ Response
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - health: health
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -509,6 +512,7 @@ Return new container with updated attributes.
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - health: health
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -824,6 +828,7 @@ Response
   - status: status
   - status_detail: status_detail
   - exit_code: exit_code
+  - health: health
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at

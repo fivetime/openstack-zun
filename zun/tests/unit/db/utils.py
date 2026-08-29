@@ -89,6 +89,7 @@ def get_test_container(**kwargs):
         'pids_limit': kwargs.get('pids_limit', None),
         'swap': kwargs.get('swap', None),
         'exit_code': kwargs.get('exit_code', None),
+        'health': kwargs.get('health', None),
         'dns': kwargs.get('dns', None),
         'dns_search': kwargs.get('dns_search', None),
         'blkio_weight': kwargs.get('blkio_weight', None),

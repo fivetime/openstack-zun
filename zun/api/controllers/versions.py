@@ -84,6 +84,9 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              written over its image, as last reported by its host
     * 1.48 - Add ?raw=true to container stats: the counters themselves,
              before anything is computed from them
+    * 1.49 - Add health to the container: the runtime's verdict on its
+             healthcheck (starting, healthy, unhealthy), which a caller
+             waiting for a dependency to be ready has to be able to read
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -96,7 +99,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.48'
+CURRENT_MAX_VER = '1.49'
 
 
 class Version(object):
