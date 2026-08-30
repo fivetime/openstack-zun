@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+// containerd's transfer service, for pushing a committed image.
+//
+// Same rule as the other minimal protos here: the package and service
+// names are the wire contract and must be upstream's; the field numbers
+// are what a message travels as. Only the one call is declared.
+//
+// This replaces a hand-written registry client. Its authentication was
+// four separate bugs, every one of which surfaced as the same 403, and
+// containerd already has an implementation that is exercised by every
+// pull on every node. Credentials go in as a header on the resolver --
+// the alternative is an auth stream, which is a second service to
+// implement for something Basic already says.
+//
+// ⚠️ Needs the containerd-namespace metadata header, like the rest.
+
+package containerd.services.transfer.v1;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/empty.proto";
+
+service Transfer {
+  rpc Transfer(TransferRequest) returns (google.protobuf.Empty);
+}
+
+message TransferRequest {
+  google.protobuf.Any source = 1;
+  google.protobuf.Any destination = 2;
+  TransferOptions options = 3;
+}
+
+message TransferOptions {
+  string progress_stream = 1;
+}

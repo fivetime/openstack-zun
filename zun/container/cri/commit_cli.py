@@ -26,17 +26,20 @@ JSON on stdin -- a registry password on a command line is a password in
 `ps` -- and the answer goes back as JSON on stdout.
 """
 
+import base64
 import json
 import sys
 
+from google.protobuf import any_pb2
 import grpc
 
 from zun.container.cri import commit as cri_commit
-from zun.container.cri import registry as cri_registry
 from zun.criapi import ctrd_content_pb2_grpc
 from zun.criapi import ctrd_diff_pb2_grpc
-from zun.criapi import ctrd_images_pb2
 from zun.criapi import ctrd_images_pb2_grpc
+from zun.criapi import ctrd_transfer_pb2
+from zun.criapi import ctrd_transfer_pb2_grpc
+from zun.criapi import ctrd_transfer_types_pb2
 from zun.criapi import snapshots_pb2_grpc
 
 
@@ -49,6 +52,7 @@ class _Stubs(object):
         self.diff_stub = ctrd_diff_pb2_grpc.DiffStub(channel)
         self.content_stub = ctrd_content_pb2_grpc.ContentStub(channel)
         self.ctrd_image_stub = ctrd_images_pb2_grpc.ImagesStub(channel)
+        self.transfer_stub = ctrd_transfer_pb2_grpc.TransferStub(channel)
 
 
 class _Container(object):
@@ -71,28 +75,40 @@ def do_commit(request):
 
 
 def do_push(request):
-    committer = _committer(request)
-    image = committer.driver.ctrd_image_stub.Get(
-        ctrd_images_pb2.GetImageRequest(name=request['name']),
-        metadata=committer.ns).image
-    manifest = json.loads(committer.read_blob(image.target.digest))
-    source = (image.labels or {}).get(cri_commit.SOURCE_LABEL) or None
+    """Hand the image to containerd and let it do the pushing.
 
-    client = cri_registry.Registry(
-        request['host'], request['repository'],
-        username=request.get('username'), password=request.get('password'),
-        verify=not request.get('insecure'), timeout=request['timeout'])
-    sent = 0
-    for blob in list(manifest.get('layers', [])) + [manifest['config']]:
-        if client.has_blob(blob['digest']):
-            continue
-        if source and client.mount_blob(blob['digest'], source):
-            continue
-        client.put_blob(blob['digest'], committer.read_blob(blob['digest']))
-        sent += 1
-    client.put_manifest(request['tag'], image.target.media_type,
-                        committer.read_blob(image.target.digest))
-    return {'name': request['name'], 'blobs_sent': sent}
+    Not a registry client of our own: containerd's transfer service
+    already implements the protocol, and every pull on every node
+    exercises it. The one written here instead had four separate
+    authentication bugs, each of which arrived as the same 403.
+
+    The credential goes in as a header rather than through an auth
+    stream, which would be a second service to implement for something
+    Basic already says.
+    """
+    stubs = _Stubs(request['address'])
+    namespace = (('containerd-namespace', request['namespace']),)
+
+    source = any_pb2.Any()
+    source.Pack(ctrd_transfer_types_pb2.ImageStore(name=request['name']))
+
+    headers = {}
+    if request.get('username'):
+        credential = '%s:%s' % (request['username'], request.get('password'))
+        headers['Authorization'] = 'Basic %s' % base64.b64encode(
+            credential.encode()).decode()
+    resolver = ctrd_transfer_types_pb2.RegistryResolver(
+        headers=headers,
+        default_scheme='http' if request.get('insecure') else 'https')
+    destination = any_pb2.Any()
+    destination.Pack(ctrd_transfer_types_pb2.OCIRegistry(
+        reference=request['name'], resolver=resolver))
+
+    stubs.transfer_stub.Transfer(
+        ctrd_transfer_pb2.TransferRequest(source=source,
+                                          destination=destination),
+        metadata=namespace, timeout=request['timeout'])
+    return {'name': request['name']}
 
 
 _ACTIONS = {'commit': do_commit, 'push': do_push}

@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+// The two things a push transfers between: what containerd already has,
+// and where it is going.
+//
+// ⚠️ The package matters twice over here. These messages travel inside
+// google.protobuf.Any, whose type_url is built from the message's full
+// name -- so a name of our own would be packed as a type containerd has
+// never heard of, and refused as an unknown source or destination.
+
+package containerd.types.transfer;
+
+message ImageStore {
+  string name = 1;
+  map<string, string> labels = 2;
+}
+
+message OCIRegistry {
+  string reference = 1;
+  RegistryResolver resolver = 2;
+}
+
+message RegistryResolver {
+  string auth_stream = 1;
+  map<string, string> headers = 2;
+  string host_dir = 3;
+  string default_scheme = 4;
+}

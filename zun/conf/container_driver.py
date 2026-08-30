@@ -141,10 +141,9 @@ Interdependencies to other options:
                     'this node decides.'),
     cfg.BoolOpt('cri_registry_insecure',
                 default=False,
-                help='Talk to the registry over plain HTTP and do not '
-                     'verify its certificate. For a development registry '
-                     'only: it puts the credential for pushing a committed '
-                     'image on the wire in the clear.'),
+                help='Reach the registry over plain HTTP when pushing a '
+                     'committed image. For a development registry only: it '
+                     'puts the credential on the wire in the clear.'),
     cfg.IntOpt('cri_archive_timeout',
                default=120,
                help='Seconds a `docker cp` into or out of a container may '

@@ -38,7 +38,6 @@ import zun.conf
 from zun.container import driver
 from zun.container import orphan
 from zun.container.cri import commit as cri_commit
-from zun.container.cri import registry as cri_registry
 from zun.container.cri import resources as cri_resources
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
@@ -1630,21 +1629,18 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         which for a commit is nearly all of them.
         """
         tag = tag or 'latest'
-        host, _sep, path = repo.partition('/')
+        host, _sep, _path = repo.partition('/')
         if not _sep or ('.' not in host and ':' not in host):
             raise exception.Invalid(_(
                 'Cannot push %s: its name does not say which registry it '
                 'belongs to') % repo)
-        scheme = 'http://' if CONF.cri_registry_insecure else 'https://'
         answer = self._run_commit_cli({
-            'action': 'push', 'name': '%s:%s' % (repo, tag), 'tag': tag,
-            'host': scheme + host, 'repository': path,
+            'action': 'push', 'name': '%s:%s' % (repo, tag),
             'username': getattr(registry, 'username', None),
             'password': getattr(registry, 'password', None),
             'insecure': CONF.cri_registry_insecure,
             'timeout': CONF.cri_push_timeout})
-        LOG.info('Pushed %(name)s, %(blobs)s blob(s) uploaded',
-                 {'name': answer['name'], 'blobs': answer.get('blobs_sent')})
+        LOG.info('Pushed %s', answer['name'])
 
     @staticmethod
     def _source_repository(container_image):
