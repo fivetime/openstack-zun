@@ -88,8 +88,22 @@ class TheTokenIsNotUndoneByACookieTest(base.TestCase):
         self.assertTrue(worked)
         registry.session.cookies.clear.assert_called_once_with()
 
-    def test_the_whole_scope_is_asked_for(self):
-        registry, _worked = self._authenticated()
+    def test_push_is_asked_for_even_when_the_challenge_wanted_pull(self):
+        """A HEAD challenges for pull; the upload after it needs more.
+
+        A registry answers a token of insufficient scope with 403, not
+        401, so nothing would go looking for a better one.
+        """
+        registry = cri_registry.Registry('https://harbor.example', 'p/app',
+                                         username='robot$p+r',
+                                         password='secret')
+        registry.session = mock.Mock()
+        registry.session.get.return_value = mock.Mock(
+            status_code=200, json=lambda: {'token': 't0ken'})
+        registry._authenticate(mock.Mock(headers={
+            'WWW-Authenticate': 'Bearer realm="https://harbor.example/token",'
+                                'service="harbor-registry",'
+                                'scope="repository:p/app:pull"'}))
         asked = registry.session.get.call_args.kwargs['params']
 
         self.assertEqual('repository:p/app:pull,push', asked['scope'])

@@ -85,8 +85,13 @@ class Registry(object):
         realm = fields.pop('realm', None)
         if not realm:
             return False
-        fields.setdefault('scope',
-                          'repository:%s:pull,push' % self.repository)
+        # Always ask for push, whatever the challenge asked for. The
+        # first request a push makes is a HEAD, whose challenge names
+        # pull alone; the upload that follows needs more, and a registry
+        # answers a token of insufficient scope with 403, not 401 -- so
+        # nothing would go looking for a better one. Measured: the HEAD's
+        # token, reused for the upload, is refused every time.
+        fields['scope'] = 'repository:%s:pull,push' % self.repository
         answer = self.session.get(realm, params=fields, auth=self.auth,
                                   verify=self.verify, timeout=self.timeout)
         if answer.status_code != 200:
