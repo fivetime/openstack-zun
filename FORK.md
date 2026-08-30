@@ -204,8 +204,23 @@ ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
   三个服务。**层交给 diff 服务算**——容器里的删除在层里是 whiteout,拿 overlay 的 upperdir
   自己拼,committed 镜像会把租户删掉的文件带回来。推送没有 docker 守护进程可托付,直接走
   registry HTTP(已存在的 blob 不重传,基础镜像在同一 registry 其他仓库里的用 cross-repo mount)。
-  实测:commit 3.8s 完成,containerd 里得到正确的 OCI manifest;推送的 401→token→重放流程通,
-  匿名身份被 Harbor 正确拒在 push 范围外(需要凭据才能完整验证上传)。
+  实测:commit 3.8s 完成;**推送闭环已用 Harbor robot 账号验证** ——
+  `cri-commit-test/proof:v6` 落到 Harbor(OCI manifest / 3.4 MB / 标签正确)。
+
+  ⚠️ **自写 registry 客户端的代价:认证一处踩了四个坑,症状全是同一个 403。**
+  1. 挑战按逗号切 —— `scope="repository:x/y:pull,push"` 的值里也有逗号,被切成
+     `scope=...:pull` 外加一个凭空的 `push"` 字段。要按 `key="value"` 解析。
+  2. **token 范围要按用途要,不能跟着挑战走** —— push 的第一个请求是 HEAD,
+     挑战只说 `pull`;后面上传需要 `push`,而 registry 对"范围不足"回 **403 不是 401**,
+     只认 401 的重试永远不会去换更好的 token。
+  3. **Harbor 的 cookie 会压过 Bearer 头** —— 带 cookie 403、去掉 202(同一个 token)。
+  4. 而且**清一次不够**:清完之后紧接着那个响应又把 cookie 种回来了。要全程拒收。
+
+  ➡️ **结论:这段本不该自己写。** containerd 2.x 有 **transfer 服务**
+  (`containerd.services.transfer.v1.Transfer`,源 `ImageStore` → 目标 `OCIRegistry`,
+  认证可经 `RegistryResolver.headers` 直接给 Basic 头),用的是 containerd 自己经过实战的
+  registry 实现。当初为少写几个 proto 选了自写 HTTP,四个 bug 全在认证上 ——
+  **换成 transfer 服务可以整个删掉 `registry.py`,是明确的后续简化项。**
 
 🔴 **两条踩得最狠的坑,都不是逻辑错:**
 1. **最小 proto 可以少字段少调用,但不能改包名。** gRPC 按 `包.服务` 路由,
