@@ -2101,6 +2101,57 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         self.image_stub.RemoveImage(
             api_pb2.RemoveImageRequest(image=api_pb2.ImageSpec(image=image_id)))
 
+    def delete_image(self, context, img_id, image_driver=None):
+        """Remove an image from this node.
+
+        The same removal `docker rmi` reaches by another name; the
+        runtime is asked, so an image still holding a container is
+        refused by it rather than by a rule kept here.
+        """
+        try:
+            self.remove_local_image(img_id)
+        except grpc.RpcError as exc:
+            if exc.code() == grpc.StatusCode.NOT_FOUND:
+                LOG.debug('Image %s was already gone', img_id)
+                return
+            raise
+
+    # --- what this driver has no counterpart for ---------------------------
+    #
+    # Refused by name rather than left to the base class, which raises
+    # NotImplementedError and reaches the caller as a server error --
+    # the one answer that says neither what happened nor what to do.
+
+    def create_image(self, context, repository, image_driver):
+        raise exception.Invalid(_(
+            'Committing to the image service is not available on this host: '
+            'it stores containers through the CRI, which has no image '
+            'service of its own. Commit to a name that includes a registry '
+            'and the image is built and pushed there instead.'))
+
+    def upload_image_data(self, context, image, tag, image_data,
+                          image_driver):
+        raise exception.Invalid(_(
+            'Uploading an image to the image service is not available on '
+            'this host; commit to a registry instead.'))
+
+    def delete_committed_image(self, context, img_id, image_driver):
+        raise exception.Invalid(_(
+            'There is no image-service snapshot to delete on this host; '
+            'a commit here goes to a registry.'))
+
+    def create_network(self, context, neutron_net_id):
+        raise exception.Invalid(_(
+            'Networks are not created on this host: a container gets its '
+            'interfaces from CNI when its sandbox boots, so there is '
+            'nothing here to make in advance. Create the neutron network '
+            'and give it to the container.'))
+
+    def delete_network(self, context, network):
+        raise exception.Invalid(_(
+            'Networks are not deleted on this host: nothing was made here '
+            'to delete. Delete the neutron network directly.'))
+
     def measure_writable_layers(self, context, containers):
         wanted = {c.container_id: c.uuid for c in containers
                   if c.container_id}
