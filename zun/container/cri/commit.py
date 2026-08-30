@@ -29,6 +29,7 @@ import hashlib
 import json
 import zlib
 
+import grpc
 from oslo_log import log as logging
 from oslo_utils import uuidutils
 
@@ -100,9 +101,18 @@ class Committer(object):
                 action=ctrd_content_pb2.COMMIT, ref=ref, total=len(data),
                 expected=digest, offset=len(data), labels=labels or {})
 
-        for _response in self.driver.content_stub.Write(requests(),
-                                                        metadata=self.ns):
-            pass
+        try:
+            for _response in self.driver.content_stub.Write(requests(),
+                                                            metadata=self.ns):
+                pass
+        except grpc.RpcError as exc:
+            # Content is addressed by what it is, so a blob already in
+            # the store is the blob being written. Committing the same
+            # container twice writes the same config, and that is a
+            # success with nothing left to do rather than a collision.
+            if exc.code() != grpc.StatusCode.ALREADY_EXISTS:
+                raise
+            LOG.debug('content %s was already in the store', digest)
         return {'mediaType': None, 'digest': digest, 'size': len(data)}
 
     # ------------------------------------------------------------- layer

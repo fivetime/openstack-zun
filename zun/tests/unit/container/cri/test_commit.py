@@ -22,8 +22,6 @@ import json
 from unittest import mock
 
 from zun.container.cri import commit as cri_commit
-from zun.criapi import ctrd_content_pb2
-from zun.criapi import ctrd_diff_pb2
 from zun.criapi import ctrd_images_pb2
 from zun.tests import base
 
@@ -284,3 +282,43 @@ class CommitRunsInItsOwnProcessTest(base.TestCase):
                               None, None)
 
         ran.assert_not_called()
+
+
+class WritingContentThatIsAlreadyThereTest(base.TestCase):
+    """Content is addressed by what it is.
+
+    A blob already in the store is the blob being written -- committing
+    the same container twice writes the same config -- so that is a
+    success with nothing left to do, not a collision.
+    """
+
+    def setUp(self):
+        super(WritingContentThatIsAlreadyThereTest, self).setUp()
+        self.driver = mock.Mock()
+        self.committer = cri_commit.Committer(self.driver, 'overlayfs', ())
+
+    class _Refused(cri_commit.grpc.RpcError):
+        def __init__(self, code):
+            super().__init__()
+            self._code = code
+
+        def code(self):
+            return self._code
+
+    def _error(self, code):
+        return self._Refused(code)
+
+    def test_already_exists_is_not_a_failure(self):
+        self.driver.content_stub.Write.side_effect = self._error(
+            cri_commit.grpc.StatusCode.ALREADY_EXISTS)
+
+        written = self.committer.write_blob(b'hello')
+
+        self.assertEqual(cri_commit.digest_of(b'hello'), written['digest'])
+
+    def test_any_other_refusal_still_stops_the_commit(self):
+        self.driver.content_stub.Write.side_effect = self._error(
+            cri_commit.grpc.StatusCode.PERMISSION_DENIED)
+
+        self.assertRaises(cri_commit.grpc.RpcError,
+                          self.committer.write_blob, b'hello')
