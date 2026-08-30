@@ -187,6 +187,37 @@ ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
   只暴露 `/direct-volume/resize` 一类,不暴露它**;CRI 也不会对运行中的 sandbox
   重跑 CNI。要做就得绕开 CRI 直接操 os-vif + kata 热插,那是另一个架构决定。
 
+#### 4.3.1a CriDriver 补齐的三类方法(2026-08-30,测试床实测)
+
+`commit`/`push_image`、`get_archive`/`put_archive`、`add/remove_security_group`
+原本只有 DockerDriver 有,CRI 节点上落基类的 `NotImplementedError`。现已补齐:
+
+- **安全组**:容器的安全组在它的 neutron 端口上,运行时从来看不见。docker 驱动经 kuryr 去改,
+  这个驱动的端口是自己建的,就自己改。实测:加/删在端口上真实生效,原有组不动。
+- **`docker cp`**:kata 容器的文件系统在虚拟机里,宿主机上没有路径可写,两个方向都得在容器里跑 tar。
+  读走同步 exec;**写不能走流式** —— containerd 只提供 `v4.channel.k8s.io`,
+  **v4 没有任何帧能表示"stdin 结束"**,`tar -xf -` 于是永远等不到 EOF、调用挂到超时。
+  改为分块经同步 exec 送入,每块自带退出码。⚠️ **块大小有硬上限**:实测命令总长
+  64 KiB 可用、128 KiB 返回 exit 7 且 stderr 为空(说不出原因的拒绝),现取 32 KiB 原始数据。
+  实测:1 MiB 二进制往返 md5 完全一致。
+- **`commit`/`push`**:CRI 没有这两件事,越过它去用 containerd 的 diff/content/images
+  三个服务。**层交给 diff 服务算**——容器里的删除在层里是 whiteout,拿 overlay 的 upperdir
+  自己拼,committed 镜像会把租户删掉的文件带回来。推送没有 docker 守护进程可托付,直接走
+  registry HTTP(已存在的 blob 不重传,基础镜像在同一 registry 其他仓库里的用 cross-repo mount)。
+  实测:commit 3.8s 完成,containerd 里得到正确的 OCI manifest;推送的 401→token→重放流程通,
+  匿名身份被 Harbor 正确拒在 push 范围外(需要凭据才能完整验证上传)。
+
+🔴 **两条踩得最狠的坑,都不是逻辑错:**
+1. **最小 proto 可以少字段少调用,但不能改包名。** gRPC 按 `包.服务` 路由,
+   我给三个新服务用了自家包名,containerd 回 `unknown service` —— 它明明实现得好好的。
+   `tasks.proto`/`snapshots.proto` 一直是对的,新加的三个一开始不是。
+2. **server-streaming 在 eventlet 下必挂。** gRPC 内核在原生线程上发完成信号,
+   而要唤醒的等待者是只有 hub 能跑的绿线程。实测:同一个 commit 在普通解释器里 0.2s,
+   unary 调用在 eventlet 下正常,**流式读挂到连 `eventlet.Timeout` 都打不断**,
+   `tpool` 也救不了(池里的原生线程拿的仍是被 patch 的原语)。
+   症状是 **compute 心跳停了、调度器把整台机器判成 down**,而报错只说"主机没上线"。
+   现在 commit/push 整体在子进程里跑(参数走 stdin,免得 registry 密码出现在 `ps` 里)。
+
 #### 几处语义不等价(不是实现细节)
 
 - **pause 不释放任何东西**。链路:shim `Pause` → `Sandbox.PauseContainer` → agent
