@@ -194,9 +194,15 @@ ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
   (`rustjail/src/container.rs:306`)→ **freezer cgroup**。⚠️ 冻结发生在
   **guest 内部**,宿主机毫不知情:VMM 照旧持有整块 guest RAM,Placement 的 claim
   一动不动。省下的只有 CPU 时间。**产品文案不能让它读起来像"暂停就不计费"。**
-- **stop/start 与 reboot 会丢掉可写层**。CRI 不能重启已退出的容器,只能在原沙箱
-  重建;**地址保住了**(地址属于沙箱),**文件没保住**(docker 的 restart 保得住)。
-  marker 文件实测。
+- ~~**stop/start 与 reboot 会丢掉可写层**~~ **已修(2026-08-30,marker 实测保住)**。
+  CRI 仍不能重启已退出的容器,替身照旧在原沙箱里重建 —— 但在 create 与 start 之间,
+  新旧两个可写层同时以同一条 overlay 链的 upperdir 形式存在于宿主机上,把旧的
+  `cp -a` 进新的(连 whiteout 一起),语义即与 docker 的 stop/start 等价。kata 不改变
+  这一点:guest 经 virtiofs 写的就是宿主机这个目录。upperdir 的位置问 snapshot 服务
+  (`snapshots.proto`,与 tasks.proto 同一种最小声明、同一个 socket、同一个
+  `containerd-namespace: k8s.io` 头;snapshotter 名来自 `[container_driver]
+  cri_snapshotter`,必须与节点 containerd 配置一致)。**尽力而为**:移植失败退回
+  原来的"从镜像重建",`REBUILT_REASON` 只在真丢了的时候出现。
 - **`stats` 的 CPU 必须采两次**。运行时给的是累计纳秒计数器。BLOCK/NET I/O 运行时
   不记,报 `-/-` 而不是 0——0 读起来是"空闲",不是"没人量过"。
 
