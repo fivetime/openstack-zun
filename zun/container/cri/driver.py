@@ -16,6 +16,7 @@ import os
 import time
 
 import grpc
+import json
 import posixpath
 import shlex
 import signal
@@ -33,10 +34,14 @@ from zun.common import utils
 import zun.conf
 from zun.container import driver
 from zun.container import orphan
+from zun.container.cri import commit as cri_commit
+from zun.container.cri import registry as cri_registry
 from zun.container.cri import resources as cri_resources
 from zun.container.cri import stream
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
+from zun.criapi import imaging_pb2
+from zun.criapi import imaging_pb2_grpc
 from zun.criapi import snapshots_pb2
 from zun.criapi import snapshots_pb2_grpc
 from zun.criapi import tasks_pb2
@@ -247,6 +252,11 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # host directory holds a container's writable layer. Restart uses it
         # to carry that layer from a dead incarnation into its replacement.
         self.snapshot_stub = snapshots_pb2_grpc.SnapshotsStub(channel)
+        # The three services a commit needs, all past the CRI, which has no
+        # notion of making an image out of a container.
+        self.diff_stub = imaging_pb2_grpc.DiffStub(channel)
+        self.content_stub = imaging_pb2_grpc.ContentStub(channel)
+        self.image_stub = imaging_pb2_grpc.ImagesStub(channel)
         # Fetching an image has never depended on which runtime will run it,
         # so the image drivers are the same ones every other container driver
         # loads. Only the Container API path uses them; a capsule pulls
@@ -1560,6 +1570,80 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                         {'uuid': container.uuid,
                          'new': container.container_id, 'old': dead})
             container.status_reason = self.REBUILT_REASON
+
+    # --- commit ----------------------------------------------------------
+
+    def _committer(self):
+        return cri_commit.Committer(self, CONF.cri_snapshotter,
+                                    self._CTRD_NS)
+
+    def commit(self, context, container, repository=None, tag=None):
+        """Make an image of what this container has written.
+
+        Recorded in containerd's own image store rather than kept aside,
+        because that is where the push looks for it and where anything
+        else on this node would look for it too.
+        """
+        name = '%s:%s' % (repository, tag or 'latest')
+        self._committer().commit(container, name,
+                                 source=self._source_repository(
+                                     container.image))
+        return name
+
+    def push_image(self, context, repo, tag, registry, image_driver):
+        """Send a committed image where its name says it belongs.
+
+        The docker driver hands this to the docker daemon; there is none
+        here. The blobs are in containerd's content store, so they go to
+        the registry from there -- all but the ones it already has,
+        which for a commit is nearly all of them.
+        """
+        name = '%s:%s' % (repo, tag or 'latest')
+        host, _sep, path = repo.partition('/')
+        if not _sep or ('.' not in host and ':' not in host):
+            raise exception.Invalid(_(
+                'Cannot push %s: its name does not say which registry it '
+                'belongs to') % name)
+        committer = self._committer()
+        image = self.image_stub.Get(
+            imaging_pb2.GetImageRequest(name=name),
+            metadata=self._CTRD_NS).image
+        target = image.target
+        # Where these blobs came from, recorded by the commit: the push
+        # cannot work it out on its own, and without it every layer of
+        # the base image is uploaded again.
+        source = (image.labels or {}).get(cri_commit.SOURCE_LABEL) or None
+        manifest = json.loads(committer.read_blob(target.digest))
+
+        scheme = 'http://' if CONF.cri_registry_insecure else 'https://'
+        client = cri_registry.Registry(
+            scheme + host, path,
+            username=getattr(registry, 'username', None),
+            password=getattr(registry, 'password', None),
+            verify=not CONF.cri_registry_insecure,
+            timeout=CONF.cri_push_timeout)
+        for blob in list(manifest.get('layers', [])) + [manifest['config']]:
+            if client.has_blob(blob['digest']):
+                continue
+            if source and client.mount_blob(blob['digest'], source):
+                continue
+            client.put_blob(blob['digest'],
+                            committer.read_blob(blob['digest']))
+        client.put_manifest(tag or 'latest', target.media_type,
+                            committer.read_blob(target.digest))
+        LOG.info('Pushed %s', name)
+
+    @staticmethod
+    def _source_repository(container_image):
+        """Where a blob might already be, for the registry to mount from.
+
+        Only meaningful within one registry, and only a hint: a refused
+        mount costs one request and the bytes go the long way.
+        """
+        if not container_image:
+            return None
+        _host, _sep, path = container_image.partition('/')
+        return path.split(':')[0] if _sep else None
 
     # --- security groups -------------------------------------------------
     #

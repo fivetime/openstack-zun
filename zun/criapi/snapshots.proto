@@ -11,10 +11,15 @@ syntax = "proto3";
 // ⚠️ Every call needs the containerd-namespace metadata header, same as
 // the task service.
 
+import "google/protobuf/empty.proto";
+
 package containerd.services.snapshots.v1;
 
 service Snapshots {
+  rpc Stat(StatSnapshotRequest) returns (StatSnapshotResponse);
+  rpc View(ViewSnapshotRequest) returns (ViewSnapshotResponse);
   rpc Mounts(MountsRequest) returns (MountsResponse);
+  rpc Remove(RemoveSnapshotRequest) returns (google.protobuf.Empty);
 }
 
 message MountsRequest {
@@ -24,6 +29,35 @@ message MountsRequest {
 
 message MountsResponse {
   repeated Mount mounts = 1;
+}
+
+message StatSnapshotRequest {
+  string snapshotter = 1;
+  string key = 2;
+}
+
+message StatSnapshotResponse {
+  Info info = 1;
+}
+
+message Info {
+  string name = 1;
+  string parent = 2;
+}
+
+message ViewSnapshotRequest {
+  string snapshotter = 1;
+  string key = 2;
+  string parent = 3;
+}
+
+message ViewSnapshotResponse {
+  repeated Mount mounts = 1;
+}
+
+message RemoveSnapshotRequest {
+  string snapshotter = 1;
+  string key = 2;
 }
 
 message Mount {

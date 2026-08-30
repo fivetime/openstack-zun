@@ -34,21 +34,34 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
+from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0fsnapshots.proto\x12 containerd.services.snapshots.v1\"1\n\rMountsRequest\x12\x13\n\x0bsnapshotter\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\"I\n\x0eMountsResponse\x12\x37\n\x06mounts\x18\x01 \x03(\x0b\x32\'.containerd.services.snapshots.v1.Mount\"F\n\x05Mount\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06source\x18\x02 \x01(\t\x12\x0e\n\x06target\x18\x03 \x01(\t\x12\x0f\n\x07options\x18\x04 \x03(\t2x\n\tSnapshots\x12k\n\x06Mounts\x12/.containerd.services.snapshots.v1.MountsRequest\x1a\x30.containerd.services.snapshots.v1.MountsResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0fsnapshots.proto\x12 containerd.services.snapshots.v1\x1a\x1bgoogle/protobuf/empty.proto\"1\n\rMountsRequest\x12\x13\n\x0bsnapshotter\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\"I\n\x0eMountsResponse\x12\x37\n\x06mounts\x18\x01 \x03(\x0b\x32\'.containerd.services.snapshots.v1.Mount\"7\n\x13StatSnapshotRequest\x12\x13\n\x0bsnapshotter\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\"L\n\x14StatSnapshotResponse\x12\x34\n\x04info\x18\x01 \x01(\x0b\x32&.containerd.services.snapshots.v1.Info\"$\n\x04Info\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0e\n\x06parent\x18\x02 \x01(\t\"G\n\x13ViewSnapshotRequest\x12\x13\n\x0bsnapshotter\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\x12\x0e\n\x06parent\x18\x03 \x01(\t\"O\n\x14ViewSnapshotResponse\x12\x37\n\x06mounts\x18\x01 \x03(\x0b\x32\'.containerd.services.snapshots.v1.Mount\"9\n\x15RemoveSnapshotRequest\x12\x13\n\x0bsnapshotter\x18\x01 \x01(\t\x12\x0b\n\x03key\x18\x02 \x01(\t\"F\n\x05Mount\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06source\x18\x02 \x01(\t\x12\x0e\n\x06target\x18\x03 \x01(\t\x12\x0f\n\x07options\x18\x04 \x03(\t2\xc1\x03\n\tSnapshots\x12u\n\x04Stat\x12\x35.containerd.services.snapshots.v1.StatSnapshotRequest\x1a\x36.containerd.services.snapshots.v1.StatSnapshotResponse\x12u\n\x04View\x12\x35.containerd.services.snapshots.v1.ViewSnapshotRequest\x1a\x36.containerd.services.snapshots.v1.ViewSnapshotResponse\x12k\n\x06Mounts\x12/.containerd.services.snapshots.v1.MountsRequest\x1a\x30.containerd.services.snapshots.v1.MountsResponse\x12Y\n\x06Remove\x12\x37.containerd.services.snapshots.v1.RemoveSnapshotRequest\x1a\x16.google.protobuf.Emptyb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'snapshots_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_MOUNTSREQUEST']._serialized_start=53
-  _globals['_MOUNTSREQUEST']._serialized_end=102
-  _globals['_MOUNTSRESPONSE']._serialized_start=104
-  _globals['_MOUNTSRESPONSE']._serialized_end=177
-  _globals['_MOUNT']._serialized_start=179
-  _globals['_MOUNT']._serialized_end=249
-  _globals['_SNAPSHOTS']._serialized_start=251
-  _globals['_SNAPSHOTS']._serialized_end=371
+  _globals['_MOUNTSREQUEST']._serialized_start=82
+  _globals['_MOUNTSREQUEST']._serialized_end=131
+  _globals['_MOUNTSRESPONSE']._serialized_start=133
+  _globals['_MOUNTSRESPONSE']._serialized_end=206
+  _globals['_STATSNAPSHOTREQUEST']._serialized_start=208
+  _globals['_STATSNAPSHOTREQUEST']._serialized_end=263
+  _globals['_STATSNAPSHOTRESPONSE']._serialized_start=265
+  _globals['_STATSNAPSHOTRESPONSE']._serialized_end=341
+  _globals['_INFO']._serialized_start=343
+  _globals['_INFO']._serialized_end=379
+  _globals['_VIEWSNAPSHOTREQUEST']._serialized_start=381
+  _globals['_VIEWSNAPSHOTREQUEST']._serialized_end=452
+  _globals['_VIEWSNAPSHOTRESPONSE']._serialized_start=454
+  _globals['_VIEWSNAPSHOTRESPONSE']._serialized_end=533
+  _globals['_REMOVESNAPSHOTREQUEST']._serialized_start=535
+  _globals['_REMOVESNAPSHOTREQUEST']._serialized_end=592
+  _globals['_MOUNT']._serialized_start=594
+  _globals['_MOUNT']._serialized_end=664
+  _globals['_SNAPSHOTS']._serialized_start=667
+  _globals['_SNAPSHOTS']._serialized_end=1116
 # @@protoc_insertion_point(module_scope)
