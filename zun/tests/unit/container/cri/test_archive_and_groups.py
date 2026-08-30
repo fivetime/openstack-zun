@@ -18,6 +18,7 @@ A copy has no host path to go through -- a kata container's filesystem
 is inside the virtual machine -- so both directions run tar inside it.
 """
 
+import base64
 from unittest import mock
 
 from zun.common import exception
@@ -134,6 +135,12 @@ class ArchiveThroughTarTest(base.TestCase):
         unpack = [a for a in argvs if a[0] == 'tar']
         self.assertEqual(1, len(unpack))
         self.assertEqual(['-C', '/dest'], unpack[0][-2:])
+
+    def test_a_chunk_stays_well_inside_what_the_runtime_takes(self):
+        """Measured: 64 KiB of command works, 128 KiB is refused silently."""
+        self.assertLessEqual(
+            len(base64.b64encode(b'x' * cri_driver.CriDriver._PUT_CHUNK)),
+            48 * 1024)
 
     def test_a_big_archive_travels_in_pieces(self):
         big = b'x' * (cri_driver.CriDriver._PUT_CHUNK * 2 + 1)

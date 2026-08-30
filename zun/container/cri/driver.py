@@ -1759,11 +1759,13 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 'mtime': mtime,
                 'linkTarget': link}
 
-    #: How much of the archive travels in one exec. The command carries
-    #: its chunk as an argument, so this is bounded by what the kernel
-    #: takes as an argument list rather than by anything configurable;
-    #: 256 KiB of base64 leaves room to spare inside the usual 2 MiB.
-    _PUT_CHUNK = 192 * 1024
+    #: How much of the archive travels in one exec. The chunk rides in
+    #: the command itself, and a command has a size the runtime will
+    #: take: measured on this stack, 64 KiB of command works and 128 KiB
+    #: comes back exit 7 with nothing on stderr -- a refusal that says
+    #: nothing, which is the kind worth staying well clear of. 32 KiB of
+    #: archive is about 44 KiB of command, half of what was seen to work.
+    _PUT_CHUNK = 32 * 1024
 
     def put_archive(self, context, container, path, data):
         """`docker cp` writing.
