@@ -2126,6 +2126,108 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 'cpu_ns': st.cpu.usage_core_nano_seconds.value,
                 'memory': st.memory.working_set_bytes.value}
 
+    def sample_counters(self, context, containers):
+        """One reading for every container on this host, in two calls.
+
+        The counters a bill is worked out from, taken on a schedule
+        rather than per request. Whoever holds the previous reading
+        computes the rate; a single sample carries no previous fields
+        and inventing them would be a rate over an interval nobody
+        asked about.
+
+        Two calls rather than two per container: the runtime answers
+        for everything it holds at once, and the network figures come
+        from the sandboxes because the container-level messages have no
+        network field at all.
+
+        A container the runtime will not answer about is absent from
+        the result, not zeroed -- zero is a claim that nothing was
+        used, and the reader has no way to tell that from silence.
+        """
+        wanted = {c.container_id: c.uuid for c in containers
+                  if c.container_id}
+        if not wanted:
+            return {}
+        try:
+            stats = self.runtime_stub.ListContainerStats(
+                api_pb2.ListContainerStatsRequest()).stats
+        except grpc.RpcError as exc:
+            LOG.warning('Could not sample this host: %s', exc)
+            return {}
+
+        networks = self._sandbox_networks()
+        online = os.cpu_count()
+        found = {}
+        for entry in stats:
+            uuid = wanted.get(entry.attributes.id)
+            if uuid is None:
+                continue
+            reading = {
+                'timestamp': entry.cpu.timestamp,
+                'cpu': {'total_ns': entry.cpu.usage_core_nano_seconds.value,
+                        # The CRI reports what the container burned and
+                        # not what the host did, so there is no system
+                        # figure to pair it with. Absent rather than
+                        # guessed: a reader that divides by it would be
+                        # dividing by something invented here.
+                        'system_ns': None,
+                        'online_cpus': online},
+                'memory': {'usage': entry.memory.working_set_bytes.value,
+                           'limit': None,
+                           'cache': None},
+                # No pids in the CRI's container statistics. Left out
+                # rather than reported as none running.
+            }
+            sandbox = networks.get(entry.attributes.id)
+            if sandbox:
+                reading['networks'] = sandbox
+            found[uuid] = reading
+        return found
+
+    def _sandbox_networks(self):
+        """Network counters per container id, by way of their sandboxes.
+
+        The containers of one sandbox share its namespace, so the
+        figures belong to the sandbox and are attributed to each
+        container in it. Best effort: a sandbox that cannot be read
+        leaves its containers without network counters rather than
+        with zeros.
+        """
+        try:
+            sandboxes = self.runtime_stub.ListPodSandboxStats(
+                api_pb2.ListPodSandboxStatsRequest()).stats
+        except grpc.RpcError as exc:
+            LOG.debug('No network figures for this host: %s', exc)
+            return {}
+        by_sandbox = {}
+        for sandbox in sandboxes:
+            network = sandbox.linux.network
+            if not network.HasField('default_interface'):
+                continue
+            interface = network.default_interface
+            by_sandbox[sandbox.attributes.id] = {
+                interface.name or 'eth0': {
+                    'rx_bytes': interface.rx_bytes.value,
+                    'tx_bytes': interface.tx_bytes.value,
+                    'rx_packets': None,
+                    'tx_packets': None}}
+        if not by_sandbox:
+            return {}
+        # The statistics name the sandbox, and a counter has to be filed
+        # under the container it is for.
+        by_container = {}
+        try:
+            listed = self.runtime_stub.ListContainers(
+                api_pb2.ListContainersRequest()).containers
+        except grpc.RpcError as exc:
+            LOG.debug('Could not map sandboxes to containers: %s', exc)
+            return {}
+        for container in listed:
+            counters = by_sandbox.get(container.pod_sandbox_id)
+            if counters:
+                by_container[container.id] = counters
+        return by_container
+
     def top(self, context, container, ps_args=None):
         """Processes, as the container itself sees them.
 
