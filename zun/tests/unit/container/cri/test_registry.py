@@ -82,11 +82,12 @@ class TheTokenIsNotUndoneByACookieTest(base.TestCase):
                                 'scope="repository:p/app:pull,push"'})
         return registry, registry._authenticate(challenge)
 
-    def test_the_cookie_is_dropped_once_the_token_is_in_hand(self):
-        registry, worked = self._authenticated()
+    def test_no_cookie_is_ever_kept(self):
+        """Clearing once was not enough: the next reply set them again."""
+        registry = cri_registry.Registry('https://harbor.example', 'p/app')
 
-        self.assertTrue(worked)
-        registry.session.cookies.clear.assert_called_once_with()
+        self.assertEqual(
+            [], list(registry.session.cookies.get_policy().allowed_domains))
 
     def test_push_is_asked_for_even_when_the_challenge_wanted_pull(self):
         """A HEAD challenges for pull; the upload after it needs more.

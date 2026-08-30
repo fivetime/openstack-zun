@@ -22,6 +22,7 @@ registry are not sent again, which for a commit is most of them -- the
 image was pulled from there in the first place.
 """
 
+import http.cookiejar
 import re
 
 import requests
@@ -61,6 +62,14 @@ class Registry(object):
         self.verify = verify
         self.timeout = timeout
         self.session = requests.Session()
+        # Refuse cookies outright. Harbor sets a session cookie on the
+        # token endpoint and again on every reply after it, and a request
+        # carrying both that cookie and a bearer token is authorised as
+        # the cookie -- anonymous -- so an entitled push comes back 403.
+        # Clearing them once was not enough: the next reply set them
+        # again. Nothing here has any use for a cookie.
+        self.session.cookies.set_policy(
+            http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
         self._token = None
 
     # ---------------------------------------------------------------- auth
@@ -102,13 +111,6 @@ class Registry(object):
         token = body.get('token') or body.get('access_token')
         if not token:
             return False
-        # Drop whatever the token endpoint set on the way. Harbor answers
-        # it with a session cookie, and a request carrying both that
-        # cookie and this token is authorised as the cookie -- anonymous
-        # -- so a push that is perfectly entitled comes back 403.
-        # Measured: same token, same session, 403 with the cookie and 202
-        # without it.
-        self.session.cookies.clear()
         self._token = token
         return True
 
