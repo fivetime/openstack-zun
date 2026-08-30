@@ -16,6 +16,7 @@ import os
 import time
 
 import grpc
+import base64
 import json
 import posixpath
 import shlex
@@ -24,6 +25,7 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import fileutils
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 import tenacity
 
 from zun.common import consts
@@ -37,7 +39,6 @@ from zun.container import orphan
 from zun.container.cri import commit as cri_commit
 from zun.container.cri import registry as cri_registry
 from zun.container.cri import resources as cri_resources
-from zun.container.cri import stream
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
 from zun.criapi import imaging_pb2
@@ -1758,17 +1759,56 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 'mtime': mtime,
                 'linkTarget': link}
 
+    #: How much of the archive travels in one exec. The command carries
+    #: its chunk as an argument, so this is bounded by what the kernel
+    #: takes as an argument list rather than by anything configurable;
+    #: 256 KiB of base64 leaves room to spare inside the usual 2 MiB.
+    _PUT_CHUNK = 192 * 1024
+
     def put_archive(self, context, container, path, data):
         """`docker cp` writing.
 
-        Needs a stream: the tar goes in on stdin, and the synchronous
-        exec has no stdin at all. So this opens the interactive one --
-        the same streaming server an `exec -it` uses -- and writes the
-        archive onto its stdin channel.
+        Carried in through exec, in pieces, rather than on a stream.
+        The synchronous exec has no stdin, and the streaming one cannot
+        be told that stdin has ended: containerd offers only v4 of the
+        protocol, which has no frame for it, so a `tar -xf -` on the
+        other end waits for an end-of-file that never comes and the
+        call hangs until its timeout.
+
+        Each piece carries its own exit code, so a copy that fails
+        says which part failed rather than leaving a half-written
+        archive behind.
         """
-        url = self._streaming_exec_url(
-            container, ['tar', '-xf', '-', '-C', path], stdin=True)
-        stream.write_stdin(url, data, CONF.cri_archive_timeout)
+        staged = '/tmp/.zun-put-%s.tar' % uuidutils.generate_uuid()
+        self._run_or_raise(container, ['rm', '-f', staged], path)
+        try:
+            for start in range(0, len(data), self._PUT_CHUNK):
+                chunk = base64.b64encode(
+                    data[start:start + self._PUT_CHUNK]).decode()
+                self._run_or_raise(container, [
+                    'sh', '-c', 'printf %%s %s | base64 -d >> %s'
+                    % (shlex.quote(chunk), shlex.quote(staged))], path)
+            self._run_or_raise(container, [
+                'tar', '-xf', staged, '-C', path], path)
+        finally:
+            try:
+                self._exec_in_container(container.container_id,
+                                        ['rm', '-f', staged],
+                                        CONF.cri_exec_timeout)
+            except Exception as exc:                        # noqa: BLE001
+                LOG.warning('Could not remove %(file)s from container '
+                            '%(container)s: %(err)s',
+                            {'file': staged, 'container': container.uuid,
+                             'err': exc})
+
+    def _run_or_raise(self, container, argv, path):
+        exit_code, out, err = self._exec_in_container(
+            container.container_id, argv, CONF.cri_archive_timeout)
+        if exit_code != 0:
+            raise exception.Invalid(_('Could not write to %(path)s: %(err)s')
+                                    % {'path': path,
+                                       'err': (err or out or b'').decode(
+                                           'utf-8', 'replace').strip()[:200]})
 
     def _upperdir_of(self, snapshot_key):
         """The host directory holding a snapshot's writable layer.

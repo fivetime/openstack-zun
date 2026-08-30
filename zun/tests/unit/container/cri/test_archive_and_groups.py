@@ -123,15 +123,44 @@ class ArchiveThroughTarTest(base.TestCase):
                               self.driver._stat_in_container,
                               self.container, '/x')
 
-    def test_writing_sends_the_archive_to_the_streams_stdin(self):
-        with mock.patch.object(self.driver, '_streaming_exec_url',
-                               return_value='wss://node/exec') as url:
-            with mock.patch.object(cri_driver.stream,
-                                   'write_stdin') as wrote:
-                self.driver.put_archive({}, self.container, '/dest', b'TAR')
+    def test_writing_stages_the_archive_then_unpacks_it(self):
+        """No stream: containerd offers only v4, which cannot end stdin."""
+        with mock.patch.object(self.driver, '_exec_in_container',
+                               return_value=(0, b'', b'')) as ran:
+            self.driver.put_archive({}, self.container, '/dest', b'TAR')
 
-        self.assertEqual(['tar', '-xf', '-', '-C', '/dest'],
-                         url.call_args.args[1])
-        self.assertTrue(url.call_args.kwargs['stdin'])
-        self.assertEqual('wss://node/exec', wrote.call_args.args[0])
-        self.assertEqual(b'TAR', wrote.call_args.args[1])
+        argvs = [call.args[1] for call in ran.call_args_list]
+        self.assertTrue(any('base64 -d' in ' '.join(a) for a in argvs))
+        unpack = [a for a in argvs if a[0] == 'tar']
+        self.assertEqual(1, len(unpack))
+        self.assertEqual(['-C', '/dest'], unpack[0][-2:])
+
+    def test_a_big_archive_travels_in_pieces(self):
+        big = b'x' * (cri_driver.CriDriver._PUT_CHUNK * 2 + 1)
+        with mock.patch.object(self.driver, '_exec_in_container',
+                               return_value=(0, b'', b'')) as ran:
+            self.driver.put_archive({}, self.container, '/dest', big)
+
+        pieces = [c for c in ran.call_args_list
+                  if 'base64 -d' in ' '.join(c.args[1])]
+        self.assertEqual(3, len(pieces))
+
+    def test_a_failed_piece_stops_the_copy(self):
+        with mock.patch.object(self.driver, '_exec_in_container',
+                               return_value=(1, b'', b'no space left')):
+            self.assertRaises(exception.Invalid, self.driver.put_archive,
+                              {}, self.container, '/dest', b'TAR')
+
+    def test_the_staged_archive_is_removed_even_when_it_failed(self):
+        calls = []
+
+        def ran(container_id, argv, timeout):
+            calls.append(argv)
+            return (1, b'', b'boom') if argv[0] == 'tar' else (0, b'', b'')
+
+        with mock.patch.object(self.driver, '_exec_in_container',
+                               side_effect=ran):
+            self.assertRaises(exception.Invalid, self.driver.put_archive,
+                              {}, self.container, '/dest', b'TAR')
+
+        self.assertEqual('rm', calls[-1][0])
