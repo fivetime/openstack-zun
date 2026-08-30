@@ -43,29 +43,31 @@ class PushThroughTransferTest(base.TestCase):
         call, _answer = self._push()
         source = call.args[0].source
 
-        self.assertEqual('type.googleapis.com/'
-                         'containerd.types.transfer.ImageStore',
+        # The bare name, not type.googleapis.com/... -- containerd's
+        # typeurl registers and resolves by the proto name alone, and
+        # with the prefix the lookup misses and the transfer is refused
+        # as a combination that is not implemented.
+        self.assertEqual('containerd.types.transfer.ImageStore',
                          source.type_url)
         unpacked = ctrd_transfer_types_pb2.ImageStore()
-        source.Unpack(unpacked)
+        unpacked.ParseFromString(source.value)
         self.assertEqual('harbor.example/p/app:v1', unpacked.name)
 
     def test_the_destination_is_the_registry_the_name_points_at(self):
         call, _answer = self._push()
         destination = call.args[0].destination
 
-        self.assertEqual('type.googleapis.com/'
-                         'containerd.types.transfer.OCIRegistry',
+        self.assertEqual('containerd.types.transfer.OCIRegistry',
                          destination.type_url)
         unpacked = ctrd_transfer_types_pb2.OCIRegistry()
-        destination.Unpack(unpacked)
+        unpacked.ParseFromString(destination.value)
         self.assertEqual('harbor.example/p/app:v1', unpacked.reference)
 
     def test_the_credential_travels_as_a_header(self):
         """An auth stream would be a second service for what Basic says."""
         call, _answer = self._push(username='robot$p+r', password='s3cret')
         destination = ctrd_transfer_types_pb2.OCIRegistry()
-        call.args[0].destination.Unpack(destination)
+        destination.ParseFromString(call.args[0].destination.value)
 
         expected = base64.b64encode(b'robot$p+r:s3cret').decode()
         self.assertEqual('Basic %s' % expected,
@@ -74,14 +76,14 @@ class PushThroughTransferTest(base.TestCase):
     def test_no_credential_means_no_header_rather_than_an_empty_one(self):
         call, _answer = self._push()
         destination = ctrd_transfer_types_pb2.OCIRegistry()
-        call.args[0].destination.Unpack(destination)
+        destination.ParseFromString(call.args[0].destination.value)
 
         self.assertEqual({}, dict(destination.resolver.headers))
 
     def test_an_insecure_registry_is_reached_over_http(self):
         call, _answer = self._push(insecure=True)
         destination = ctrd_transfer_types_pb2.OCIRegistry()
-        call.args[0].destination.Unpack(destination)
+        destination.ParseFromString(call.args[0].destination.value)
 
         self.assertEqual('http', destination.resolver.default_scheme)
 

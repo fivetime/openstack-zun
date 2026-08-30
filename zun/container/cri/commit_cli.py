@@ -74,6 +74,21 @@ def do_commit(request):
     return {'digest': digest, 'name': request['name']}
 
 
+def _packed(message):
+    """A message in an Any, under the type url containerd looks it up by.
+
+    Not Any.Pack: that writes `type.googleapis.com/<name>`, and
+    containerd's typeurl registers and resolves by the bare proto name.
+    With the prefix the lookup misses, the message comes back as itself
+    rather than as the thing it means, and the transfer is refused as a
+    combination that is not implemented -- which reads as a missing
+    feature rather than a mistyped envelope.
+    """
+    return any_pb2.Any(
+        type_url=message.DESCRIPTOR.full_name,
+        value=message.SerializeToString())
+
+
 def do_push(request):
     """Hand the image to containerd and let it do the pushing.
 
@@ -89,8 +104,8 @@ def do_push(request):
     stubs = _Stubs(request['address'])
     namespace = (('containerd-namespace', request['namespace']),)
 
-    source = any_pb2.Any()
-    source.Pack(ctrd_transfer_types_pb2.ImageStore(name=request['name']))
+    source = _packed(ctrd_transfer_types_pb2.ImageStore(
+        name=request['name']))
 
     headers = {}
     if request.get('username'):
@@ -100,8 +115,7 @@ def do_push(request):
     resolver = ctrd_transfer_types_pb2.RegistryResolver(
         headers=headers,
         default_scheme='http' if request.get('insecure') else 'https')
-    destination = any_pb2.Any()
-    destination.Pack(ctrd_transfer_types_pb2.OCIRegistry(
+    destination = _packed(ctrd_transfer_types_pb2.OCIRegistry(
         reference=request['name'], resolver=resolver))
 
     stubs.transfer_stub.Transfer(
