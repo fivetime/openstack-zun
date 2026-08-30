@@ -225,3 +225,35 @@ class DiffIdTest(base.TestCase):
         self.assertEqual('sha256:' + hashlib.sha256(raw).hexdigest(),
                          self.committer.diff_id(_descriptor(
                              uncompressed=None)))
+
+
+class CommitStaysOffTheEventLoopTest(base.TestCase):
+    """A commit blocks in the gRPC core for as long as the image is large.
+
+    This service runs on eventlet, where a blocking call stops every
+    green thread in the process. Measured: a commit stopped the node's
+    heartbeat and the scheduler wrote the host off as down while it sat
+    there -- so the work goes to a real thread.
+    """
+
+    def _driver(self):
+        from zun.container.cri import driver as cri_driver
+        driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        return cri_driver, driver
+
+    def test_commit_runs_on_a_real_thread(self):
+        cri_driver, driver = self._driver()
+        container = mock.Mock(uuid='u-1', image='harbor/proj/app:v1')
+        with mock.patch.object(cri_driver, 'tpool') as pool:
+            with mock.patch.object(driver, '_committer'):
+                driver.commit({}, container, 'repo', 'tag')
+
+        pool.execute.assert_called_once()
+
+    def test_push_runs_on_a_real_thread(self):
+        cri_driver, driver = self._driver()
+        with mock.patch.object(cri_driver, 'tpool') as pool:
+            driver.push_image({}, 'harbor/proj/app', 'v1', None, None)
+
+        pool.execute.assert_called_once()
+        self.assertEqual(driver._push_image, pool.execute.call_args.args[0])

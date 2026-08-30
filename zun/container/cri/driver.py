@@ -15,6 +15,7 @@ import datetime
 import os
 import time
 
+from eventlet import tpool
 import grpc
 import base64
 import json
@@ -1594,12 +1595,21 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         else on this node would look for it too.
         """
         name = '%s:%s' % (repository, tag or 'latest')
-        self._committer().commit(container, name,
-                                 source=self._source_repository(
-                                     container.image))
+        # On a real thread. The streaming calls a commit makes -- reading
+        # a layer back, writing blobs -- block in the gRPC core for as
+        # long as the image is large, and this service runs on eventlet,
+        # where a blocking call stops every green thread on the process.
+        # Measured: a commit stopped this node's heartbeat, and the
+        # scheduler wrote the host off as down while it sat there.
+        tpool.execute(self._committer().commit, container, name,
+                      self._source_repository(container.image))
         return name
 
     def push_image(self, context, repo, tag, registry, image_driver):
+        """See _push_image: this only keeps it off the event loop."""
+        return tpool.execute(self._push_image, repo, tag, registry)
+
+    def _push_image(self, repo, tag, registry):
         """Send a committed image where its name says it belongs.
 
         The docker driver hands this to the docker daemon; there is none
