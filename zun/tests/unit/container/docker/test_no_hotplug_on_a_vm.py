@@ -22,6 +22,7 @@ address is applied when the sandbox next boots.
 
 from unittest import mock
 
+from zun.api.controllers.v1 import containers as containers_api
 from zun.common import consts
 from zun.common import exception
 from zun.container.docker import driver as docker_driver
@@ -68,3 +69,35 @@ class NoHotplugOnAVmTest(base.TestCase):
         with mock.patch.object(self.driver, '_is_runtime_supported',
                                return_value=False):
             self.driver._refuse_hotplug_on_a_vm(container, 'attach')
+
+
+class TheApiRefusesBeforeDispatchingTest(base.TestCase):
+    """The compute node's refusal arrives after the caller has been told ok.
+
+    network_attach runs detached (`spawn_n`), so the API answers before
+    the driver has looked at the request: a refusal there is written to
+    a log nobody reads, and the caller sees success. The API has both
+    the status and the runtime, and answering here still reaches
+    whoever asked.
+    """
+
+    def _refuse(self, status=consts.RUNNING, runtime='kata-qemu'):
+        container = mock.Mock(uuid='u-1', status=status, runtime=runtime)
+        return containers_api.ContainersController._refuse_hotplug_on_a_vm(
+            container, 'attach')
+
+    def test_a_running_kata_container_is_refused_at_the_api(self):
+        error = self.assertRaises(exception.Invalid, self._refuse)
+
+        self.assertIn('kata-qemu', str(error))
+        self.assertIn('Stop the container', str(error))
+
+    def test_a_stopped_container_is_allowed(self):
+        self._refuse(status=consts.STOPPED)
+
+    def test_runc_is_allowed(self):
+        self._refuse(runtime='runc')
+
+    def test_an_unknown_runtime_is_left_to_the_driver(self):
+        """Nothing recorded means nothing to conclude; the driver checks."""
+        self._refuse(runtime=None)

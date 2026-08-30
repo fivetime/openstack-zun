@@ -1295,6 +1295,36 @@ class ContainersController(base.Controller):
                                             kwargs.get('repository', None),
                                             kwargs.get('tag', None))
 
+    @staticmethod
+    def _refuse_hotplug_on_a_vm(container, verb):
+        """Refuse to change a running sandbox's networks, before dispatching.
+
+        Under a VM runtime the container's interfaces belong to the
+        guest and are fixed when its sandbox boots. The compute node
+        refuses, but it does so after this call has already been
+        accepted -- the attach runs detached -- so the caller is told
+        the request succeeded and nothing ever contradicts it.
+        Measured in production: the container kept the one interface
+        and the one address it had, while the API said ok and inspect
+        showed the network attached.
+
+        Said here instead, where an answer still reaches the caller.
+        Stopped, the request works -- the address is applied when the
+        sandbox next boots -- so the refusal names that.
+        """
+        runtime = container.runtime
+        if container.status != consts.RUNNING or not runtime:
+            return
+        if runtime == 'runc':
+            return
+        raise exception.Invalid(_(
+            "Cannot %(verb)s a network on container '%(container)s' while "
+            "it is running: it runs under the %(runtime)s runtime, whose "
+            "interfaces are fixed when its sandbox boots. Stop the "
+            "container, %(verb)s the network, and start it again.")
+            % {'verb': verb, 'container': container.uuid,
+               'runtime': runtime})
+
     @base.Controller.api_version("1.6")
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception
@@ -1330,6 +1360,7 @@ class ContainersController(base.Controller):
                     "'%(container)s'.") %
                     {"network": kwargs.get('network'),
                      "container": container_ident})
+        self._refuse_hotplug_on_a_vm(container, 'detach')
         compute_api.network_detach(context, container, net_id)
         pecan.response.status = 202
 
@@ -1363,6 +1394,7 @@ class ContainersController(base.Controller):
                     "container '%(container)s'.") %
                     {"network": kwargs.get('network'),
                      "container": container_ident})
+        self._refuse_hotplug_on_a_vm(container, 'attach')
         compute_api.network_attach(context, container, requested_networks[0])
 
     @base.Controller.api_version("1.13", "1.17")
