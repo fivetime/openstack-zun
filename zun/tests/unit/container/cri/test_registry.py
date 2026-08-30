@@ -86,8 +86,9 @@ class TheTokenIsNotUndoneByACookieTest(base.TestCase):
         """Clearing once was not enough: the next reply set them again."""
         registry = cri_registry.Registry('https://harbor.example', 'p/app')
 
-        self.assertEqual(
-            [], list(registry.session.cookies.get_policy().allowed_domains))
+        policy = registry.session.cookies.get_policy()
+
+        self.assertEqual((), tuple(policy._allowed_domains))
 
     def test_push_is_asked_for_even_when_the_challenge_wanted_pull(self):
         """A HEAD challenges for pull; the upload after it needs more.
