@@ -269,6 +269,31 @@ zun 现有行为已经诚实:传了 `disk` 就明确拒绝、没传就忽略默�
 安全组/计量/可写层计费/stop-start 保层全部实测通过);剩余差异都在 zun 原生 API 上,
 且都已从 500 改成能读懂的拒绝。
 
+#### 4.3.1c CriDriver + gVisor 实测(2026-08-30,测试床三台)
+
+**结论:能跑,全功能通过。** 容器内核 `4.19.0-gvisor`;run / exec / `docker cp` 双向
+(1 MiB md5 一致)/ **stop-start 保住可写层** / commit(快照 diff 出正确 manifest)/
+计量(CPU 六秒 +6.49e9 ns ≈ 1.08 核、内存、网络 rx/tx、**可写层 1064960 字节**)全部实测通过。
+
+**两个必须的配置,少一个就出错:**
+1. 🔴 **`overlay2 = "none"`** —— 默认 `root:self` 把容器根文件系统的写入留在沙箱内,
+   `stop/start` 丢数据、按可写层计费读到 0。设了之后可写层字节能正确读出。
+2. **不要设 `systemd-cgroup`** —— 这套 containerd 的 runc/kata 都没启用它,
+   zun 传下来的是 `/zun.slice/<uuid>/<id>` 这种文件系统路径,而 runsc 开了 systemd-cgroup
+   会拒:`invalid systemd path`。跟着 runc/kata 走 cgroupfs 即可。
+
+**注册方式**:照 kata 的样子放 `conf.d/55-runsc.toml`(**新增处理器,不动默认运行时**,
+那几台还跑着 k8s 工作负载);zun 侧 `container_runtime = runsc`。
+⚠️ `crictl info` 的 handlers 一直是空(kata 也一样),**别拿它判断注册成功**,
+用 `containerd config dump | grep runtimes.runsc`。
+
+**冷启动:在 zun 这条路上,两者差别被淹没了。**
+gVisor 16.2–16.6 s vs kata 18.3–19.4 s(同一条 zun 路径、各 3 次)。
+运行时本身的差距是 0.5 s vs 4.8 s(裸 docker 实测,见 D12),
+但 zun 一次创建里还有调度、neutron 建端口、CNI、镜像检查、数据库写入 ——
+**运行时只占其中一小段,换运行时省下的 4 秒被 16 秒的编排吃掉了大半。**
+要提冷启动,该优化的是编排而不是运行时。
+
 #### 几处语义不等价(不是实现细节)
 
 - **pause 不释放任何东西**。链路:shim `Pause` → `Sandbox.PauseContainer` → agent
