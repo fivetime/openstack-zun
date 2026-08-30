@@ -1723,7 +1723,36 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         return data
 
     @wrap_docker_error
+    def _refuse_hotplug_on_a_vm(self, container, verb):
+        """Refuse to change a running sandbox's interfaces, and say why.
+
+        Under a VM runtime the container's interfaces are the guest's,
+        fixed when the sandbox booted. docker adds or removes the veth
+        in the netns on the host and reports success, but nothing
+        crosses into the guest: measured on kata, the container keeps
+        exactly the interfaces and addresses it had, while the API and
+        `inspect` both say the network is attached. A tenant told that
+        their container joined a network it cannot reach is worse off
+        than one who was refused.
+
+        Stopped, the same request works -- the address is applied when
+        the sandbox next boots -- so the refusal names that.
+        """
+        if container.status != consts.RUNNING:
+            return
+        runtime = self._runtime_of(container)
+        if runtime == 'runc':
+            return
+        raise exception.Invalid(_(
+            "Cannot %(verb)s a network on container %(container)s while it "
+            "is running: it runs under the %(runtime)s runtime, whose "
+            "interfaces are fixed when its sandbox boots. Stop the "
+            "container, %(verb)s the network, and start it again.")
+            % {'verb': verb, 'container': container.uuid,
+               'runtime': runtime})
+
     def network_detach(self, context, container, network):
+        self._refuse_hotplug_on_a_vm(container, 'detach')
         with docker_utils.docker_client() as docker:
             network_driver = zun_network.driver(context,
                                                 docker_api=docker)
@@ -1740,6 +1769,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             container.save(context)
 
     def network_attach(self, context, container, requested_network):
+        self._refuse_hotplug_on_a_vm(container, 'attach')
         with docker_utils.docker_client() as docker:
             security_group_ids = None
             if container.security_groups:
