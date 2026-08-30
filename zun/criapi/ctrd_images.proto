@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+// The part of containerd's image service a commit needs.
+//
+// Same shape as tasks.proto and snapshots.proto beside it: not a copy of
+// containerd's file, only the calls used, with the field numbers, the
+// service name AND THE PACKAGE they have upstream. The package is not
+// decoration -- gRPC routes a call by package and service, so a minimal
+// proto under a name of our own is answered "unknown service" by a
+// daemon that implements it perfectly well.
+//
+// Descriptor and Mount live in containerd.types upstream; a message
+// travels as its field numbers, so they are declared here.
+//
+// ⚠️ Every call needs the containerd-namespace metadata header.
+package containerd.services.images.v1;
+
+import "google/protobuf/empty.proto";
+
+service Images {
+  rpc Get(GetImageRequest) returns (GetImageResponse);
+  rpc Create(CreateImageRequest) returns (CreateImageResponse);
+  rpc Delete(DeleteImageRequest) returns (google.protobuf.Empty);
+}
+
+message Descriptor {
+  string media_type = 1;
+  string digest = 2;
+  int64 size = 3;
+  map<string, string> annotations = 5;
+}
+
+message Image {
+  string name = 1;
+  map<string, string> labels = 2;
+  Descriptor target = 3;
+}
+
+message GetImageRequest {
+  string name = 1;
+}
+
+message GetImageResponse {
+  Image image = 1;
+}
+
+message CreateImageRequest {
+  Image image = 1;
+}
+
+message CreateImageResponse {
+  Image image = 1;
+}
+
+message DeleteImageRequest {
+  string name = 1;
+  bool sync = 2;
+}

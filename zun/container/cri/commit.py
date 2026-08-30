@@ -33,7 +33,9 @@ from oslo_utils import uuidutils
 
 from zun.common import exception
 from zun.common.i18n import _
-from zun.criapi import imaging_pb2
+from zun.criapi import ctrd_content_pb2
+from zun.criapi import ctrd_diff_pb2
+from zun.criapi import ctrd_images_pb2
 from zun.criapi import snapshots_pb2
 
 LOG = logging.getLogger(__name__)
@@ -73,7 +75,7 @@ class Committer(object):
     def read_blob(self, digest):
         chunks = []
         for response in self.driver.content_stub.Read(
-                imaging_pb2.ReadContentRequest(digest=digest),
+                ctrd_content_pb2.ReadContentRequest(digest=digest),
                 metadata=self.ns):
             chunks.append(response.data)
         return b''.join(chunks)
@@ -90,11 +92,11 @@ class Committer(object):
         ref = 'zun-commit-%s' % uuidutils.generate_uuid()
 
         def requests():
-            yield imaging_pb2.WriteContentRequest(
-                action=imaging_pb2.WRITE, ref=ref, total=len(data),
+            yield ctrd_content_pb2.WriteContentRequest(
+                action=ctrd_content_pb2.WRITE, ref=ref, total=len(data),
                 expected=digest, offset=0, data=data, labels=labels or {})
-            yield imaging_pb2.WriteContentRequest(
-                action=imaging_pb2.COMMIT, ref=ref, total=len(data),
+            yield ctrd_content_pb2.WriteContentRequest(
+                action=ctrd_content_pb2.COMMIT, ref=ref, total=len(data),
                 expected=digest, offset=len(data), labels=labels or {})
 
         for _response in self.driver.content_stub.Write(requests(),
@@ -126,7 +128,7 @@ class Committer(object):
                     snapshotter=self.snapshotter, key=container_id),
                 metadata=self.ns).mounts
             response = self.driver.diff_stub.Diff(
-                imaging_pb2.DiffRequest(
+                ctrd_diff_pb2.DiffRequest(
                     left=[_mount(m) for m in lower],
                     right=[_mount(m) for m in upper],
                     media_type=LAYER_MEDIA_TYPE,
@@ -153,7 +155,7 @@ class Committer(object):
         this node's platform is the one to build on.
         """
         target = self.driver.ctrd_image_stub.Get(
-            imaging_pb2.GetImageRequest(name=image_name),
+            ctrd_images_pb2.GetImageRequest(name=image_name),
             metadata=self.ns).image.target
         if target.media_type in _INDEX_TYPES:
             index = json.loads(self.read_blob(target.digest))
@@ -210,11 +212,11 @@ class Committer(object):
         manifest_desc = self.write_blob(manifest_blob, labels=labels)
 
         self.driver.ctrd_image_stub.Create(
-            imaging_pb2.CreateImageRequest(
-                image=imaging_pb2.Image(
+            ctrd_images_pb2.CreateImageRequest(
+                image=ctrd_images_pb2.Image(
                     name=name,
                     labels={SOURCE_LABEL: source} if source else {},
-                    target=imaging_pb2.Descriptor(
+                    target=ctrd_images_pb2.Descriptor(
                         media_type=media_type,
                         digest=manifest_desc['digest'],
                         size=manifest_desc['size']))),
@@ -227,6 +229,6 @@ class Committer(object):
 
 def _mount(mount):
     """A mount as the diff service takes it, from what snapshots returned."""
-    return imaging_pb2.Mount(type=mount.type, source=mount.source,
-                             target=mount.target,
-                             options=list(mount.options))
+    return ctrd_diff_pb2.Mount(type=mount.type, source=mount.source,
+                               target=mount.target,
+                               options=list(mount.options))

@@ -41,8 +41,10 @@ from zun.container.cri import registry as cri_registry
 from zun.container.cri import resources as cri_resources
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
-from zun.criapi import imaging_pb2
-from zun.criapi import imaging_pb2_grpc
+from zun.criapi import ctrd_content_pb2_grpc
+from zun.criapi import ctrd_diff_pb2_grpc
+from zun.criapi import ctrd_images_pb2
+from zun.criapi import ctrd_images_pb2_grpc
 from zun.criapi import snapshots_pb2
 from zun.criapi import snapshots_pb2_grpc
 from zun.criapi import tasks_pb2
@@ -255,15 +257,15 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         self.snapshot_stub = snapshots_pb2_grpc.SnapshotsStub(channel)
         # The three services a commit needs, all past the CRI, which has no
         # notion of making an image out of a container.
-        self.diff_stub = imaging_pb2_grpc.DiffStub(channel)
-        self.content_stub = imaging_pb2_grpc.ContentStub(channel)
+        self.diff_stub = ctrd_diff_pb2_grpc.DiffStub(channel)
+        self.content_stub = ctrd_content_pb2_grpc.ContentStub(channel)
         # Named apart from image_stub above: that one is the CRI's, which
         # pulls and lists and removes. This one is containerd's own image
         # store, which is where a commit records what it made -- and
         # giving them the same name cost every container on the node,
         # because pulling then went looking for a call this stub has not
         # got.
-        self.ctrd_image_stub = imaging_pb2_grpc.ImagesStub(channel)
+        self.ctrd_image_stub = ctrd_images_pb2_grpc.ImagesStub(channel)
         # Fetching an image has never depended on which runtime will run it,
         # so the image drivers are the same ones every other container driver
         # loads. Only the Container API path uses them; a capsule pulls
@@ -1613,7 +1615,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 'belongs to') % name)
         committer = self._committer()
         image = self.ctrd_image_stub.Get(
-            imaging_pb2.GetImageRequest(name=name),
+            ctrd_images_pb2.GetImageRequest(name=name),
             metadata=self._CTRD_NS).image
         target = image.target
         # Where these blobs came from, recorded by the commit: the push

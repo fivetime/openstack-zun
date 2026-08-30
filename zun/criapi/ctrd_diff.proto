@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+// The part of containerd's diff service a commit needs.
+//
+// Same shape as tasks.proto and snapshots.proto beside it: not a copy of
+// containerd's file, only the calls used, with the field numbers, the
+// service name AND THE PACKAGE they have upstream. The package is not
+// decoration -- gRPC routes a call by package and service, so a minimal
+// proto under a name of our own is answered "unknown service" by a
+// daemon that implements it perfectly well.
+//
+// Descriptor and Mount live in containerd.types upstream; a message
+// travels as its field numbers, so they are declared here.
+//
+// ⚠️ Every call needs the containerd-namespace metadata header.
+package containerd.services.diff.v1;
+
+service Diff {
+  rpc Diff(DiffRequest) returns (DiffResponse);
+}
+
+message Descriptor {
+  string media_type = 1;
+  string digest = 2;
+  int64 size = 3;
+  map<string, string> annotations = 5;
+}
+
+message Mount {
+  string type = 1;
+  string source = 2;
+  string target = 3;
+  repeated string options = 4;
+}
+
+message DiffRequest {
+  repeated Mount left = 1;
+  repeated Mount right = 2;
+  string media_type = 3;
+  string ref = 4;
+  map<string, string> labels = 5;
+}
+
+message DiffResponse {
+  Descriptor diff = 3;
+}

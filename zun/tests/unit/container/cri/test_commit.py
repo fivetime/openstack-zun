@@ -23,12 +23,14 @@ from unittest import mock
 
 from zun.common import exception
 from zun.container.cri import commit as cri_commit
-from zun.criapi import imaging_pb2
+from zun.criapi import ctrd_content_pb2
+from zun.criapi import ctrd_diff_pb2
+from zun.criapi import ctrd_images_pb2
 from zun.tests import base
 
 
 def _descriptor(digest='sha256:layer', size=10, uncompressed='sha256:diff'):
-    return imaging_pb2.Descriptor(
+    return ctrd_images_pb2.Descriptor(
         media_type=cri_commit.LAYER_MEDIA_TYPE, digest=digest, size=size,
         annotations={cri_commit.UNCOMPRESSED: uncompressed}
         if uncompressed else {})
@@ -51,7 +53,7 @@ class CommitTest(base.TestCase):
         super(CommitTest, self).setUp()
         self.driver = mock.Mock()
         self.driver.ctrd_image_stub.Get.return_value.image.target = \
-            imaging_pb2.Descriptor(
+            ctrd_images_pb2.Descriptor(
                 media_type='application/vnd.oci.image.manifest.v1+json',
                 digest='sha256:manifest', size=7)
         self.committer = cri_commit.Committer(self.driver, 'overlayfs', ())

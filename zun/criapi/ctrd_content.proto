@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+// The part of containerd's content service a commit needs.
+//
+// Same shape as tasks.proto and snapshots.proto beside it: not a copy of
+// containerd's file, only the calls used, with the field numbers, the
+// service name AND THE PACKAGE they have upstream. The package is not
+// decoration -- gRPC routes a call by package and service, so a minimal
+// proto under a name of our own is answered "unknown service" by a
+// daemon that implements it perfectly well.
+//
+// Descriptor and Mount live in containerd.types upstream; a message
+// travels as its field numbers, so they are declared here.
+//
+// ⚠️ Every call needs the containerd-namespace metadata header.
+package containerd.services.content.v1;
+
+service Content {
+  rpc Info(InfoRequest) returns (InfoResponse);
+  rpc Read(ReadContentRequest) returns (stream ReadContentResponse);
+  rpc Write(stream WriteContentRequest) returns (stream WriteContentResponse);
+}
+
+message Info {
+  string digest = 1;
+  int64 size = 2;
+}
+
+message InfoRequest {
+  string digest = 1;
+}
+
+message InfoResponse {
+  Info info = 1;
+}
+
+message ReadContentRequest {
+  string digest = 1;
+  int64 offset = 2;
+  int64 size = 3;
+}
+
+message ReadContentResponse {
+  int64 offset = 1;
+  bytes data = 2;
+}
+
+enum WriteAction {
+  STAT = 0;
+  WRITE = 1;
+  COMMIT = 2;
+}
+
+message WriteContentRequest {
+  WriteAction action = 1;
+  string ref = 2;
+  int64 total = 3;
+  string expected = 4;
+  int64 offset = 5;
+  bytes data = 6;
+  map<string, string> labels = 7;
+}
+
+message WriteContentResponse {
+  WriteAction action = 1;
+  string ref = 3;
+  int64 offset = 4;
+  int64 total = 5;
+  string digest = 6;
+}
