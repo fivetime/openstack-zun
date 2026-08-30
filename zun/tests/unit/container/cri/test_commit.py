@@ -50,7 +50,7 @@ class CommitTest(base.TestCase):
     def setUp(self):
         super(CommitTest, self).setUp()
         self.driver = mock.Mock()
-        self.driver.image_stub.Get.return_value.image.target = \
+        self.driver.ctrd_image_stub.Get.return_value.image.target = \
             imaging_pb2.Descriptor(
                 media_type='application/vnd.oci.image.manifest.v1+json',
                 digest='sha256:manifest', size=7)
@@ -115,7 +115,7 @@ class CommitTest(base.TestCase):
 
     def test_the_image_records_where_its_blobs_came_from(self):
         self._commit()
-        image = self.driver.image_stub.Create.call_args.args[0].image
+        image = self.driver.ctrd_image_stub.Create.call_args.args[0].image
 
         self.assertEqual('proj/app', image.labels[cri_commit.SOURCE_LABEL])
 
@@ -154,3 +154,32 @@ class DiffLayerTest(base.TestCase):
 
         self.assertRaises(RuntimeError, self.committer.diff_layer, 'c-1')
         self.driver.snapshot_stub.Remove.assert_called_once()
+
+
+class StubsDoNotShadowEachOtherTest(base.TestCase):
+    """Two image services, and only one of them pulls.
+
+    The CRI's image service pulls, lists and removes; containerd's own
+    image store is where a commit records what it made. Giving them the
+    same attribute cost every container on the node -- pulling went
+    looking for a call the other stub has not got -- and no test saw it,
+    because a test that mocks the driver mocks the collision away too.
+    """
+
+    def _driver(self):
+        from zun.container.cri import driver as cri_driver
+        with mock.patch.object(cri_driver.grpc, 'insecure_channel'):
+            with mock.patch.object(cri_driver.img_driver,
+                                   'load_image_driver'):
+                with mock.patch.object(cri_driver.CONF, 'image_driver_list',
+                                       []):
+                    return cri_driver.CriDriver()
+
+    def test_the_cri_image_service_still_pulls(self):
+        self.assertTrue(hasattr(self._driver().image_stub, 'PullImage'))
+
+    def test_containerd_s_image_store_is_reachable_separately(self):
+        driver = self._driver()
+
+        self.assertTrue(hasattr(driver.ctrd_image_stub, 'Create'))
+        self.assertFalse(hasattr(driver.ctrd_image_stub, 'PullImage'))

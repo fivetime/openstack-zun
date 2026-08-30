@@ -152,7 +152,7 @@ class Committer(object):
         commit is of one container on one machine, so the manifest for
         this node's platform is the one to build on.
         """
-        target = self.driver.image_stub.Get(
+        target = self.driver.ctrd_image_stub.Get(
             imaging_pb2.GetImageRequest(name=image_name),
             metadata=self.ns).image.target
         if target.media_type in _INDEX_TYPES:
@@ -209,7 +209,7 @@ class Committer(object):
                 entry['digest']
         manifest_desc = self.write_blob(manifest_blob, labels=labels)
 
-        self.driver.image_stub.Create(
+        self.driver.ctrd_image_stub.Create(
             imaging_pb2.CreateImageRequest(
                 image=imaging_pb2.Image(
                     name=name,
