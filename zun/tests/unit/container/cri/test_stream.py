@@ -107,3 +107,31 @@ class WriteStdinTest(base.TestCase):
         sock = _Socket(replies=[bytes([stream.STDOUT]) + b'hello'])
 
         self.assertEqual(b'hello', self._write(sock))
+
+
+class TheUrlIsDialledAsAWebsocketTest(base.TestCase):
+    """The runtime hands back http; the client accepts only ws.
+
+    It serves the upgrade on http, so that is what its URL says. A
+    client given it refuses with a message about an invalid scheme,
+    which reads as a bug in the caller rather than in the URL.
+    """
+
+    def test_http_becomes_ws(self):
+        self.assertEqual('ws://127.0.0.1:1/exec/x',
+                         stream.as_websocket('http://127.0.0.1:1/exec/x'))
+
+    def test_https_becomes_wss(self):
+        self.assertEqual('wss://node/exec/x',
+                         stream.as_websocket('https://node/exec/x'))
+
+    def test_one_already_right_is_left_alone(self):
+        self.assertEqual('wss://node/x', stream.as_websocket('wss://node/x'))
+
+    def test_the_connection_is_made_to_the_converted_url(self):
+        with mock.patch.object(stream.websocket, 'create_connection',
+                               return_value=_Socket()) as dialled:
+            stream.write_stdin('http://127.0.0.1:1/exec/x', b'', 30)
+
+        self.assertEqual('ws://127.0.0.1:1/exec/x',
+                         dialled.call_args.args[0])

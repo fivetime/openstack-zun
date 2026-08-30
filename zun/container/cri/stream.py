@@ -50,6 +50,21 @@ V4 = 'v4.channel.k8s.io'
 _CHUNK = 256 * 1024
 
 
+def as_websocket(url):
+    """The same URL, in the scheme a websocket client will accept.
+
+    The runtime hands back an http one because that is what it serves
+    the upgrade on, and the client refuses to dial anything else --
+    with a message about an invalid scheme rather than about a URL it
+    was given.
+    """
+    if url.startswith('http://'):
+        return 'ws://' + url[len('http://'):]
+    if url.startswith('https://'):
+        return 'wss://' + url[len('https://'):]
+    return url
+
+
 def write_stdin(url, data, timeout):
     """Send `data` to the exec at `url` and report how it ended.
 
@@ -58,7 +73,7 @@ def write_stdin(url, data, timeout):
     uses, where success is the absence of anything to say.
     """
     connection = websocket.create_connection(
-        url, timeout=timeout, subprotocols=[V5, V4],
+        as_websocket(url), timeout=timeout, subprotocols=[V5, V4],
         sslopt={'cert_reqs': ssl.CERT_NONE},
         enable_multithread=True)
     try:
