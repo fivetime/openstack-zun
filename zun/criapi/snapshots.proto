@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+// The one call of containerd's snapshot service this driver needs.
+//
+// Same shape as tasks.proto next to it: not a copy of containerd's
+// snapshots.proto, just the call the driver uses, with the field numbers
+// and service name it has upstream -- which is all the wire needs to
+// agree on. Mount lives in containerd.types upstream; a message is its
+// field numbers, so it is declared here where it is used.
+//
+// ⚠️ Every call needs the containerd-namespace metadata header, same as
+// the task service.
+
+package containerd.services.snapshots.v1;
+
+service Snapshots {
+  rpc Mounts(MountsRequest) returns (MountsResponse);
+}
+
+message MountsRequest {
+  string snapshotter = 1;
+  string key = 2;
+}
+
+message MountsResponse {
+  repeated Mount mounts = 1;
+}
+
+message Mount {
+  string type = 1;
+  string source = 2;
+  string target = 3;
+  repeated string options = 4;
+}

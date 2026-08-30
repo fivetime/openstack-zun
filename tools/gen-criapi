@@ -39,6 +39,16 @@ python3 -m grpc_tools.protoc \
     --grpc_python_out=${ZUNROOT} \
     ${ZUNROOT}/zun/criapi/api.proto
 
+# tasks.proto and snapshots.proto are kept in the tree (hand-written minimal
+# declarations, see their headers); regenerate their bindings the same way:
+python3 -m grpc_tools.protoc \
+    -I${ZUNROOT}/zun/criapi \
+    --python_out=${ZUNROOT}/zun/criapi \
+    --grpc_python_out=${ZUNROOT}/zun/criapi \
+    ${ZUNROOT}/zun/criapi/tasks.proto ${ZUNROOT}/zun/criapi/snapshots.proto
+sed -i 's/^import tasks_pb2 as tasks__pb2$/from zun.criapi import tasks_pb2 as tasks__pb2/' ${ZUNROOT}/zun/criapi/tasks_pb2_grpc.py
+sed -i 's/^import snapshots_pb2 as snapshots__pb2$/from zun.criapi import snapshots_pb2 as snapshots__pb2/' ${ZUNROOT}/zun/criapi/snapshots_pb2_grpc.py
+
 for i in ${ZUNROOT}/zun/criapi/*.py; do
     if [[ $i != *__init__.py ]]; then
         add_license_header $i

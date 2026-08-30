@@ -35,6 +35,8 @@ from zun.container import orphan
 from zun.container.cri import resources as cri_resources
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
+from zun.criapi import snapshots_pb2
+from zun.criapi import snapshots_pb2_grpc
 from zun.criapi import tasks_pb2
 from zun.criapi import tasks_pb2_grpc
 from zun.image import driver as img_driver
@@ -239,6 +241,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # is a deliberate exception, kept to the calls that are only here --
         # anything the CRI does serve is served through the CRI.
         self.task_stub = tasks_pb2_grpc.TasksStub(channel)
+        # The snapshot service, for the one thing the CRI cannot say: which
+        # host directory holds a container's writable layer. Restart uses it
+        # to carry that layer from a dead incarnation into its replacement.
+        self.snapshot_stub = snapshots_pb2_grpc.SnapshotsStub(channel)
         # Fetching an image has never depended on which runtime will run it,
         # so the image drivers are the same ones every other container driver
         # loads. Only the Container API path uses them; a capsule pulls
@@ -1463,9 +1469,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             container.status_reason = None
         return container
 
-    #: Said to whoever starts a container the runtime would not restart.
-    #: Not an error -- the container is running -- but the thing now running
-    #: is not the thing that stopped, and nobody would guess that.
+    #: Said to whoever starts a container the runtime would not restart,
+    #: when carrying the writable layer over also failed. Not an error --
+    #: the container is running -- but the thing now running is not the
+    #: thing that stopped, and nobody would guess that.
     REBUILT_REASON = _(
         'This container had exited, and the runtime does not start an exited '
         'container again. It was rebuilt from its image in the sandbox it '
@@ -1508,19 +1515,88 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         try:
             self._create_container(context, container, container,
                                    {container.uuid: volmaps} if volmaps else {},
-                                   start=True, attempt=attempt)
+                                   start=False, attempt=attempt)
         except Exception:
             with excutils.save_and_reraise_exception():
                 # The record still points at the dead container, which is a
                 # truer thing to say than the sandbox id it was holding.
                 container.container_id = dead
+        # Between create and start the new incarnation's writable layer is
+        # an empty directory and the dead one's still exists: the only
+        # moment the layer can be carried across. docker's stop/start keeps
+        # this layer, and the Container API was written against docker.
+        carried = self._carry_writable_layer(dead, container.container_id)
+        try:
+            self.runtime_stub.StartContainer(
+                api_pb2.StartContainerRequest(
+                    container_id=container.container_id))
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                container.container_id = dead
         self._remove_container(dead)
-        LOG.warning('Container %(uuid)s had exited and was rebuilt as a new '
-                    'instance %(new)s in place of %(old)s; anything written '
-                    'inside the container itself did not survive',
-                    {'uuid': container.uuid,
-                     'new': container.container_id, 'old': dead})
-        container.status_reason = self.REBUILT_REASON
+        if carried:
+            LOG.info('Container %(uuid)s had exited and was restarted as '
+                     '%(new)s in place of %(old)s with its writable layer '
+                     'carried over',
+                     {'uuid': container.uuid,
+                      'new': container.container_id, 'old': dead})
+            container.status_reason = None
+        else:
+            LOG.warning('Container %(uuid)s had exited and was rebuilt as a '
+                        'new instance %(new)s in place of %(old)s; anything '
+                        'written inside the container itself did not survive',
+                        {'uuid': container.uuid,
+                         'new': container.container_id, 'old': dead})
+            container.status_reason = self.REBUILT_REASON
+
+    def _upperdir_of(self, snapshot_key):
+        """The host directory holding a snapshot's writable layer.
+
+        Asked of the snapshot service rather than derived from a path
+        convention: the mount options are the contract, the directory
+        layout under /var/lib/containerd is not.
+        """
+        response = self.snapshot_stub.Mounts(
+            snapshots_pb2.MountsRequest(
+                snapshotter=CONF.cri_snapshotter, key=snapshot_key),
+            metadata=self._CTRD_NS)
+        for mount in response.mounts:
+            for option in mount.options:
+                if option.startswith('upperdir='):
+                    return option[len('upperdir='):]
+        return None
+
+    def _carry_writable_layer(self, dead, replacement):
+        """Copy what a dead incarnation wrote into its replacement.
+
+        Both writable layers are upper directories of the same overlay
+        image chain, so copying one into the other -- whiteouts and all,
+        which is what -a preserves -- gives the replacement exactly the
+        filesystem the dead container had when it stopped. Kata does not
+        change this: the guest writes through virtiofs into this same
+        host directory.
+
+        Best effort by design: the fallback is what this driver always
+        did -- a fresh container from the image, said out loud in the
+        status reason -- so a failure here loses no ground, and the
+        caller uses the return value to say which of the two happened.
+        """
+        try:
+            source = self._upperdir_of(dead)
+            target = self._upperdir_of(replacement)
+            if not source or not target:
+                LOG.warning('No writable layer found to carry from %(old)s '
+                            'to %(new)s: snapshotter %(snap)s reported no '
+                            'upperdir', {'old': dead, 'new': replacement,
+                                         'snap': CONF.cri_snapshotter})
+                return False
+            utils.execute('cp', '-a', source + '/.', target)
+            return True
+        except Exception as e:
+            LOG.warning('Could not carry the writable layer of %(old)s '
+                        'into %(new)s: %(err)s',
+                        {'old': dead, 'new': replacement, 'err': e})
+            return False
 
     def _attempt_of(self, container_id):
         """Which incarnation the runtime thinks this container is."""
