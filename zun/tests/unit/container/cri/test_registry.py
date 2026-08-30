@@ -21,6 +21,8 @@ needed. Measured against Harbor: with the scope whole, the same
 credential is accepted.
 """
 
+from unittest import mock
+
 from zun.container.cri import registry as cri_registry
 from zun.tests import base
 
@@ -56,3 +58,38 @@ class ChallengeFieldsTest(base.TestCase):
 
         self.assertEqual('https://r/token', fields['realm'])
         self.assertNotIn('scope', fields)
+
+
+class TheTokenIsNotUndoneByACookieTest(base.TestCase):
+    """Harbor answers its token endpoint with a session cookie.
+
+    A request carrying both that cookie and the token is authorised as
+    the cookie -- anonymous -- so a push that is perfectly entitled
+    comes back 403. Measured: same token, same session, 403 with the
+    cookie and 202 without it.
+    """
+
+    def _authenticated(self):
+        registry = cri_registry.Registry('https://harbor.example', 'p/app',
+                                         username='robot$p+r',
+                                         password='secret')
+        registry.session = mock.Mock()
+        registry.session.get.return_value = mock.Mock(
+            status_code=200, json=lambda: {'token': 't0ken'})
+        challenge = mock.Mock(headers={
+            'WWW-Authenticate': 'Bearer realm="https://harbor.example/token",'
+                                'service="harbor-registry",'
+                                'scope="repository:p/app:pull,push"'})
+        return registry, registry._authenticate(challenge)
+
+    def test_the_cookie_is_dropped_once_the_token_is_in_hand(self):
+        registry, worked = self._authenticated()
+
+        self.assertTrue(worked)
+        registry.session.cookies.clear.assert_called_once_with()
+
+    def test_the_whole_scope_is_asked_for(self):
+        registry, _worked = self._authenticated()
+        asked = registry.session.get.call_args.kwargs['params']
+
+        self.assertEqual('repository:p/app:pull,push', asked['scope'])

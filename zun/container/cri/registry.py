@@ -97,6 +97,13 @@ class Registry(object):
         token = body.get('token') or body.get('access_token')
         if not token:
             return False
+        # Drop whatever the token endpoint set on the way. Harbor answers
+        # it with a session cookie, and a request carrying both that
+        # cookie and this token is authorised as the cookie -- anonymous
+        # -- so a push that is perfectly entitled comes back 403.
+        # Measured: same token, same session, 403 with the cookie and 202
+        # without it.
+        self.session.cookies.clear()
         self._token = token
         return True
 
