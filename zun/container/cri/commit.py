@@ -27,6 +27,7 @@ back with files the tenant deleted.
 
 import hashlib
 import json
+import zlib
 
 from oslo_log import log as logging
 from oslo_utils import uuidutils
@@ -174,14 +175,30 @@ class Committer(object):
                 % {'image': image_name, 'type': target.media_type})
         return target.media_type, json.loads(self.read_blob(target.digest))
 
+    def diff_id(self, layer):
+        """The uncompressed digest of a layer, which the config names it by.
+
+        containerd records it as an annotation when it has one to
+        record. When it does not, it is read back out of the layer --
+        streamed through the decompressor rather than held, because a
+        commit is as large as whatever the container wrote.
+        """
+        recorded = (layer.annotations or {}).get(UNCOMPRESSED)
+        if recorded:
+            return recorded
+        digest = hashlib.sha256()
+        decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+        for response in self.driver.content_stub.Read(
+                ctrd_content_pb2.ReadContentRequest(digest=layer.digest),
+                metadata=self.ns):
+            digest.update(decompressor.decompress(response.data))
+        digest.update(decompressor.flush())
+        return 'sha256:' + digest.hexdigest()
+
     def commit(self, container, name, source=None):
         """Build the image and record it, returning its manifest digest."""
         layer = self.diff_layer(container.container_id)
-        diff_id = (layer.annotations or {}).get(UNCOMPRESSED)
-        if not diff_id:
-            raise exception.ZunException(_(
-                'containerd did not report the uncompressed digest of the '
-                'committed layer, so the image config cannot name it'))
+        diff_id = self.diff_id(layer)
 
         media_type, manifest = self.base_manifest(container.image)
         config = json.loads(self.read_blob(manifest['config']['digest']))

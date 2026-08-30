@@ -121,10 +121,16 @@ class CommitTest(base.TestCase):
 
         self.assertEqual('proj/app', image.labels[cri_commit.SOURCE_LABEL])
 
-    def test_a_layer_without_an_uncompressed_digest_is_refused(self):
-        """The config names layers by that digest; guessing it is worse."""
-        self.assertRaises(exception.ZunException, self._commit,
-                          _descriptor(uncompressed=None))
+    def test_a_layer_without_the_annotation_still_gets_its_diff_id(self):
+        """Read back rather than guessed: see DiffIdTest."""
+        with mock.patch.object(self.committer, 'diff_id',
+                               return_value='sha256:computed') as read:
+            self._commit(_descriptor(uncompressed=None))
+
+        read.assert_called_once()
+        config = json.loads(self.written[0][0])
+        self.assertEqual(['sha256:basediff', 'sha256:computed'],
+                         config['rootfs']['diff_ids'])
 
 
 class DiffLayerTest(base.TestCase):
@@ -185,3 +191,37 @@ class StubsDoNotShadowEachOtherTest(base.TestCase):
 
         self.assertTrue(hasattr(driver.ctrd_image_stub, 'Create'))
         self.assertFalse(hasattr(driver.ctrd_image_stub, 'PullImage'))
+
+
+class DiffIdTest(base.TestCase):
+    """The config names a layer by its uncompressed digest.
+
+    containerd annotates it when it has one. When it does not, the
+    digest is read back out of the layer rather than guessed -- a
+    config naming the wrong one produces an image that pulls and then
+    will not unpack.
+    """
+
+    def setUp(self):
+        super(DiffIdTest, self).setUp()
+        self.driver = mock.Mock()
+        self.committer = cri_commit.Committer(self.driver, 'overlayfs', ())
+
+    def test_the_annotation_is_used_when_it_is_there(self):
+        self.driver.content_stub.Read.return_value = []
+
+        self.assertEqual('sha256:diff',
+                         self.committer.diff_id(_descriptor()))
+        self.driver.content_stub.Read.assert_not_called()
+
+    def test_otherwise_it_is_computed_from_the_layer(self):
+        import gzip
+        import hashlib
+        raw = b'a tar would be here'
+        packed = gzip.compress(raw)
+        self.driver.content_stub.Read.return_value = [
+            mock.Mock(data=packed[:5]), mock.Mock(data=packed[5:])]
+
+        self.assertEqual('sha256:' + hashlib.sha256(raw).hexdigest(),
+                         self.committer.diff_id(_descriptor(
+                             uncompressed=None)))
