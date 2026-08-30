@@ -216,11 +216,17 @@ ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
   3. **Harbor 的 cookie 会压过 Bearer 头** —— 带 cookie 403、去掉 202(同一个 token)。
   4. 而且**清一次不够**:清完之后紧接着那个响应又把 cookie 种回来了。要全程拒收。
 
-  ➡️ **结论:这段本不该自己写。** containerd 2.x 有 **transfer 服务**
-  (`containerd.services.transfer.v1.Transfer`,源 `ImageStore` → 目标 `OCIRegistry`,
-  认证可经 `RegistryResolver.headers` 直接给 Basic 头),用的是 containerd 自己经过实战的
-  registry 实现。当初为少写几个 proto 选了自写 HTTP,四个 bug 全在认证上 ——
-  **换成 transfer 服务可以整个删掉 `registry.py`,是明确的后续简化项。**
+  ➡️ **已改用 containerd 的 transfer 服务,`registry.py` 整个删掉。**
+  源 `ImageStore` → 目标 `OCIRegistry`,认证经 `RegistryResolver.headers` 给 Basic 头
+  (另一条路是 auth_stream,那要再实现一个 streaming 服务,而 Basic 已经够说清楚)。
+  实测:`cri-transfer-test/app:v2` 推到 Harbor,OCI manifest / 3.4 MB / 标签正确。
+  ⚠️ **这里有第三个"包名即契约"的坑,而且更隐蔽:**
+  `Any.Pack()` 写的是 `type.googleapis.com/<全名>`,而 **containerd 的 typeurl 按裸 proto
+  全名注册和查找**(`FullName()`)。带前缀 → `ResolveType` 查不到 → 消息按自身反序列化而不是
+  按它代表的东西 → 报 **"method Transfer not implemented for A to B"**,读起来像功能没实现。
+  必须手工构造 `Any(type_url=msg.DESCRIPTOR.full_name, value=msg.SerializeToString())`。
+  **判据:用 `ctr images push` 推同一个镜像**(走同一个服务)—— 1.4 秒成功,
+  服务端与请求端的责任立刻分清。
 
 🔴 **两条踩得最狠的坑,都不是逻辑错:**
 1. **最小 proto 可以少字段少调用,但不能改包名。** gRPC 按 `包.服务` 路由,
