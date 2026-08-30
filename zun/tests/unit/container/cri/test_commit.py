@@ -21,7 +21,6 @@ name it, and the labels that keep the pieces from being collected.
 import json
 from unittest import mock
 
-from zun.common import exception
 from zun.container.cri import commit as cri_commit
 from zun.criapi import ctrd_content_pb2
 from zun.criapi import ctrd_diff_pb2
@@ -227,33 +226,61 @@ class DiffIdTest(base.TestCase):
                              uncompressed=None)))
 
 
-class CommitStaysOffTheEventLoopTest(base.TestCase):
-    """A commit blocks in the gRPC core for as long as the image is large.
+class CommitRunsInItsOwnProcessTest(base.TestCase):
+    """A streaming read never returns under eventlet's monkey patching.
 
-    This service runs on eventlet, where a blocking call stops every
-    green thread in the process. Measured: a commit stopped the node's
-    heartbeat and the scheduler wrote the host off as down while it sat
-    there -- so the work goes to a real thread.
+    The gRPC core signals completion on a native thread and the waiter
+    it must wake is a green one only the hub can run. Measured on this
+    stack: unary calls are fine, a streaming read hangs so hard that
+    eventlet.Timeout cannot interrupt it, and the compute service
+    stopped answering its heartbeat until restarted. So the work
+    happens where nothing is patched.
     """
 
     def _driver(self):
         from zun.container.cri import driver as cri_driver
-        driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
-        return cri_driver, driver
+        return cri_driver, cri_driver.CriDriver.__new__(cri_driver.CriDriver)
 
-    def test_commit_runs_on_a_real_thread(self):
+    def test_commit_goes_out_to_the_helper(self):
         cri_driver, driver = self._driver()
-        container = mock.Mock(uuid='u-1', image='harbor/proj/app:v1')
-        with mock.patch.object(cri_driver, 'tpool') as pool:
-            with mock.patch.object(driver, '_committer'):
-                driver.commit({}, container, 'repo', 'tag')
+        container = mock.Mock(uuid='u-1', container_id='c-1',
+                              image='harbor/proj/app:v1')
+        with mock.patch.object(cri_driver.utils, 'execute',
+                               return_value=('{"digest": "sha256:x"}', '')
+                               ) as ran:
+            name = driver.commit({}, container, 'repo', 'tag')
 
-        pool.execute.assert_called_once()
+        self.assertEqual('repo:tag', name)
+        self.assertIn(driver._CLI, ran.call_args.args)
 
-    def test_push_runs_on_a_real_thread(self):
+    def test_the_secret_travels_on_stdin_not_the_command_line(self):
+        """A registry password on a command line is a password in ps."""
         cri_driver, driver = self._driver()
-        with mock.patch.object(cri_driver, 'tpool') as pool:
-            driver.push_image({}, 'harbor/proj/app', 'v1', None, None)
+        registry = mock.Mock(username='robot', password='s3cret')
+        with mock.patch.object(cri_driver.utils, 'execute',
+                               return_value=('{"name": "n"}', '')) as ran:
+            driver.push_image({}, 'harbor.tue.jp/proj/app', 'v1', registry,
+                              None)
 
-        pool.execute.assert_called_once()
-        self.assertEqual(driver._push_image, pool.execute.call_args.args[0])
+        self.assertNotIn('s3cret', ' '.join(str(a)
+                                            for a in ran.call_args.args))
+        self.assertIn('s3cret', ran.call_args.kwargs['process_input'])
+
+    def test_a_refused_push_is_raised_not_logged_away(self):
+        cri_driver, driver = self._driver()
+        with mock.patch.object(cri_driver.utils, 'execute',
+                               return_value=('{"error": "no such repo"}',
+                                             '')):
+            error = self.assertRaises(
+                Exception, driver.push_image, {},
+                'harbor.tue.jp/proj/app', 'v1', None, None)
+
+        self.assertIn('no such repo', str(error))
+
+    def test_a_name_without_a_registry_is_refused_before_anything_runs(self):
+        cri_driver, driver = self._driver()
+        with mock.patch.object(cri_driver.utils, 'execute') as ran:
+            self.assertRaises(Exception, driver.push_image, {}, 'app', 'v1',
+                              None, None)
+
+        ran.assert_not_called()

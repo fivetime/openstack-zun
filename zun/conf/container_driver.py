@@ -152,6 +152,11 @@ Interdependencies to other options:
                     'a file rather than answering a question, and the '
                     'archive travels through the runtime rather than past '
                     'it.'),
+    cfg.StrOpt('cri_containerd_address',
+               default='unix:///run/containerd/containerd.sock',
+               help='Where containerd listens. The CRI is served here and '
+                    'so are the services behind it that a commit needs, so '
+                    'one address covers both.'),
     cfg.StrOpt('cri_snapshotter',
                default='overlayfs',
                help='Name of the containerd snapshotter the CRI is '

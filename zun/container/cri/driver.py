@@ -15,13 +15,13 @@ import datetime
 import os
 import time
 
-from eventlet import tpool
 import grpc
 import base64
 import json
 import posixpath
 import shlex
 import signal
+import sys
 from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import fileutils
@@ -242,8 +242,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def __init__(self):
         super(CriDriver, self).__init__()
-        channel = grpc.insecure_channel(
-            'unix:///run/containerd/containerd.sock')
+        channel = grpc.insecure_channel(CONF.cri_containerd_address)
         self.runtime_stub = api_pb2_grpc.RuntimeServiceStub(channel)
         self.image_stub = api_pb2_grpc.ImageServiceStub(channel)
         # containerd's own task service, on the same socket. The CRI is a view
@@ -1582,10 +1581,30 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             container.status_reason = self.REBUILT_REASON
 
     # --- commit ----------------------------------------------------------
+    #
+    # Both of these run in a process of their own; see commit_cli for why
+    # (a streaming read never returns under eventlet). Everything they
+    # need travels as JSON on that process's stdin, including a registry
+    # password, which on a command line would be a password in `ps`.
 
-    def _committer(self):
-        return cri_commit.Committer(self, CONF.cri_snapshotter,
-                                    self._CTRD_NS)
+    _CLI = 'zun.container.cri.commit_cli'
+
+    def _run_commit_cli(self, request):
+        request.setdefault('address', CONF.cri_containerd_address)
+        request.setdefault('namespace', self._CTRD_NS[0][1])
+        request.setdefault('snapshotter', CONF.cri_snapshotter)
+        out, err = utils.execute(sys.executable, '-m', self._CLI,
+                                 process_input=json.dumps(request),
+                                 timeout=CONF.cri_push_timeout)
+        try:
+            answer = json.loads(out)
+        except ValueError:
+            raise exception.ZunException(_(
+                'the commit helper said nothing that could be read: %s')
+                % (err or out or '')[:200])
+        if 'error' in answer:
+            raise exception.ZunException(_('%s') % answer['error'])
+        return answer
 
     def commit(self, context, container, repository=None, tag=None):
         """Make an image of what this container has written.
@@ -1595,21 +1614,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         else on this node would look for it too.
         """
         name = '%s:%s' % (repository, tag or 'latest')
-        # On a real thread. The streaming calls a commit makes -- reading
-        # a layer back, writing blobs -- block in the gRPC core for as
-        # long as the image is large, and this service runs on eventlet,
-        # where a blocking call stops every green thread on the process.
-        # Measured: a commit stopped this node's heartbeat, and the
-        # scheduler wrote the host off as down while it sat there.
-        tpool.execute(self._committer().commit, container, name,
-                      self._source_repository(container.image))
+        self._run_commit_cli({
+            'action': 'commit', 'name': name, 'uuid': container.uuid,
+            'container_id': container.container_id,
+            'image': container.image,
+            'source': self._source_repository(container.image)})
         return name
 
     def push_image(self, context, repo, tag, registry, image_driver):
-        """See _push_image: this only keeps it off the event loop."""
-        return tpool.execute(self._push_image, repo, tag, registry)
-
-    def _push_image(self, repo, tag, registry):
         """Send a committed image where its name says it belongs.
 
         The docker driver hands this to the docker daemon; there is none
@@ -1617,40 +1629,22 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         the registry from there -- all but the ones it already has,
         which for a commit is nearly all of them.
         """
-        name = '%s:%s' % (repo, tag or 'latest')
+        tag = tag or 'latest'
         host, _sep, path = repo.partition('/')
         if not _sep or ('.' not in host and ':' not in host):
             raise exception.Invalid(_(
                 'Cannot push %s: its name does not say which registry it '
-                'belongs to') % name)
-        committer = self._committer()
-        image = self.ctrd_image_stub.Get(
-            ctrd_images_pb2.GetImageRequest(name=name),
-            metadata=self._CTRD_NS).image
-        target = image.target
-        # Where these blobs came from, recorded by the commit: the push
-        # cannot work it out on its own, and without it every layer of
-        # the base image is uploaded again.
-        source = (image.labels or {}).get(cri_commit.SOURCE_LABEL) or None
-        manifest = json.loads(committer.read_blob(target.digest))
-
+                'belongs to') % repo)
         scheme = 'http://' if CONF.cri_registry_insecure else 'https://'
-        client = cri_registry.Registry(
-            scheme + host, path,
-            username=getattr(registry, 'username', None),
-            password=getattr(registry, 'password', None),
-            verify=not CONF.cri_registry_insecure,
-            timeout=CONF.cri_push_timeout)
-        for blob in list(manifest.get('layers', [])) + [manifest['config']]:
-            if client.has_blob(blob['digest']):
-                continue
-            if source and client.mount_blob(blob['digest'], source):
-                continue
-            client.put_blob(blob['digest'],
-                            committer.read_blob(blob['digest']))
-        client.put_manifest(tag or 'latest', target.media_type,
-                            committer.read_blob(target.digest))
-        LOG.info('Pushed %s', name)
+        answer = self._run_commit_cli({
+            'action': 'push', 'name': '%s:%s' % (repo, tag), 'tag': tag,
+            'host': scheme + host, 'repository': path,
+            'username': getattr(registry, 'username', None),
+            'password': getattr(registry, 'password', None),
+            'insecure': CONF.cri_registry_insecure,
+            'timeout': CONF.cri_push_timeout})
+        LOG.info('Pushed %(name)s, %(blobs)s blob(s) uploaded',
+                 {'name': answer['name'], 'blobs': answer.get('blobs_sent')})
 
     @staticmethod
     def _source_repository(container_image):
