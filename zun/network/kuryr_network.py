@@ -20,6 +20,7 @@ from oslo_utils import excutils
 from oslo_utils import timeutils
 
 from zun.common import consts
+from zun.common import context as zun_context
 from zun.common import exception
 from zun.common.i18n import _
 from zun.common import utils
@@ -138,8 +139,15 @@ class KuryrNetwork(network.Network):
             if e.field != 'neutron_net_id':
                 raise
 
+            # Asked for as the service, not as the tenant. A docker
+            # network on a node is one object shared by whoever lands
+            # there, and the row that blocks a second create is found
+            # by neutron_net_id and host alone -- no project narrows
+            # it. Looked for as the tenant, a row another project
+            # created is invisible, so the recovery below never runs
+            # and that row blocks this network on this node for good.
             networks = objects.ZunNetwork.list(
-                self.context,
+                zun_context.get_admin_context(),
                 filters={'neutron_net_id': network.neutron_net_id,
                          'host': CONF.host})
             LOG.debug("network objects with 'neutron_net_id' as '%(net_id)s'"

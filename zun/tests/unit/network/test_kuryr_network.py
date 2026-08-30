@@ -255,10 +255,54 @@ class KuryrNetworkTestCase(base.TestCase):
                                ) as mock_list_network:
             network = self.network_driver.create_network(neutron_net_id)
         self.assertEqual(docker_net_id, network.network_id)
-        mock_list.assert_called_once_with(
-            self.context, filters={'neutron_net_id': neutron_net_id,
-                                   'host': fake_host})
+        # As the service, not as the tenant: the row that blocks the
+        # create is found by neutron_net_id and host alone, and one
+        # another project left behind is invisible to a tenant-scoped
+        # read -- which is how such a row came to block a network on a
+        # node permanently.
+        self.assertEqual(1, mock_list.call_count)
+        listed_context = mock_list.call_args.args[0]
+        self.assertTrue(listed_context.is_admin)
+        self.assertEqual({'neutron_net_id': neutron_net_id,
+                          'host': fake_host},
+                         mock_list.call_args.kwargs['filters'])
         mock_list_network.assert_called_once_with(names=[neutron_net_id])
+
+    @mock.patch('zun.objects.ZunNetwork.create')
+    @mock.patch('zun.objects.ZunNetwork.save')
+    @mock.patch('zun.objects.ZunNetwork.list')
+    @mock.patch('zun.network.neutron.NeutronAPI')
+    def test_create_network_recovers_a_row_left_by_another_project(
+            self, mock_neutron_api_cls, mock_list, mock_save, mock_create):
+        """A row another tenant left behind still has to be recoverable.
+
+        The docker network on a node is one object, shared by whoever
+        lands there, and the unique constraint that blocks a second
+        create is on neutron_net_id and host -- no project narrows it.
+        Read as the tenant, a row created by a different project is
+        invisible, the recovery never runs, and that row blocks this
+        network on this node for good.
+        """
+        fake_host = 'host1'
+        conf.CONF.set_override('host', fake_host)
+        mock_neutron_api_cls.return_value = self.network_driver.neutron_api
+        neutron_net_id = 'fake-net-id'
+        left_behind = mock.Mock(uuid='row-1', network_id='gone-from-docker',
+                                created_at=None)
+        left_behind.project_id = 'some-other-project'
+        mock_list.return_value = [left_behind]
+        mock_create.side_effect = exception.NetworkAlreadyExists(
+            field='neutron_net_id', value=neutron_net_id)
+
+        with mock.patch.object(self.network_driver.docker, 'networks',
+                               return_value=[]):
+            with mock.patch.object(kuryr_network.KuryrNetwork, '_is_stale',
+                                   return_value=True):
+                self.assertRaises(exception.ZunException,
+                                  self.network_driver.create_network,
+                                  neutron_net_id)
+
+        left_behind.destroy.assert_called_with()
 
     def test_remove_network(self):
         network = mock.Mock(name='c02afe4e-8350-4263-8078')
