@@ -214,6 +214,20 @@ class TestManager(base.TestCase):
         self.assertEqual("Creation Failed", container.status_reason)
         self.assertIsNone(container.task_state)
 
+    @mock.patch.object(Container, 'save')
+    def test_fail_container_auto_remove(self, mock_save):
+        """--rm means no record survives a failure the tenant already saw."""
+        container = Container(self.context, **utils.get_test_container())
+        container.auto_remove = True
+        self.compute_manager._fail_container(self.context, container,
+                                             "Creation Failed",
+                                             unset_host=True)
+        self.assertEqual(consts.DELETED, container.status)
+        self.assertEqual("Creation Failed", container.status_reason)
+        # Kept despite unset_host: delete_unused_containers collects by
+        # host, and a row with none is never collected by anyone.
+        self.assertIsNotNone(container.host)
+
     @mock.patch.object(ContainerActionEvent, 'event_start')
     @mock.patch.object(ContainerActionEvent, 'event_finish')
     @mock.patch.object(Container, 'save')

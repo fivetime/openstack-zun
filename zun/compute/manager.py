@@ -289,6 +289,25 @@ class Manager(periodic_task.PeriodicTasks):
         except Exception as e:
             LOG.exception("Failed to detach volumes: %s", str(e))
 
+        if container.auto_remove:
+            # docker removes an auto-remove container that failed to
+            # start, and the tenant has already read the error from the
+            # call that failed. Left as ERROR instead, every failed
+            # `docker run --rm` leaves a record behind: enough of them
+            # exhaust the project's quota, and the tenant is then told
+            # about the quota -- two steps away from what actually went
+            # wrong. Marked DELETED, the record is collected by
+            # delete_unused_containers, which looks for this host's
+            # rows -- so the host is kept even when the caller asked
+            # for it to be unset.
+            LOG.info('Marking failed auto-remove container %(uuid)s '
+                     'DELETED: %(error)s',
+                     {'uuid': container.uuid, 'error': error})
+            container.status = consts.DELETED
+            container.status_reason = error
+            container.save(context)
+            return
+
         container.status = consts.ERROR
         container.status_reason = error
         if unset_host:
