@@ -22,6 +22,8 @@ registry are not sent again, which for a commit is most of them -- the
 image was pulled from there in the first place.
 """
 
+import re
+
 import requests
 
 from oslo_log import log as logging
@@ -32,6 +34,20 @@ from zun.common.i18n import _
 LOG = logging.getLogger(__name__)
 
 _CHUNK = 4 * 1024 * 1024
+
+
+#: A challenge is comma-separated, and so is the value of its scope --
+#: `scope="repository:x/y:pull,push"`. Splitting the whole line on commas
+#: cuts that in half: the token is then asked for pull alone, and the
+#: push it was wanted for is refused as 403, which reads like a
+#: credential without permission rather than a request that asked for
+#: less than it needed.
+_FIELD = re.compile(r'(\w+)="([^"]*)"')
+
+
+def _challenge_fields(challenge):
+    """The key="value" pairs of an auth challenge, commas and all."""
+    return dict(_FIELD.findall(challenge))
 
 
 class Registry(object):
@@ -65,10 +81,7 @@ class Registry(object):
         challenge = response.headers.get('WWW-Authenticate', '')
         if not challenge.lower().startswith('bearer '):
             return False
-        fields = {}
-        for part in challenge[len('bearer '):].split(','):
-            key, _sep, value = part.strip().partition('=')
-            fields[key.strip()] = value.strip().strip('"')
+        fields = _challenge_fields(challenge[len('bearer '):])
         realm = fields.pop('realm', None)
         if not realm:
             return False
