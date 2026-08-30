@@ -16,6 +16,7 @@ import os
 import time
 
 import grpc
+import posixpath
 import shlex
 import signal
 from oslo_log import log as logging
@@ -33,6 +34,7 @@ import zun.conf
 from zun.container import driver
 from zun.container import orphan
 from zun.container.cri import resources as cri_resources
+from zun.container.cri import stream
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
 from zun.criapi import snapshots_pb2
@@ -863,6 +865,28 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             return self._create_streaming_exec(container, command)
         return container.container_id
 
+    def _streaming_exec_url(self, container, command, stdin=True, tty=True):
+        """A URL on the runtime's streaming server for one exec.
+
+        Split out of the interactive path because `docker cp` needs the
+        same thing for a different reason: a tar has to go in on stdin,
+        and the synchronous exec has none.
+        """
+        response = self.runtime_stub.Exec(api_pb2.ExecRequest(
+            container_id=container.container_id,
+            cmd=self._as_argv(command),
+            tty=tty,
+            stdin=stdin,
+            stdout=True,
+            # A tty merges stderr into stdout; asking for both is refused
+            # by the runtime.
+            stderr=not tty,
+        ))
+        if not response.url:
+            raise exception.ZunException(_(
+                'the runtime returned no streaming url for an exec'))
+        return response.url
+
     def _create_streaming_exec(self, container, command):
         """Ask the runtime for a URL an interactive session can attach to.
 
@@ -882,20 +906,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         port -- so it is only useful to something running here. That is the
         whole reason the proxy exists.
         """
-        response = self.runtime_stub.Exec(api_pb2.ExecRequest(
-            container_id=container.container_id,
-            cmd=self._as_argv(command),
-            tty=True,
-            stdin=True,
-            stdout=True,
-            stderr=False,  # A tty merges stderr into stdout; asking for both
-                           # is refused by the runtime.
-        ))
-        if not response.url:
-            raise exception.ZunException(_(
-                'the runtime returned no streaming url for an interactive '
-                'exec'))
-        return response.url
+        return self._streaming_exec_url(container, command,
+                                        stdin=True, tty=True)
 
     def exec_stream_url(self, exec_id):
         """Where an interactive session made by execute_create is served.
@@ -1548,6 +1560,125 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                         {'uuid': container.uuid,
                          'new': container.container_id, 'old': dead})
             container.status_reason = self.REBUILT_REASON
+
+    # --- security groups -------------------------------------------------
+    #
+    # A container's security groups live on its neutron ports, not in the
+    # runtime: the CRI has no notion of them and never sees one. The docker
+    # driver reaches them through kuryr, which is the thing that owns its
+    # ports; this driver made its ports itself, so it edits them itself.
+
+    def _ports_of(self, container):
+        """Every neutron port this container was given."""
+        ports = set()
+        for addresses in (container.addresses or {}).values():
+            for address in addresses:
+                if address.get('port'):
+                    ports.add(address['port'])
+        return ports
+
+    def _change_security_groups(self, context, container, security_group,
+                                add):
+        wanted = self._ports_of(container)
+        if not wanted:
+            raise exception.ZunException(_(
+                'Container %s has no port to carry a security group')
+                % container.uuid)
+        group_ids = utils.get_security_group_ids(context, [security_group])
+        neutron_api = neutron.NeutronAPI(context)
+        for port_id in wanted:
+            port = neutron_api.get_neutron_port(port_id)
+            groups = list(port.get('security_groups') or [])
+            for group_id in group_ids:
+                if add:
+                    if group_id not in groups:
+                        groups.append(group_id)
+                elif group_id in groups:
+                    groups.remove(group_id)
+            LOG.info('%(verb)s security group %(group)s %(prep)s port '
+                     '%(port)s of container %(container)s',
+                     {'verb': 'Adding' if add else 'Removing',
+                      'group': group_ids, 'prep': 'to' if add else 'from',
+                      'port': port_id, 'container': container.uuid})
+            neutron_api.update_port(port_id, {'port': {
+                'security_groups': groups}}, admin=True)
+
+    def add_security_group(self, context, container, security_group):
+        self._change_security_groups(context, container, security_group,
+                                     add=True)
+
+    def remove_security_group(self, context, container, security_group):
+        self._change_security_groups(context, container, security_group,
+                                     add=False)
+
+    # --- docker cp -------------------------------------------------------
+    #
+    # The CRI has no copy call, and on this driver there is no host path to
+    # write instead: a kata container's filesystem is inside the virtual
+    # machine, reachable only by running something in it. So both
+    # directions go through an exec running tar, which is what the guest
+    # already has.
+
+    @staticmethod
+    def _split_path(path):
+        """A path as tar wants it: the directory to work in, and what in it."""
+        cleaned = posixpath.normpath(path.rstrip('/') or '/')
+        if cleaned == '/':
+            return '/', '.'
+        return posixpath.dirname(cleaned) or '/', posixpath.basename(cleaned)
+
+    def get_archive(self, context, container, path):
+        """`docker cp` reading, as a tar stream plus what docker calls stat.
+
+        Bounded by what one synchronous exec can hand back in a single
+        reply, which is a limit docker's own copy does not have. Said as
+        a refusal when it is hit rather than returning a truncated
+        archive: half a tar restores as a corrupt tree.
+        """
+        directory, name = self._split_path(path)
+        stat = self._stat_in_container(container, path)
+        exit_code, out, err = self._exec_in_container(
+            container.container_id,
+            ['tar', '-cf', '-', '-C', directory, name],
+            CONF.cri_archive_timeout)
+        if exit_code != 0:
+            raise exception.Invalid(_('Could not read %(path)s: %(err)s')
+                                    % {'path': path,
+                                       'err': (err or out or b'').decode(
+                                           'utf-8', 'replace').strip()[:200]})
+        return out, stat
+
+    def _stat_in_container(self, container, path):
+        """docker's stat for a path, read with the tools the image has."""
+        exit_code, out, _err = self._exec_in_container(
+            container.container_id,
+            ['sh', '-c',
+             "stat -c '%s|%f|%Y|%N' " + shlex.quote(path)],
+            CONF.cri_exec_timeout)
+        if exit_code != 0:
+            raise exception.Invalid(_('No such file or directory: %s') % path)
+        fields = out.decode('utf-8', 'replace').strip().split('|')
+        size, mode, mtime = fields[0], fields[1], fields[2]
+        link = ''
+        if len(fields) > 3 and '->' in fields[3]:
+            link = fields[3].split('->', 1)[1].strip().strip("'")
+        return {'name': posixpath.basename(path.rstrip('/')) or '/',
+                'size': int(size),
+                'mode': int(mode, 16),
+                'mtime': mtime,
+                'linkTarget': link}
+
+    def put_archive(self, context, container, path, data):
+        """`docker cp` writing.
+
+        Needs a stream: the tar goes in on stdin, and the synchronous
+        exec has no stdin at all. So this opens the interactive one --
+        the same streaming server an `exec -it` uses -- and writes the
+        archive onto its stdin channel.
+        """
+        url = self._streaming_exec_url(
+            container, ['tar', '-xf', '-', '-C', path], stdin=True)
+        stream.write_stdin(url, data, CONF.cri_archive_timeout)
 
     def _upperdir_of(self, snapshot_key):
         """The host directory holding a snapshot's writable layer.

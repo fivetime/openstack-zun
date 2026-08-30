@@ -133,6 +133,13 @@ Interdependencies to other options:
                     '[DEFAULT] rpc_response_timeout: a command that outlives '
                     'that never sends a reply, so the caller sees a server '
                     'error instead of the timeout that actually happened.'),
+    cfg.IntOpt('cri_archive_timeout',
+               default=120,
+               help='Seconds a `docker cp` into or out of a container may '
+                    'take. Longer than an ordinary exec because it moves '
+                    'a file rather than answering a question, and the '
+                    'archive travels through the runtime rather than past '
+                    'it.'),
     cfg.StrOpt('cri_snapshotter',
                default='overlayfs',
                help='Name of the containerd snapshotter the CRI is '
