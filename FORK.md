@@ -239,6 +239,36 @@ ContainerDriver 缺的 30 个方法大多是**薄适配**,不是新实现。
    症状是 **compute 心跳停了、调度器把整台机器判成 down**,而报错只说"主机没上线"。
    现在 commit/push 整体在子进程里跑(参数走 stdin,免得 registry 密码出现在 `ps` 里)。
 
+#### 4.3.1b 方法缺口的最终账目(2026-08-30)
+
+补齐后,**DockerDriver 有而 CriDriver 没有的只剩 4 个,且基类默认值都是对的**:
+`get_available_nodes`(=本机)、`get_total_disk_for_container`(psutil 读 `/`)、
+`get_host_default_base_size`(None)、`node_support_disk_quota`(False,见下)。
+
+**本轮补的:**
+- 🔴 **`sample_counters`** —— 之前落基类返回 `{}`,**计量链路对 CRI 容器一个数都拿不到**,
+  而且不报错。这是最危险的一类:计费照跑、报告为空、没有任何东西说话。
+  现用 `ListContainerStats` + `ListPodSandboxStats` **两次调用覆盖整台机**
+  (网络只在 sandbox 级有,容器级消息根本没有网络字段)。
+  实测:CPU 92.7 ms / 内存 962 KB / eth0 rx 746 · tx 2564。
+  ⚠️ 两个字段**故意留空而不是编**:`system_ns`(CRI 只报容器烧了多少,没有全机口径)、
+  `pids`(CRI 的容器统计里没有)。空表示"没有",除以一个编出来的数比没有更糟。
+- `delete_image` —— 交给运行时;还被容器占用的镜像由运行时拒绝,不在这里另立规矩。
+- **五个没有对应物的路径改为诚实拒绝**(原先落基类 `NotImplementedError` → 租户看到 500):
+  `create_image`/`upload_image_data`/`delete_committed_image`(commit 到 glance 那条路,
+  指路"提交到带 registry 的名字")、`create_network`/`delete_network`
+  (CNI 在 sandbox 启动时给接口,这里没有可预先创建的东西,指路 neutron)。
+
+**🔴 `node_support_disk_quota` 保持 False,这是结构性的不是没做:**
+containerd 的 **overlayfs 快照器完全没有配额能力**(只有 `upperdir` 标签;只有 devmapper
+的 thin device 有大小)。而且测试床 `/var/lib/containerd` 在 ext4 上、无 `prjquota` 挂载选项。
+zun 现有行为已经诚实:传了 `disk` 就明确拒绝、没传就忽略默认值。
+⚠️ **对 DaaS 无影响** —— DaaS 的 `_LIMITS` 只映射 `PidsLimit`/`BlkioWeight`,从不发 `disk`。
+
+**结论:就 DaaS 网关这条路而言,CriDriver 已无已知功能缺口**(run/exec/logs/cp/commit+push/
+安全组/计量/可写层计费/stop-start 保层全部实测通过);剩余差异都在 zun 原生 API 上,
+且都已从 500 改成能读懂的拒绝。
+
 #### 几处语义不等价(不是实现细节)
 
 - **pause 不释放任何东西**。链路:shim `Pause` → `Sandbox.PauseContainer` → agent
