@@ -346,6 +346,12 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             metadata=api_pb2.PodSandboxMetadata(
                 name=capsule.uuid, namespace="default", uid=capsule.uuid
             ),
+            # The name the workload calls itself by, which is not the name
+            # anything else calls it: a container that asked for one and got
+            # the runtime's generated id instead has no error to go on, and
+            # whatever it registers itself as is wrong. Left empty when
+            # nothing asked, which is what makes the runtime generate one.
+            hostname=getattr(capsule, 'hostname', None) or '',
             # Without a log directory the runtime discards a container's output
             # entirely: there is no stream to attach to after the fact and
             # nothing on disk, so the logs API has nothing to serve.
@@ -524,11 +530,17 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         if attempt is None:
             attempt = _restart_count(container)
 
-        # TODO(hongbin): add support for entrypoint
+        # `command` is the entrypoint and `args` are its arguments -- the
+        # same split docker has, under different names. Leaving `command`
+        # empty is what makes the runtime use the image's own entrypoint,
+        # so an override reaches here only when one was asked for.
+        entrypoint = [str(part) for part in (container.entrypoint or [])]
+
         return api_pb2.ContainerConfig(
             metadata=api_pb2.ContainerMetadata(name=container.name,
                                                attempt=attempt),
             image=api_pb2.ImageSpec(image=container.image),
+            command=entrypoint,
             tty=container.tty,
             stdin=container.interactive,
             args=args,
