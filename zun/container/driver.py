@@ -223,6 +223,18 @@ class BaseDriver(object):
     def node_support_disk_quota(self):
         return False
 
+    def unenforceable_limits(self, container):
+        """The limits this node was asked for and cannot apply.
+
+        Returns a list of (field, docker option) pairs. A driver that can
+        apply everything it is given returns nothing, which is the default:
+        the alternative -- a limit accepted and never applied -- is a
+        container that believes it is bounded and is not, and for a limit
+        whose whole job is to bound a fault (a fork bomb, a noisy disk)
+        that belief is the dangerous part.
+        """
+        return []
+
     def get_host_default_base_size(self):
         return None
 

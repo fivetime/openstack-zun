@@ -23,8 +23,8 @@ has.
 _CPU_PERIOD_US = 100000
 
 
-def linux_resources(cpu, memory_mb):
-    """Translate a container's cpu/memory into the CRI resource block.
+def linux_resources(cpu, memory_mb, swap_mb=None):
+    """Translate a container's cpu/memory/swap into the CRI resource block.
 
     Mirrors what the kubelet itself sends
     (pkg/kubelet/kuberuntime/kuberuntime_container_linux.go), because the
@@ -36,9 +36,12 @@ def linux_resources(cpu, memory_mb):
       host a container with `limits.cpu: 1` runs on every core. Adding
       cpu_quota over a fixed period turns the number back into the ceiling
       the spec promised.
-    - memory_swap_limit_in_bytes equal to the memory limit is the kubelet's
-      default (swap off), so a memory ceiling cannot be quietly widened by
-      the runtime's swap default.
+    - memory_swap_limit_in_bytes is the memory limit *plus* the swap asked
+      for, which is how both docker and the CRI count it -- the field is a
+      total, not the swap on its own. A container that asked for none gets
+      the kubelet's default of limit == memory, which is swap off, so a
+      memory ceiling cannot be quietly widened by the runtime's swap
+      default.
 
     ⚠️ Zero means "not set", and the kubelet's convention is honoured: no
     cpu limit sends no quota (unlimited), not quota=0 (which the kernel
@@ -59,7 +62,15 @@ def linux_resources(cpu, memory_mb):
     if memory_mb > 0:
         limit = int(memory_mb) * 1024 * 1024
         resources['memory_limit_in_bytes'] = limit
-        resources['memory_swap_limit_in_bytes'] = limit
+        # -1 is "unlimited" in both systems and is passed through as it is;
+        # anything else is added to the memory limit, because the field is
+        # the total of the two.
+        swap = _number(swap_mb)
+        if swap < 0:
+            resources['memory_swap_limit_in_bytes'] = -1
+        else:
+            resources['memory_swap_limit_in_bytes'] = (
+                limit + int(swap) * 1024 * 1024)
     return resources
 
 

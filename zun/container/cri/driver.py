@@ -555,7 +555,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
         linux_config = api_pb2.LinuxContainerConfig(
             security_context=_linux_security_context(container),
-            resources=cri_resources.linux_resources(container.cpu, container.memory),
+            resources=cri_resources.linux_resources(
+                container.cpu, container.memory, container.swap),
         )
 
         # The attempt number is what distinguishes one incarnation of a
@@ -881,6 +882,28 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # one runtime this host is configured to use, which is the only one
         # anything could ask it for anyway.
         return [CONF.container_runtime] if CONF.container_runtime else []
+
+    #: What a container can ask for that this driver cannot apply, and the
+    #: docker option each one comes from. The runtime interface has no field
+    #: for any of them: LinuxContainerResources carries cpu, memory and swap
+    #: and nothing else, and containerd never sets the OCI Pids block from
+    #: the CRI. The one escape hatch -- the `unified` map, which containerd
+    #: does copy into the OCI spec -- is not read by the kata agent's cgroup
+    #: manager, so on a VM runtime it would be another silent drop rather
+    #: than a way out. Fixing it properly means a field in the CRI itself.
+    UNENFORCEABLE_LIMITS = (
+        ('pids_limit', '--pids-limit'),
+        ('blkio_weight', '--blkio-weight'),
+        ('device_read_bps', '--device-read-bps'),
+        ('device_write_bps', '--device-write-bps'),
+        ('device_read_iops', '--device-read-iops'),
+        ('device_write_iops', '--device-write-iops'),
+    )
+
+    def unenforceable_limits(self, container):
+        """Which of the limits asked for this driver would have dropped."""
+        return [(field, option) for field, option in self.UNENFORCEABLE_LIMITS
+                if getattr(container, field, None)]
 
     def node_support_disk_quota(self):
         """Whether this node can hold a container to the disk it asked for.
@@ -2194,7 +2217,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # reset cpu to zero -- unlimited -- on the way past.
         resources = cri_resources.linux_resources(
             patch.get('cpu', container.cpu),
-            patch.get('memory', container.memory))
+            patch.get('memory', container.memory),
+            container.swap)
         self.runtime_stub.UpdateContainerResources(
             api_pb2.UpdateContainerResourcesRequest(
                 container_id=container.container_id,

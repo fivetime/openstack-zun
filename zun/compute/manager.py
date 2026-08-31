@@ -396,6 +396,17 @@ class Manager(periodic_task.PeriodicTasks):
                     self._fail_container(context, container,
                                          msg, unset_host=True)
                     raise exception.Invalid(msg)
+        unenforceable = driver.unenforceable_limits(container)
+        if unenforceable:
+            # Said here rather than in the driver so the caller is still
+            # listening: past this point the create is a cast and a refusal
+            # only reaches a log.
+            msg = _('This host cannot apply %(options)s, so the container '
+                    'was not created rather than started without them.') % {
+                'options': ', '.join(option for _field, option
+                                     in unenforceable)}
+            self._fail_container(context, container, msg, unset_host=True)
+            raise exception.Invalid(msg)
         # NOTE(kiennt): Only raise Exception when user passes disk size and
         #               the disk quota feature isn't supported in host.
         if not driver.node_support_disk_quota():
