@@ -157,14 +157,17 @@ Interdependencies to other options:
                     'so are the services behind it that a commit needs, so '
                     'one address covers both.'),
     cfg.StrOpt('cri_snapshotter',
-               default='overlayfs',
-               help='Name of the containerd snapshotter the CRI is '
-                    'configured with. Restarting an exited container '
-                    'carries its writable layer into the replacement by '
-                    'asking this snapshotter where the layer lives; the '
-                    'name must match [plugins.cri.containerd] snapshotter '
-                    'on the node or the lookup finds nothing and a restart '
-                    'falls back to a fresh container from the image.'),
+               default='',
+               help='Name of the containerd snapshotter the CRI prepares '
+                    'this node\'s containers with. Restarting an exited '
+                    'container carries its writable layer into the '
+                    'replacement by asking this snapshotter where the layer '
+                    'lives, so a name that does not match the node makes a '
+                    'restart fall back to a fresh container from the image. '
+                    'Left empty -- the default -- the runtime is asked '
+                    'instead, which cannot drift the way a second copy of '
+                    'the setting can; set it only to override what the '
+                    'runtime reports.'),
     cfg.StrOpt('cri_log_root',
                default='/var/log/zun/capsules',
                help='Directory the runtime writes capsule container logs to. '

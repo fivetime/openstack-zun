@@ -890,6 +890,19 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                             else 'not supported')})
         return self._snapshotter
 
+    def _snapshotter_name(self):
+        """The snapshotter to address containerd's snapshot service with.
+
+        The runtime's own answer by default: a second copy of the setting in
+        zun.conf drifts the day an operator edits containerd and not zun, and
+        the failure is silent -- the snapshot lookup finds nothing and a
+        restart quietly rebuilds the container from its image. An explicit
+        cri_snapshotter still wins, for a node whose runtime cannot be asked.
+        """
+        if CONF.cri_snapshotter:
+            return CONF.cri_snapshotter
+        return self._runtime_snapshotter() or 'overlayfs'
+
     def _snapshot_annotations(self, container):
         """The snapshot labels containerd should prepare this rootfs with.
 
@@ -1688,7 +1701,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     def _run_commit_cli(self, request):
         request.setdefault('address', CONF.cri_containerd_address)
         request.setdefault('namespace', self._CTRD_NS[0][1])
-        request.setdefault('snapshotter', CONF.cri_snapshotter)
+        request.setdefault('snapshotter', self._snapshotter_name())
         out, err = utils.execute(sys.executable, '-m', self._CLI,
                                  process_input=json.dumps(request),
                                  timeout=CONF.cri_push_timeout)
@@ -1920,7 +1933,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         """
         response = self.snapshot_stub.Mounts(
             snapshots_pb2.MountsRequest(
-                snapshotter=CONF.cri_snapshotter, key=snapshot_key),
+                snapshotter=self._snapshotter_name(),
+                key=snapshot_key),
             metadata=self._CTRD_NS)
         for mount in response.mounts:
             for option in mount.options:
@@ -1950,7 +1964,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 LOG.warning('No writable layer found to carry from %(old)s '
                             'to %(new)s: snapshotter %(snap)s reported no '
                             'upperdir', {'old': dead, 'new': replacement,
-                                         'snap': CONF.cri_snapshotter})
+                                         'snap':
+                                         self._snapshotter_name()})
                 return False
             utils.execute('cp', '-a', source + '/.', target)
             return True
