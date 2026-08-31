@@ -26,6 +26,7 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import fileutils
 from oslo_utils import timeutils
+from oslo_utils import units
 from oslo_utils import uuidutils
 import tenacity
 
@@ -70,6 +71,20 @@ DNS_SEARCHES_ANNOTATION = 'knaas.io/dns-searches'
 # only one that answers with the names their manifests use, and it is not the
 # subnet-wide one.
 DNS_SERVERS_ANNOTATION = 'knaas.io/dns-nameservers'
+
+# MAX_SIZE_LABEL is the snapshot label containerd honours for the size of a
+# container's writable layer. It travels as a container annotation: CRI has no
+# field for it on Linux -- rootfs_size_in_bytes exists only on
+# WindowsContainerResources -- and containerd inherits the
+# "containerd.io/snapshot/" annotations onto the snapshot it prepares.
+MAX_SIZE_LABEL = 'containerd.io/snapshot/max-size'
+
+# QUOTA_SNAPSHOTTERS are the snapshotters that implement MAX_SIZE_LABEL. Only
+# erofs does today, and it does so by allocating a fixed-size filesystem image
+# for the layer, so the limit is enforced by the kernel rather than accounted
+# after the fact. overlayfs has no size mechanism at all, and devmapper sizes
+# every device from one node-wide setting, which is not a per-container quota.
+QUOTA_SNAPSHOTTERS = frozenset(['erofs'])
 
 def _security_context(container):
     """The securityContext this container was created with.
@@ -243,6 +258,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         super(CriDriver, self).__init__()
         channel = grpc.insecure_channel(CONF.cri_containerd_address)
         self.runtime_stub = api_pb2_grpc.RuntimeServiceStub(channel)
+        # Filled on first use by _runtime_snapshotter().
+        self._snapshotter = None
         self.image_stub = api_pb2_grpc.ImageServiceStub(channel)
         # containerd's own task service, on the same socket. The CRI is a view
         # of containerd, not the whole of it: pausing a task and sending it a
@@ -517,6 +534,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             mounts=mounts,
             linux=linux_config,
             log_path=self._log_path(container),
+            annotations=self._snapshot_annotations(container),
         )
 
     def show_logs(self, context, container, stdout=True, stderr=True,
@@ -812,6 +830,85 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # one runtime this host is configured to use, which is the only one
         # anything could ask it for anyway.
         return [CONF.container_runtime] if CONF.container_runtime else []
+
+    def node_support_disk_quota(self):
+        """Whether this node can hold a container to the disk it asked for.
+
+        True only when the snapshotter behind this node's runtime handler
+        implements MAX_SIZE_LABEL. Anything else -- overlayfs, devmapper, a
+        handler falling through to containerd's default -- reads as no quota,
+        which makes the compute manager refuse a container that asks for one.
+        Refusing is the point: a `disk` that is accepted and then not applied
+        is worse than one that is turned down, because nothing says so.
+        """
+        return self._runtime_snapshotter() in QUOTA_SNAPSHOTTERS
+
+    def _runtime_snapshotter(self):
+        """The snapshotter containerd prepares this node's rootfs with.
+
+        The snapshotter is set per runtime handler, not per node -- containerd
+        ships `kata-fc` on devmapper beside handlers left on overlayfs -- so
+        the question only has an answer once you name the handler, and the
+        handler is the one zun is configured to ask for.
+
+        CRI Status carries the runtime's own config, which is where this is
+        written down; reading it there rather than from zun.conf is the same
+        choice _available_runtimes() makes, for the same reason. A handler with
+        no snapshotter of its own falls through to a default that Status does
+        not report, and that reads as unknown, which is treated as no quota.
+
+        Read once: it cannot change without restarting containerd, and this is
+        asked on every container create.
+        """
+        if self._snapshotter is not None:
+            return self._snapshotter
+        self._snapshotter = ''
+        try:
+            resp = self.runtime_stub.Status(
+                api_pb2.StatusRequest(verbose=True))
+        except grpc.RpcError as e:
+            LOG.warning('Could not read the runtime config, so this node '
+                        'reports no disk quota support: %s', e)
+            return self._snapshotter
+        try:
+            config = json.loads(resp.info.get('config', '{}'))
+            runtimes = config['containerd']['runtimes']
+            self._snapshotter = (
+                runtimes[CONF.container_runtime].get('snapshotter') or '')
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            LOG.warning('Could not find the snapshotter for runtime '
+                        '%(runtime)s, so this node reports no disk quota '
+                        'support: %(err)s',
+                        {'runtime': CONF.container_runtime, 'err': e})
+            return self._snapshotter
+        LOG.info('Runtime %(runtime)s uses the %(snapshotter)s snapshotter; '
+                 'per-container disk quota is %(state)s.',
+                 {'runtime': CONF.container_runtime,
+                  'snapshotter': self._snapshotter or '(default)',
+                  'state': ('supported'
+                            if self._snapshotter in QUOTA_SNAPSHOTTERS
+                            else 'not supported')})
+        return self._snapshotter
+
+    def _snapshot_annotations(self, container):
+        """The snapshot labels containerd should prepare this rootfs with.
+
+        `disk` is in GiB and the label is in bytes. A container that asked for
+        nothing gets no label, and so gets whatever default the snapshotter is
+        configured with -- an explicit 0 would read as "no limit" instead.
+        """
+        if not getattr(container, 'disk', None):
+            return {}
+        if not self.node_support_disk_quota():
+            # Reached only if something set `disk` past the compute manager's
+            # check. Emitting a label the snapshotter ignores would be the
+            # silent drop this driver is trying not to do.
+            LOG.warning('Container %(uuid)s asks for %(disk)dG of disk on a '
+                        'node whose snapshotter cannot enforce it; no quota '
+                        'will be applied.',
+                        {'uuid': container.uuid, 'disk': container.disk})
+            return {}
+        return {MAX_SIZE_LABEL: str(int(container.disk) * units.Gi)}
 
     def _record_start(self, container):
         """Read when this run of the container started, from the runtime.
