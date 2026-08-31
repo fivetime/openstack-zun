@@ -1,0 +1,19 @@
+---
+features:
+  - |
+    Add ``user`` to the container: which user its process runs as, in the
+    shapes docker accepts (``uid``, ``uid:gid``, ``name``, ``name:group``).
+    Left unset the image's own ``USER`` still decides. New in microversion
+    1.50.
+upgrade:
+  - |
+    This release adds a column to the ``container`` table. Run
+    ``zun-db-manage upgrade`` **before** starting the new code: the new
+    model selects the column, so a service started against the old schema
+    fails at startup.
+issues:
+  - |
+    On a host using the CRI driver a group given by name -- ``nobody:nogroup``
+    -- is refused, because the runtime interface has no field for a group
+    name and applying it would mean dropping the group silently. Give the
+    group by number there.

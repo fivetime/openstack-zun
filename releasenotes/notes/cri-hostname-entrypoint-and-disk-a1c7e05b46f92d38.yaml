@@ -1,0 +1,23 @@
+---
+fixes:
+  - |
+    The CRI driver now applies the container's ``hostname`` and
+    ``entrypoint``. Both reached the API and were dropped by this driver
+    while the docker driver applied them, so the same request was answered
+    differently depending on which driver ran it, and both answers were
+    reported as success.
+features:
+  - |
+    The CRI driver can hold a container to the disk it asked for, where the
+    runtime's snapshotter can enforce one. Support is reported by asking the
+    runtime which snapshotter it prepares this node's containers with, so it
+    cannot drift from the runtime's own configuration; only the erofs
+    snapshotter implements it today, and anything else continues to refuse a
+    container that asks for a disk. Requires a containerd that passes the
+    container's annotations onto its snapshot.
+upgrade:
+  - |
+    ``[container_driver] cri_snapshotter`` now defaults to empty, which means
+    "ask the runtime". Set it only to override what the runtime reports; a
+    value that does not match the node makes restarting a container fall back
+    to rebuilding it from its image.

@@ -305,13 +305,74 @@ gVisor 16.2–16.6 s vs kata 18.3–19.4 s(同一条 zun 路径、各 3 次)。
   CRI 仍不能重启已退出的容器,替身照旧在原沙箱里重建 —— 但在 create 与 start 之间,
   新旧两个可写层同时以同一条 overlay 链的 upperdir 形式存在于宿主机上,把旧的
   `cp -a` 进新的(连 whiteout 一起),语义即与 docker 的 stop/start 等价。kata 不改变
-  这一点:guest 经 virtiofs 写的就是宿主机这个目录。upperdir 的位置问 snapshot 服务
+  这一点:guest 经 virtiofs 写的就是宿主机这个目录。可写层的位置问 snapshot 服务
   (`snapshots.proto`,与 tasks.proto 同一种最小声明、同一个 socket、同一个
-  `containerd-namespace: k8s.io` 头;snapshotter 名来自 `[container_driver]
-  cri_snapshotter`,必须与节点 containerd 配置一致)。**尽力而为**:移植失败退回
+  `containerd-namespace: k8s.io` 头)。**尽力而为**:移植失败退回
   原来的"从镜像重建",`REBUILT_REASON` 只在真丢了的时候出现。
+
+  ⚠️ **2026-08-31 两处更正,都是换 erofs 时炸出来的**(见 4.3.1d):
+  ① **可写层不一定是目录**。erofs 被要求限大小时,可写层是一个**定长文件系统镜像**,
+     overlay 的 `upperdir={{ mount 0 }}/upper` 是**模板**,只有挂载活着时才被解析 ——
+     而替换容器时两个快照都没挂载,于是 `cp -a` 跑成
+     `cp -a {{ mount 0 }}/upper/. {{ mount 0 }}/upper` 失败,写的东西全丢。
+     现在按形状分支:目录照旧 `cp -a`,镜像则**整份拷贝镜像文件**
+     (containerd 的 mkfs 挂载处理器对已存在的镜像跳过格式化,所以拷过去就是全部);
+     两边形状不同、或两个镜像大小不同,则**拒绝迁移**退回重建。
+  ② **snapshotter 名不再读 `cri_snapshotter`**。那是 containerd 配置的第二份拷贝,
+     一改一不改就静默漂移(换 erofs 时正好触发)。该选项默认改空 = **问运行时**
+     (CRI `Status(verbose)` 的 `config.containerd.runtimes.<handler>.snapshotter`),
+     显式设置仍然优先。
 - **`stats` 的 CPU 必须采两次**。运行时给的是累计纳秒计数器。BLOCK/NET I/O 运行时
   不记,报 `-/-` 而不是 0——0 读起来是"空闲",不是"没人量过"。
+
+#### 4.3.1d 三个"接受了然后丢掉"的字段,和 per-container 磁盘配额(2026-08-31)
+
+**判据统一是:要么兑现,要么明说做不到 —— 不许静默丢。** 本轮四件事同源。
+
+**① rootfs 配额(erofs)。** 原判"CRI 上 per-container 配额结构性做不到"**只对发布版成立**:
+overlayfs 无任何容量机制、devmapper 只有全节点统一的 `base_image_size`,而
+**erofs 给每个活动快照建定长 ext4 镜像做可写层**、读
+`containerd.io/snapshot/max-size` 标签 —— 但该标签与 `default_size` 都**只在 containerd main**,
+生产是 v2.3.4,所以在实机上怎么找都找不到。
+
+- `node_support_disk_quota()` 不靠 operator 声明,而是读 **CRI `Status(verbose)`** 里
+  `config.containerd.runtimes.<handler>.snapshotter`,只有 `erofs` 算支持;
+  **未知一律算不支持**(宁可明确拒绝)。调度器链路自动通(基类 `get_available_resources`
+  本来就报 `disk_quota_supported`)。
+- `container.disk`(GiB)→ 容器注解 `containerd.io/snapshot/max-size`(字节)。
+- ⚠️ **containerd 的 CRI 层原先不把注解继承到容器快照**(沙箱快照继承,容器快照不继承),
+  已提上游 **[containerd#14070](https://github.com/containerd/containerd/pull/14070)**。
+  上游未做的原因:`rootfs_size_in_bytes` **只存在于 `WindowsContainerResources`**,
+  Linux 侧 CRI API 没有对应字段,只能走注解。
+- 实测(测试床三台,kata guest):`--disk 3` 的容器在 2.9 GB 处 `No space left on device`,
+  不指定的取 `default_disk` 在 9.7 GB 处停;宿主根盘不受影响。
+
+**② `hostname`。** DockerDriver 早已实现,**CriDriver 的 `PodSandboxConfig.hostname` 一直空着**
+(CRI proto 里有这个字段)。实测:容器要 `probe-host`,里面叫 `9f658c037160`。已设。
+
+**③ `entrypoint`。** 同上,`driver.py` 里原本只有一行 `TODO(hongbin)`。
+CRI 的 `ContainerConfig.command` 就是入口、`args` 是参数 —— 与 docker 同一个划分、
+不同的名字;**`command` 留空才是"用镜像自带的入口"**,所以只在被要求覆盖时才设。
+实测:`--entrypoint /bin/echo` 原本零输出且退出码 0。
+
+**④ `user` —— 这个字段 zun 容器 API 从来没有过**(只有 capsule 的
+`securityContext.runAsUser`,存在 healthcheck 列)。补成正式字段,**微版本 1.50**:
+
+- 按 docker 原样保存(`uid` / `uid:gid` / `name` / `name:group`)——
+  名字只有镜像能解析,在这里拆开就是替镜像做决定;
+- **DockerDriver** 透传;**CriDriver** 拆到 CRI 的三个字段
+  (`run_as_user` / `run_as_group` / `run_as_username`);
+- ⚠️ **CRI 没有 `run_as_groupname`** → **用名字给的组明确拒绝**。
+  静默丢掉会让容器进了一个它没要的组,写出的文件本该同组的人反而读不到。
+- 留空时镜像自带的 `USER` 仍然说了算;传空字符串会把它覆盖成 root,那不是"未设置"的含义。
+- 🔴 **一个新字段要改三处**:`zun` → **`python-zunclient` 的 `CREATION_ATTRIBUTES` 白名单**
+  → 调用方。漏了中间那处,请求**在客户端就被挡下、根本到不了 API**,
+  症状是 `InvalidAttribute: Key must be in name,image,...`,读起来完全像后端不支持。
+
+**⚠️ 上线顺序(踩过):加列的迁移必须先于新代码。** 反过来做,新代码启动即查不存在的列,
+`zun-compute` 崩在 `SystemExit: 1` —— 而 **pod 显示 Running、重启 0 次、
+`rollout status` 报成功**,只有"容器永远停在 Creating、没有 host"这一个症状。
+`rollout status` 成功不等于服务在工作。
 
 ### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
 
