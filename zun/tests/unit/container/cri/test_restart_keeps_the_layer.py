@@ -29,9 +29,10 @@ from zun.tests import base
 
 
 class _Mount(object):
-    def __init__(self, options):
-        self.type = 'overlay'
+    def __init__(self, options, type='overlay', source=''):
+        self.type = type
         self.options = options
+        self.source = source
 
 
 class RestartKeepsTheLayerTest(base.TestCase):
@@ -41,6 +42,8 @@ class RestartKeepsTheLayerTest(base.TestCase):
         self.driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
         self.driver.runtime_stub = mock.Mock()
         self.driver.snapshot_stub = mock.Mock()
+        # What the runtime would answer; see _runtime_snapshotter().
+        self.driver._snapshotter = 'overlayfs'
         self.container = mock.Mock(uuid='u-1', container_id='old-id')
 
     def _mounts(self, upper):
@@ -50,14 +53,44 @@ class RestartKeepsTheLayerTest(base.TestCase):
                                    'workdir=/work'])]
         return response
 
+    def _image_mounts(self, path, size):
+        """What erofs answers for a layer it was asked to bound."""
+        response = mock.Mock()
+        response.mounts = [
+            _Mount(['X-containerd.mkfs.fs=ext4',
+                    'X-containerd.mkfs.size=%d' % size, 'rw', 'loop'],
+                   type='mkfs/ext4', source=path),
+            _Mount(['lowerdir=/low', 'upperdir={{ mount 0 }}/upper',
+                    'workdir={{ mount 0 }}/work']),
+        ]
+        return response
+
     def test_the_upperdir_is_read_from_the_mount_options(self):
         self.driver.snapshot_stub.Mounts.return_value = self._mounts('/up/fs')
 
-        self.assertEqual('/up/fs', self.driver._upperdir_of('key-1'))
+        self.assertEqual(('/up/fs', None),
+                         self.driver._writable_layer_of('key-1'))
+
+    def test_an_image_is_read_from_the_mount_that_makes_it(self):
+        self.driver.snapshot_stub.Mounts.return_value = self._image_mounts(
+            '/var/lib/containerd/erofs/snapshots/4/rwlayer.img', 1073741824)
+
+        self.assertEqual(
+            ('/var/lib/containerd/erofs/snapshots/4/rwlayer.img', 1073741824),
+            self.driver._writable_layer_of('key-1'))
+
+    def test_an_unfilled_upperdir_template_is_not_a_path(self):
+        """It is only filled while the mount is live, which it is not here."""
+        response = mock.Mock()
+        response.mounts = [_Mount(['upperdir={{ mount 0 }}/upper'])]
+        self.driver.snapshot_stub.Mounts.return_value = response
+
+        self.assertEqual((None, None),
+                         self.driver._writable_layer_of('key-1'))
 
     def test_the_lookup_names_the_configured_snapshotter(self):
         self.driver.snapshot_stub.Mounts.return_value = self._mounts('/up/fs')
-        self.driver._upperdir_of('key-1')
+        self.driver._writable_layer_of('key-1')
 
         request = self.driver.snapshot_stub.Mounts.call_args.args[0]
         self.assertEqual('overlayfs', request.snapshotter)
@@ -126,7 +159,60 @@ class RestartKeepsTheLayerTest(base.TestCase):
 
     def test_a_carry_failure_is_never_a_start_failure(self):
         """Best effort means the tenant's container still comes up."""
-        with mock.patch.object(self.driver, '_upperdir_of',
+        with mock.patch.object(self.driver, '_writable_layer_of',
                                side_effect=RuntimeError('socket gone')):
             self.assertFalse(
                 self.driver._carry_writable_layer('old-id', 'new-id'))
+
+
+class CarryingAnImageLayerTest(base.TestCase):
+    """Carrying a layer that lives in a bounded filesystem image.
+
+    The image is the layer, filesystem and all, and the mount handler that
+    would make one leaves an image that already exists alone -- so putting
+    the dead container's image where the replacement's would go is the
+    whole carry, and the replacement comes up with what was written.
+    """
+
+    def setUp(self):
+        super(CarryingAnImageLayerTest, self).setUp()
+        self.driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        self.driver.snapshot_stub = mock.Mock()
+        self.driver._snapshotter = 'erofs'
+
+    def _layers(self, dead, replacement):
+        self.driver._writable_layer_of = mock.Mock(
+            side_effect=[dead, replacement])
+
+    def test_the_image_is_copied_over(self):
+        self._layers(('/snap/1/rwlayer.img', 1024), ('/snap/2/rwlayer.img',
+                                                     1024))
+
+        with mock.patch.object(cri_driver.utils, 'execute') as execute:
+            self.assertTrue(
+                self.driver._carry_writable_layer('old', 'new'))
+
+        execute.assert_called_once_with(
+            'cp', '-a', '--sparse=always',
+            '/snap/1/rwlayer.img', '/snap/2/rwlayer.img')
+
+    def test_a_layer_bound_at_another_size_is_not_carried(self):
+        """Larger would hand it past its disk, smaller would not hold it."""
+        self._layers(('/snap/1/rwlayer.img', 2048), ('/snap/2/rwlayer.img',
+                                                     1024))
+
+        with mock.patch.object(cri_driver.utils, 'execute') as execute:
+            self.assertFalse(
+                self.driver._carry_writable_layer('old', 'new'))
+
+        execute.assert_not_called()
+
+    def test_a_directory_is_not_poured_into_an_image(self):
+        """The node was reconfigured between the two incarnations."""
+        self._layers(('/up/fs', None), ('/snap/2/rwlayer.img', 1024))
+
+        with mock.patch.object(cri_driver.utils, 'execute') as execute:
+            self.assertFalse(
+                self.driver._carry_writable_layer('old', 'new'))
+
+        execute.assert_not_called()

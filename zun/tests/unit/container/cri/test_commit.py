@@ -237,7 +237,10 @@ class CommitRunsInItsOwnProcessTest(base.TestCase):
 
     def _driver(self):
         from zun.container.cri import driver as cri_driver
-        return cri_driver, cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        # What the runtime would answer; see _runtime_snapshotter().
+        driver._snapshotter = 'overlayfs'
+        return cri_driver, driver
 
     def test_commit_goes_out_to_the_helper(self):
         cri_driver, driver = self._driver()

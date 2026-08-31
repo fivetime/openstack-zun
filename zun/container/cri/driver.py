@@ -86,6 +86,10 @@ MAX_SIZE_LABEL = 'containerd.io/snapshot/max-size'
 # every device from one node-wide setting, which is not a per-container quota.
 QUOTA_SNAPSHOTTERS = frozenset(['erofs'])
 
+# _MKFS_SIZE_OPTION carries the size of a writable layer that lives in a
+# filesystem image, on the mount that makes the image.
+_MKFS_SIZE_OPTION = 'X-containerd.mkfs.size='
+
 def _security_context(container):
     """The securityContext this container was created with.
 
@@ -860,8 +864,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         Read once: it cannot change without restarting containerd, and this is
         asked on every container create.
         """
-        if self._snapshotter is not None:
-            return self._snapshotter
+        snapshotter = getattr(self, '_snapshotter', None)
+        if snapshotter is not None:
+            return snapshotter
         self._snapshotter = ''
         try:
             resp = self.runtime_stub.Status(
@@ -1924,23 +1929,50 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                                        'err': (err or out or b'').decode(
                                            'utf-8', 'replace').strip()[:200]})
 
-    def _upperdir_of(self, snapshot_key):
-        """The host directory holding a snapshot's writable layer.
+    def _writable_layer_of(self, snapshot_key):
+        """Where a snapshot's writable layer lives, and in what shape.
 
         Asked of the snapshot service rather than derived from a path
         convention: the mount options are the contract, the directory
         layout under /var/lib/containerd is not.
+
+        There are two shapes, and which one you get is the snapshotter's
+        choice:
+
+        * a *directory*, named by the overlay's upperdir= option. This is
+          overlayfs, and erofs when it was not asked to bound the layer.
+        * an *image*, a fixed-size filesystem in a file, which is how erofs
+          bounds a layer at all: the size is the file's size. The overlay
+          still names an upperdir, but inside that image and as a template
+          (`{{ mount 0 }}/upper`) that only the mount manager fills in, and
+          only while the mount is live. Neither snapshot is live when a
+          container is being replaced, so there the image is the only
+          handle that exists -- reading upperdir= would hand back the
+          template itself, which is how this was found: the copy ran as
+          `cp -a {{ mount 0 }}/upper/. {{ mount 0 }}/upper`.
+
+        Returns (path, size), size being None for a directory and the
+        bound in bytes for an image.
         """
         response = self.snapshot_stub.Mounts(
             snapshots_pb2.MountsRequest(
                 snapshotter=self._snapshotter_name(),
                 key=snapshot_key),
             metadata=self._CTRD_NS)
+        upperdir = None
         for mount in response.mounts:
+            if mount.type.startswith('mkfs/'):
+                size = None
+                for option in mount.options:
+                    if option.startswith(_MKFS_SIZE_OPTION):
+                        size = int(option[len(_MKFS_SIZE_OPTION):])
+                return mount.source, size
             for option in mount.options:
                 if option.startswith('upperdir='):
-                    return option[len('upperdir='):]
-        return None
+                    upperdir = option[len('upperdir='):]
+        if upperdir and not upperdir.startswith('{{'):
+            return upperdir, None
+        return None, None
 
     def _carry_writable_layer(self, dead, replacement):
         """Copy what a dead incarnation wrote into its replacement.
@@ -1958,16 +1990,39 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         caller uses the return value to say which of the two happened.
         """
         try:
-            source = self._upperdir_of(dead)
-            target = self._upperdir_of(replacement)
+            source, source_size = self._writable_layer_of(dead)
+            target, target_size = self._writable_layer_of(replacement)
             if not source or not target:
                 LOG.warning('No writable layer found to carry from %(old)s '
-                            'to %(new)s: snapshotter %(snap)s reported no '
-                            'upperdir', {'old': dead, 'new': replacement,
-                                         'snap':
-                                         self._snapshotter_name()})
+                            'to %(new)s: snapshotter %(snap)s named neither '
+                            'a directory nor an image',
+                            {'old': dead, 'new': replacement,
+                             'snap': self._snapshotter_name()})
                 return False
-            utils.execute('cp', '-a', source + '/.', target)
+            if (source_size is None) != (target_size is None):
+                LOG.warning('Not carrying the writable layer from %(old)s to '
+                            '%(new)s: one is a directory and the other an '
+                            'image, so the node was reconfigured between the '
+                            'two', {'old': dead, 'new': replacement})
+                return False
+            if source_size is None:
+                utils.execute('cp', '-a', source + '/.', target)
+                return True
+            if source_size != target_size:
+                # A layer bound at one size cannot be poured into another:
+                # larger would hand the container past the disk it was
+                # granted, smaller would not hold what it already wrote.
+                LOG.warning('Not carrying the writable layer from %(old)s to '
+                            '%(new)s: it is bound at %(old_size)d bytes and '
+                            'the replacement at %(new_size)d',
+                            {'old': dead, 'new': replacement,
+                             'old_size': source_size,
+                             'new_size': target_size})
+                return False
+            # The image *is* the layer, filesystem and all, and the mount
+            # handler that would have made one leaves an image that already
+            # exists alone -- so copying it over is the whole carry.
+            utils.execute('cp', '-a', '--sparse=always', source, target)
             return True
         except Exception as e:
             LOG.warning('Could not carry the writable layer of %(old)s '
