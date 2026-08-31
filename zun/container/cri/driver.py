@@ -105,6 +105,38 @@ def _security_context(container):
     return (container.healthcheck or {}).get('k8s_security_context') or {}
 
 
+def _apply_user(container, kwargs):
+    """Translate the container's `user` onto the CRI's three fields.
+
+    docker writes one string in four shapes -- `uid`, `uid:gid`, `name`
+    and `name:group` -- and the CRI splits the same thing across
+    run_as_user, run_as_group and run_as_username. A numeric half becomes
+    the numeric field; anything else becomes the name, which only the
+    image can resolve, and which is why it is carried rather than parsed.
+
+    ⚠️ The CRI has no run_as_groupname. A group named rather than
+    numbered cannot be asked for, and is refused rather than dropped: a
+    container that believes it joined a group and did not writes files
+    nobody else in that group can read, and nothing says so.
+    """
+    if not container.user:
+        return
+    name, _sep, group = container.user.partition(':')
+    if name.isdigit():
+        kwargs['run_as_user'] = api_pb2.Int64Value(value=int(name))
+    else:
+        kwargs['run_as_username'] = name
+    if not group:
+        return
+    if not group.isdigit():
+        raise exception.Invalid(_(
+            'A group has to be given by number here, not by name: the '
+            'runtime interface has no field for a group name, so "%(user)s" '
+            'could only be applied by dropping the group.')
+            % {'user': container.user})
+    kwargs['run_as_group'] = api_pb2.Int64Value(value=int(group))
+
+
 def _linux_security_context(container):
     """Build the CRI security context for one container.
 
@@ -114,6 +146,9 @@ def _linux_security_context(container):
     """
     sc = _security_context(container)
     kwargs = {'privileged': container.privileged}
+    # The container's own field first; a capsule's securityContext below
+    # is the more specific request of the two and overrides it.
+    _apply_user(container, kwargs)
 
     if sc.get('runAsUser') is not None:
         kwargs['run_as_user'] = api_pb2.Int64Value(value=int(sc['runAsUser']))

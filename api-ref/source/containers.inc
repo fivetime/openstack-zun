@@ -67,6 +67,7 @@ Request
   - exposed_ports: exposed_ports
   - host: requested_host
   - entrypoint: entrypoint-request
+  - user: user-request
   - pids_limit: pids_limit
   - swap: swap
   - blkio_weight: blkio_weight
@@ -107,6 +108,7 @@ Response
   - status_detail: status_detail
   - exit_code: exit_code
   - health: health
+  - user: user
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -202,6 +204,7 @@ Response
   - status_detail: status_detail
   - exit_code: exit_code
   - health: health
+  - user: user
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -288,6 +291,7 @@ Response
   - status_detail: status_detail
   - exit_code: exit_code
   - health: health
+  - user: user
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -513,6 +517,7 @@ Return new container with updated attributes.
   - status_detail: status_detail
   - exit_code: exit_code
   - health: health
+  - user: user
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -829,6 +834,7 @@ Response
   - status_detail: status_detail
   - exit_code: exit_code
   - health: health
+  - user: user
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at

@@ -319,6 +319,17 @@ runtime = {
     'type': ['string', 'null'],
 }
 
+# Which user a container's process runs as, in the four shapes docker
+# accepts: `uid`, `uid:gid`, `name` and `name:group`. Held as written --
+# a name is resolved by the image, which is the only thing that can, so
+# splitting it here would mean deciding what cannot be decided here.
+user = {
+    'type': ['string', 'null'],
+    'minLength': 1,
+    'maxLength': 255,
+    'pattern': '^[^\\s:][^\\s:]*(:[^\\s:]+)?$',
+}
+
 image_id = {
     'type': ['string', 'null'],
     'minLength': 2,

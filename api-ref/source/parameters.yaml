@@ -1099,6 +1099,26 @@ health:
   in: body
   required: true
   type: string
+user:
+  description: |
+    Which user the container's process runs as, in the shapes docker
+    accepts: ``uid``, ``uid:gid``, ``name`` or ``name:group``. A name is
+    resolved by the image, which is the only thing that can resolve it.
+    Null leaves the image's own ``USER`` in charge. A group given by name
+    is refused on a CRI host, which has no field for one.
+    New in microversion 1.50.
+  in: body
+  required: false
+  type: string
+user-request:
+  description: |
+    Which user the container's process should run as, in the shapes
+    docker accepts: ``uid``, ``uid:gid``, ``name`` or ``name:group``.
+    Leave it out to let the image's own ``USER`` decide.
+    New in microversion 1.50.
+  in: body
+  required: false
+  type: string
 healthcheck:
   description: |
     A dict of health check for the container. Specify a test command to

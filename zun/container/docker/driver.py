@@ -364,6 +364,12 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 'hostname': container.hostname,
                 'entrypoint': container.entrypoint,
             }
+            # Which user the process runs as. Left out when nothing asked,
+            # so the image's own USER still decides -- passing '' would
+            # override it with root, which is the opposite of what an
+            # unset field means.
+            if container.user:
+                kwargs['user'] = container.user
 
             if not self._is_runtime_supported():
                 if container.runtime:
@@ -1859,6 +1865,10 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 'stdin_open': container.interactive,
                 'entrypoint': container.entrypoint,
             }
+            # Same as the other create path: an unset field leaves the
+            # image's USER in charge, and '' would not.
+            if container.user:
+                kwargs['user'] = container.user
 
             host_config = {}
             host_config['privileged'] = container.privileged

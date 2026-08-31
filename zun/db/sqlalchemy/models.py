@@ -172,6 +172,9 @@ class Container(Base):
     # script against it; without it `docker run false` looks like success.
     exit_code = Column(Integer, nullable=True)
     health = Column(String(16), nullable=True)
+    # Which user the container's process runs as, as docker writes it:
+    # `uid`, `uid:gid`, `name` or `name:group`.
+    user = Column(String(255), nullable=True)
     # Resolvers and search domains for the container. Not merely a
     # convenience: a container that inherits the host's resolver has its
     # queries forwarded from the host's namespace, where the tenant's

@@ -87,6 +87,9 @@ REST_API_VERSION_HISTORY = """REST API Version History:
     * 1.49 - Add health to the container: the runtime's verdict on its
              healthcheck (starting, healthy, unhealthy), which a caller
              waiting for a dependency to be ready has to be able to read
+    * 1.50 - Add user to the container: which user its process runs as.
+             Without it a container that asked to drop to an unprivileged
+             user ran as root, and nothing said so
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -99,7 +102,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.49'
+CURRENT_MAX_VER = '1.50'
 
 
 class Version(object):

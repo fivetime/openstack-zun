@@ -50,6 +50,7 @@ _legacy_container_properties = {
     'auto_heal': parameter_types.boolean,
     'privileged': parameter_types.boolean,
     'healthcheck': parameter_types.healthcheck,
+    'user': parameter_types.user,
     'exposed_ports': parameter_types.exposed_ports,
     'registry': parameter_types.container_registry,
 }

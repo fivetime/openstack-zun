@@ -41,6 +41,7 @@ _basic_keys = (
     'status_detail',
     'exit_code',
     'health',
+    'user',
     'dns',
     'dns_search',
     'interactive',
