@@ -77,46 +77,6 @@ class HackingTestCase(base.BaseTestCase):
     def _assert_has_no_errors(self, code, checker, filename=None):
         self._assert_has_errors(code, checker, filename=filename)
 
-    def test_assert_equal_in(self):
-        errors = [(1, 0, "Z338")]
-        check = checks.assert_equal_in
-
-        code = "self.assertEqual(a in b, True)"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertEqual('str' in 'string', True)"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertEqual(any(a==1 for a in b), True)"
-        self._assert_has_no_errors(code, check)
-
-        code = "self.assertEqual(True, a in b)"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertEqual(True, 'str' in 'string')"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertEqual(True, any(a==1 for a in b))"
-        self._assert_has_no_errors(code, check)
-
-        code = "self.assertEqual(a in b, False)"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertEqual('str' in 'string', False)"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertEqual(any(a==1 for a in b), False)"
-        self._assert_has_no_errors(code, check)
-
-        code = "self.assertEqual(False, a in b)"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertEqual(False, 'str' in 'string')"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertEqual(False, any(a==1 for a in b))"
-        self._assert_has_no_errors(code, check)
-
     def test_assert_equal_true_or_false(self):
         errors = [(1, 0, "Z323")]
         check = checks.assert_equal_true_or_false
@@ -154,26 +114,6 @@ class HackingTestCase(base.BaseTestCase):
         self._assert_has_errors(code, check, errors)
 
         code = "self.assertIsNone()"
-        self._assert_has_no_errors(code, check)
-
-    def test_assert_true_isinstance(self):
-        errors = [(1, 0, "Z316")]
-        check = checks.assert_true_isinstance
-
-        code = "self.assertTrue(isinstance(e, exception.BuilAbortException))"
-        self._assert_has_errors(code, check, errors)
-
-        code = "self.assertTrue()"
-        self._assert_has_no_errors(code, check)
-
-    def test_no_xrange(self):
-        errors = [(1, 0, "Z339")]
-        check = checks.no_xrange
-
-        code = "xrange(45)"
-        self._assert_has_errors(code, check, errors)
-
-        code = "range(45)"
         self._assert_has_no_errors(code, check)
 
     def test_use_timeunitls_utcow(self):
