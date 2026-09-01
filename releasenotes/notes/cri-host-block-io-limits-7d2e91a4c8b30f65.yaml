@@ -1,0 +1,31 @@
+---
+features:
+  - |
+    The CRI driver applies a container's block IO limits -- ``blkio_weight``
+    and the four ``device_*`` caps -- on the host, on the cgroup the sandbox
+    runs in. The runtime interface has no field for them, and what is worth
+    limiting is the traffic that reaches the node's disk, which for a VM
+    runtime is the VMM's rather than the guest's view of its virtual one.
+  - |
+    The CRI driver applies the ``swap`` a container asked for. It was setting
+    the swap limit to the memory limit unconditionally, which is swap off, so
+    the number a container asked for made no difference.
+upgrade:
+  - |
+    A new ``[container_driver] cri_root_dir`` names the runtime's own root
+    (default ``/var/lib/containerd``). A block IO limit has to name a device,
+    and this is where the disk behind it is resolved from; set it if the
+    runtime keeps container filesystems somewhere else.
+  - |
+    Applying a block IO limit enables the ``io`` controller in the
+    ``cgroup.subtree_control`` of the sandbox cgroup's parents. containerd
+    creates them with only the controllers it sets itself, so without this
+    the sandbox cgroup has no ``io.max`` or ``io.weight`` to write to.
+issues:
+  - |
+    ``pids_limit`` remains unenforceable on a CRI host and a container asking
+    for one is refused. The runtime interface has no field for it, containerd
+    does not set the OCI pids block from it, and the ``unified`` map that
+    would carry it is not read by the kata agent. Under a VM runtime the
+    guest's pid space is its own, so exhausting it costs the container that
+    did it rather than its neighbours.

@@ -374,6 +374,45 @@ CRI 的 `ContainerConfig.command` 就是入口、`args` 是参数 —— 与 doc
 `rollout status` 报成功**,只有"容器永远停在 Creating、没有 host"这一个症状。
 `rollout status` 成功不等于服务在工作。
 
+#### 4.3.1e 三种"限制"的最终账目(2026-08-31/09-01)
+
+CRI 的 `LinuxContainerResources` **只有 cpu / memory / swap**,再无别的。
+所以 pids、blkio 都不能经 CRI 表达 —— 但**三者的结论不一样**,不能一概而论。
+
+| 限制 | 结论 | 为什么 |
+|---|---|---|
+| **swap** | ✅ **已实现** | CRI 有 `memory_swap_limit_in_bytes`,本驱动原先无条件写成 `= memory`(等于关 swap)、不读 `container.swap`。已改为发**总量**(memory+swap,与 docker 同一口径),`-1` 透传 |
+| **pids_limit** | ❌ **明确拒绝,且这是终态** | CRI 无字段;containerd 从不从 CRI 设 OCI `Resources.Pids`;唯一逃生口 `unified` **kata-agent 的 cgroup 管理器根本不读**(两套管理器都不读)。⚠️ **更重要的是不需要**:VM 运行时下 guest 的 PID 空间是它自己的,fork bomb 耗尽的是租户自己的 guest(内存固定、vCPU 有 quota),**邻居不受影响** —— 这是自伤限制,不是保护边界 |
+| **blkio_weight / device_*_bps/iops** | ✅ **已实现,写在宿主机** | 容器的读写**经 VMM 落到节点的盘**,那才是共享资源;限在 guest 里只是限住它对自己虚拟盘的看法。写在沙箱自己的宿主 cgroup 上(VMM 就在里面) |
+
+**宿主侧 IO 限制的三个实测细节**(都不能靠猜):
+
+1. 🔴 **containerd 建父 cgroup 时只启用它自己要用的控制器**(`cpuset cpu`),
+   所以沙箱 cgroup 里**只有 `io.pressure`,没有 `io.max`/`io.weight`**。
+   要先沿父链把 `io` 写进 `cgroup.subtree_control` —— **对已经跑着 VMM 的叶子也生效**,
+   实测写完文件立刻出现且可写。
+2. 🔴 **设备必须是整盘,不能是分区**。`253:2`(vda2)写进 `io.max` **不报错但匹配不到任何 bio**;
+   `253:0`(vda)才读得回来。DockerDriver 的 docstring 里早就写着这条,现在两个驱动一致。
+3. `blkio_weight` 是 docker 的 10..1000,`io.weight` 是 1..10000,**用 runc 的换算公式**
+   (`1 + (w-10)*9999/990`),两个驱动上同一个数字含义相同。
+
+**cgroup 路径公式**(用新建沙箱验的):`<cgroup_parent>/kata_<sandbox-id>`——
+`kata_` 前缀来自 kata 自己(`resCtrl.RenameCgroupPath`,它管的控制器就用这个名字标出来);
+runc 形态则是 `<cgroup_parent>/<sandbox-id>`,两种都找。
+
+**拒绝点在 compute manager**,紧挨 disk 配额那条检查:节点做不到就在**调用方还在听的时候**
+拒绝;过了那里 create 是 cast,拒绝只进日志。驱动经基类新增的
+`unenforceable_limits()` 声明自己做不到什么,**默认是"什么都能应用"**,DockerDriver 不受影响。
+到了下发这一步再失败就**直接抛错**——拒绝已经做过了,此时失败就等于"接受了然后丢掉"。
+
+**实测**(三台一致):`blkio_weight=500` → `io.weight default 4950`;
+`device_read_bps=10485760 device_write_bps=5242880` →
+`io.max = 253:0 rbps=10485760 wbps=5242880 riops=max wiops=max`;
+`blkio_weight=1000` → `io.weight default 10000`。
+
+⚠️ **粒度是沙箱级**:限的是整个 VM 的 IO。对 zun"一个 capsule 一个 VM"正好,
+多容器 capsule 上这几个值取自沙箱的那个主体。
+
 ### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
 
 **定案:只对"CRI 之外别无他处"的调用越界。**CRI 服务得了的,一律走 CRI。
