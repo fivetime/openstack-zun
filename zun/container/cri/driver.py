@@ -22,6 +22,7 @@ import posixpath
 import shlex
 import signal
 import sys
+from oslo_concurrency import lockutils
 from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import fileutils
@@ -857,11 +858,12 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 return
             container.status = consts.RUNNING
             new_run = False
-            if (container.status_detail or '').startswith('exit:'):
-                # A recorded exit belongs to a previous run of this container
-                # (a probe restart makes a new one under the same record);
-                # carrying it into a running container would report the old
-                # death on the living.
+            detail = container.status_detail or ''
+            if detail.startswith('exit:') or detail == self.STOPPED_BY_OWNER:
+                # A recorded exit, or the owner's stop, belongs to a previous
+                # run of this container (a probe restart makes a new one
+                # under the same record); carrying it into a running
+                # container would report the old death on the living.
                 container.status_detail = None
                 new_run = True
             if new_run or not container.started_at:
@@ -900,7 +902,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         consumer falls back to its status-name heuristic, which is the honest
         remainder.
         """
-        if (container.status_detail or '').startswith('exit:'):
+        if container.status_detail:
+            # Already recorded for this run -- an exit code, or the owner's
+            # stop, which must not be overwritten by the code the runtime
+            # reports for it (SIGKILL's 137 would read as a crash).
             return
         try:
             resp = self.runtime_stub.ContainerStatus(
@@ -1407,6 +1412,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                                 {'id': container.container_id, 'err': e})
                     continue
 
+                if (container.status == consts.STOPPED
+                        and (container.status_detail or '').startswith('exit:')
+                        and self._restart_on_exit(context, capsule,
+                                                  container)):
+                    # Replaced in its own sandbox; the record now describes
+                    # the new run, which is what the accounting below sees.
+                    pass
+
                 counted += 1
                 if container.status == consts.RUNNING:
                     running += 1
@@ -1604,6 +1617,126 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         healthcheck['k8s_probe_state'] = state
         container.healthcheck = healthcheck
         container.save(context)
+
+    #: The restart policies that mean "start it again". `unless-stopped`
+    #: differs from `always` only across a daemon restart, which docker
+    #: handles and this driver has no equivalent of: a container stopped by
+    #: its owner never reaches the check below in either case, so here the
+    #: two are the same policy.
+    RESTARTING_POLICIES = ('always', 'unless-stopped', 'on-failure')
+
+    #: What status_detail holds after the owner stopped the container. The
+    #: runtime reports an owner's stop and a death the same way -- EXITED,
+    #: with a code -- so the intent has to be recorded where the stop
+    #: happens, or a later look cannot tell the two apart. Cleared when the
+    #: container runs again, like an exit marker.
+    STOPPED_BY_OWNER = 'stopped'
+
+    def _restart_on_exit(self, context, capsule, container):
+        """Apply the restart policy to a container that stopped on its own.
+
+        The CRI has no restart policy -- Kubernetes keeps it in the kubelet,
+        which watches container state and recreates -- so this driver has to
+        keep it itself, and it was not: `--restart always` reached the record
+        and nothing read it, so a container that died stayed dead while the
+        docker driver's equivalent came back.
+
+        "It died" and "it was stopped" look the same to the runtime: EXITED,
+        with a code. The difference is recorded where the stop happens --
+        stop() marks the record STOPPED_BY_OWNER -- so a stopped container
+        that carries an exit code is one that died. That mark, and not the
+        order in which things were observed, is what this reads: the exit
+        is usually seen first by a show, which writes STOPPED to the record
+        before this sweep loads it, so the sweep cannot rely on having
+        watched the transition itself.
+
+        ⚠️ The record the sweep holds can still be one stop stale, so the
+        decision is taken under the lock the stop path takes, against a
+        fresh read: if that shows the owner's mark, an operation in flight,
+        or a delete, the owner got there first and the container stays
+        down.
+
+        `on-failure` restarts a non-zero exit only, and stops after
+        MaximumRetryCount restarts when one is set (0 means no cap). The
+        count is the one a probe restart keeps, so both kinds of restart
+        share one tally. An exit whose code could not be read is not
+        restarted: restarting on an unknown code would loop on a runtime that
+        cannot be asked.
+
+        Restarts happen at the sync's cadence, one per sweep, which is the
+        only back-off there is. Returns True when the container was replaced.
+        """
+        policy = container.restart_policy or {}
+        name = policy.get('Name')
+        if name not in self.RESTARTING_POLICIES:
+            return False
+        if container.task_state is not None:
+            # Mid-operation; the operation owns what happens next.
+            return False
+
+        with lockutils.lock(container.uuid,
+                            lock_file_prefix=consts.NAME_PREFIX):
+            try:
+                fresh = objects.Container.get_by_uuid(context, container.uuid)
+            except exception.ContainerNotFound:
+                return False
+            if (fresh.task_state is not None
+                    or fresh.status_detail == self.STOPPED_BY_OWNER
+                    or fresh.status in (consts.DELETING, consts.DELETED,
+                                        consts.RUNNING)):
+                # The owner got there first -- a stop, a delete, or a start
+                # of their own -- or an operation is in flight and owns what
+                # happens next.
+                return False
+
+            if name == 'on-failure':
+                code = container.exit_code
+                if code is None or int(code) == 0:
+                    return False
+                limit = int(policy.get('MaximumRetryCount') or 0)
+                if limit and _restart_count(container) >= limit:
+                    LOG.info("Container %(id)s exited with %(code)s and has "
+                             "used its %(limit)d restarts; leaving it "
+                             "stopped",
+                             {'id': container.uuid, 'code': code,
+                              'limit': limit})
+                    return False
+
+            LOG.info("Container %(id)s exited (%(detail)s) with restart "
+                     "policy %(policy)s; restarting it",
+                     {'id': container.uuid,
+                      'detail': container.status_detail or 'exit code '
+                      'unknown', 'policy': name})
+            if capsule is container:
+                # A container of its own. Its sandbox is found by label,
+                # not read off the record -- the one id field holds the
+                # container's id, and handing that to CreateContainer as a
+                # sandbox fails "sandbox not found". _restart_exited is the
+                # rebuild the start path already uses for exactly this
+                # shape, and it carries the writable layer across, which is
+                # what docker's own restart keeps too.
+                try:
+                    self._restart_exited(context, container)
+                except Exception as e:
+                    LOG.error("Could not restart container %(id)s: %(err)s",
+                              {'id': container.uuid, 'err': e})
+                    return False
+                # _restart_exited keeps no tally; on-failure's cap needs one,
+                # and it is the same tally a probe restart keeps.
+                healthcheck = dict(container.healthcheck or {})
+                state = dict(healthcheck.get('k8s_probe_state') or {})
+                state['restarts'] = _restart_count(container) + 1
+                healthcheck['k8s_probe_state'] = state
+                container.healthcheck = healthcheck
+            elif not self._restart_container(context, capsule, container):
+                return False
+            # The replacement is created and started; the record still
+            # carries the death it was called with.
+            container.status = consts.RUNNING
+            container.status_detail = None
+            self._record_start(container)
+            container.save(context)
+            return True
 
     def _restart_container(self, context, capsule, container):
         """Replace a container in place, keeping its sandbox.
@@ -2663,6 +2796,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             timeout=int(timeout or CONF.docker.default_timeout)))
         container.status = consts.STOPPED
         container.status_reason = None
+        # The owner asked for this. Without the mark, the next look at the
+        # runtime sees EXITED with a code and the restart policy would bring
+        # back a container that was just told to stop.
+        container.status_detail = self.STOPPED_BY_OWNER
         return container
 
     def show(self, context, container):
