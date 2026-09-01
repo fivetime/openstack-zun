@@ -498,6 +498,20 @@ api-ref 两处描述改为声明语义;python-zunclient `--expose-port` 文案�
 ⚠️ 实测时发现**视图从来没导出过 `exposed_ports`**(上游 1.24 收下就没回显过),
 **1.51** 把它加进容器响应——声明语义的另一半。
 
+#### 4.3.1i 释放 docker 网络必须是"最后一台主机"才做(2026-09-01 生产事故)
+
+DockerDriver 的 `_release_networks_left_unused` 在本节点最后一个容器离开时删掉节点上的 docker
+网络(好让 kuryr 释放 IPAM 子网池,否则孤儿池累积到 kuryr 拒绝建网)。**但 kuryr 的子网池
+`kuryrPool-<cidr>` 是全云一个 neutron 对象,三台节点的 docker 网络共用它**:一台释放 = 池被删,
+其它两台的 docker 网络仍持有死掉的池 id,此后那两台上**每一次容器 start 都失败**
+(`IpamDriver.RequestAddress: No subnetpools with {'id': …} is found`),直到手工删掉它们的
+docker 网络让 kuryr 重建。2026-09-01 生产三台里两台同时中招(container1 持 `449d8673`、
+container2 持 `d6a2adaa`,都已不存在;container3 刚重建拿到 `31ed2e55`)。
+修法:释放前查 `ZunNetwork` 表,**别的主机还有该 neutron 网络的行就不删**(只删本机的行)。
+节点范围的决定不能删全云范围的资源——同一条教训见 kubezun §7.7.5c。
+清理悬空网络:节点上 `docker network rm <neutron-net-id>`(须无容器挂着;kata 容器卡死时
+`docker rm -f` 会超时,先 `service disable` 该节点)。
+
 ### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
 
 **定案:只对"CRI 之外别无他处"的调用越界。**CRI 服务得了的,一律走 CRI。

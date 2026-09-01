@@ -944,9 +944,31 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 if inspected is not None:
                     if inspected.get('Containers'):
                         continue
+                    # Only when this is the last host wrapping it. Removing
+                    # the docker network makes kuryr release the subnetpool
+                    # -- and that pool is one neutron object shared by every
+                    # host's docker network for this subnet. A node-scoped
+                    # decision was deleting a cloud-scoped resource: the other
+                    # hosts' networks kept the dead pool's id, and every
+                    # container start on them failed with "No subnetpools
+                    # with {'id': ...} is found" until the network was made
+                    # again by hand. Measured in production on 2026-09-01,
+                    # two of three hosts at once.
+                    elsewhere = [
+                        row.host for row in objects.ZunNetwork.list(
+                            context,
+                            filters={'neutron_net_id': neutron_net_id})
+                        if row.host != CONF.host]
+                    if elsewhere:
+                        LOG.info('Kept docker network %s: nothing on this '
+                                 'host uses it, but %s still wrap it and '
+                                 'share its address pool',
+                                 neutron_net_id, sorted(set(elsewhere)))
+                        continue
                     docker.remove_network(neutron_net_id)
                     LOG.info('Removed docker network %s: no container on '
-                             'this host uses it', neutron_net_id)
+                             'this host uses it, and no other host wraps it',
+                             neutron_net_id)
                 for row in objects.ZunNetwork.list(
                         context, filters={'neutron_net_id': neutron_net_id,
                                           'host': CONF.host}):

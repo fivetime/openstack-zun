@@ -41,7 +41,8 @@ class TestReleaseWhenNothingUsesIt(base.TestCase):
         self.driver = docker_driver.DockerDriver.__new__(
             docker_driver.DockerDriver)
         self.docker = mock.Mock()
-        self.row = mock.Mock()
+        # This host's row; another host's is what keeps a network.
+        self.row = mock.Mock(host=docker_driver.CONF.host)
         patcher = mock.patch.object(docker_driver.objects.ZunNetwork, 'list',
                                     return_value=[self.row])
         self.list = patcher.start()
@@ -58,6 +59,28 @@ class TestReleaseWhenNothingUsesIt(base.TestCase):
 
         self.docker.remove_network.assert_called_once_with('net-1')
         self.row.destroy.assert_called_once()
+
+    def test_a_network_another_host_still_wraps_is_kept(self):
+        """Its address pool is one neutron object shared by every host's
+        docker network for the subnet; kuryr releases it with the network.
+        Removing it here left the other hosts holding a dead pool id, and
+        every start there failed until the network was made again."""
+        self.docker.inspect_network.return_value = {'Containers': {}}
+        self.list.return_value = [self.row,
+                                  mock.Mock(host='another-host')]
+
+        self._release()
+
+        self.docker.remove_network.assert_not_called()
+        self.row.destroy.assert_not_called()
+
+    def test_the_last_host_wrapping_it_removes_it(self):
+        self.docker.inspect_network.return_value = {'Containers': {}}
+        self.list.return_value = [self.row]
+
+        self._release()
+
+        self.docker.remove_network.assert_called_once_with('net-1')
 
     def test_a_network_still_in_use_is_left_alone(self):
         self.docker.inspect_network.return_value = {
