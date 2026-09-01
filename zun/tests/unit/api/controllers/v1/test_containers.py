@@ -770,6 +770,29 @@ class TestContainerController(api_base.FunctionalTest):
     @patch('zun.compute.api.API.container_show')
     @patch('zun.compute.api.API.container_create')
     @patch('zun.compute.api.API.image_search')
+    def test_create_container_with_dedicated_cpu_policy_is_refused(
+            self,
+            mock_search,
+            mock_container_create,
+            mock_container_show,
+            mock_neutron_get_network):
+        # Refused where the caller is listening: the pinning pipeline behind
+        # "dedicated" is not wired on either driver, and accepting it left a
+        # container that never left Creating and said nothing.
+        mock_container_create.side_effect = lambda x, y, **z: y
+        params = ('{"name": "MyDocker", "image": "ubuntu",'
+                  '"command": ["env"], "memory": "512", "cpu": 2,'
+                  '"cpu_policy": "dedicated"}')
+        with self.assertRaisesRegex(AppError, 'dedicated'):
+            self.post('/v1/containers/',
+                      params=params,
+                      content_type='application/json')
+        mock_container_create.assert_not_called()
+
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    @patch('zun.compute.api.API.container_show')
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.compute.api.API.image_search')
     def test_create_container_with_restart_policy_always_and_retrycount(
             self,
             mock_search,

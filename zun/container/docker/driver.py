@@ -381,6 +381,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
             host_config = {}
             host_config['privileged'] = container.privileged
+            self._apply_security_context(container, kwargs, host_config)
             host_config['runtime'] = runtime
             host_config['binds'] = binds
             kwargs['volumes'] = [b['bind'] for b in binds.values()]
@@ -466,6 +467,92 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def node_support_disk_quota(self):
         return self.support_disk_quota
+
+    def _apply_security_context(self, container, kwargs, host_config):
+        """Translate a capsule's securityContext onto docker's create args.
+
+        The CRI driver has applied this since securityContext arrived; this
+        driver never read it, so the same pod spec landed on a docker host
+        as root, with a writable root filesystem and every capability the
+        image had. What is dropped here is a *tightening*, which is the
+        dangerous half of a silent drop.
+
+        Only what was asked for is set, as on the CRI side: a field left
+        out means whatever docker does by default, which is what an unset
+        securityContext field means in Kubernetes too. The mapping mirrors
+        _linux_security_context() field for field:
+
+          runAsUser/runAsGroup        -> user "uid[:gid]" (overrides the
+                                         container's own `user`, the less
+                                         specific of the two requests)
+          fsGroup                     -> group_add, so the process is IN the
+                                         group the volume was chowned to
+          readOnlyRootFilesystem      -> read_only
+          allowPrivilegeEscalation:F  -> security_opt no-new-privileges
+          capabilities.add/drop       -> cap_add (filtered by
+                                         allowed_capabilities) / cap_drop
+          seccompProfile Unconfined   -> security_opt seccomp=unconfined;
+                                         RuntimeDefault is docker's default
+                                         and needs nothing
+        """
+        sc = driver.security_context_of(container)
+        if not sc:
+            return
+        security_opt = list(host_config.get('security_opt') or [])
+
+        if sc.get('runAsUser') is not None:
+            user = str(int(sc['runAsUser']))
+            if sc.get('runAsGroup') is not None:
+                user += ':%d' % int(sc['runAsGroup'])
+            kwargs['user'] = user
+        elif sc.get('runAsGroup') is not None:
+            # A group without a user: docker takes "uid:gid" only, and the
+            # uid is the image's to decide. Adding the group as supplemental
+            # is what a kubelet ends up doing for the process too.
+            host_config.setdefault('group_add', []).append(
+                str(int(sc['runAsGroup'])))
+        if sc.get('fsGroup') is not None:
+            host_config.setdefault('group_add', []).append(
+                str(int(sc['fsGroup'])))
+        if sc.get('readOnlyRootFilesystem'):
+            host_config['read_only'] = True
+        if sc.get('allowPrivilegeEscalation') is False:
+            security_opt.append('no-new-privileges')
+
+        caps = sc.get('capabilities') or {}
+        if caps.get('add') or caps.get('drop'):
+            # Second line of defence behind the API's validation, the same
+            # one the CRI driver keeps: a forbidden capability that reached
+            # the stored spec does not reach the runtime. Dropping is never
+            # restricted.
+            allowed = {c.upper() for c in CONF.allowed_capabilities}
+            asked = [str(c).upper() for c in (caps.get('add') or [])]
+            add = [c for c in asked if c in allowed]
+            refused = [c for c in asked if c not in allowed]
+            if refused:
+                LOG.warning("refusing capabilities %s on container %s; this "
+                            "host allows adding only %s",
+                            refused, container.uuid,
+                            sorted(allowed) or '(none)')
+            if add:
+                host_config['cap_add'] = add
+            if caps.get('drop'):
+                host_config['cap_drop'] = [str(c).upper()
+                                           for c in caps['drop']]
+
+        profile = sc.get('seccompProfile') or {}
+        kind = profile.get('type')
+        if kind == 'Unconfined':
+            security_opt.append('seccomp=unconfined')
+        elif kind == 'Localhost':
+            # Refused at the API; should never arrive. Docker's default is
+            # the stricter of the two, and a tenant-named host path is
+            # exactly what must not be handed to the runtime.
+            LOG.warning("ignoring unsupported Localhost seccomp profile on "
+                        "container %s; using docker's default", container.uuid)
+
+        if security_opt:
+            host_config['security_opt'] = security_opt
 
     def _apply_flavor_limits(self, container, host_config):
         """Translate the flavor limit fields into docker HostConfig.
@@ -1872,6 +1959,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
             host_config = {}
             host_config['privileged'] = container.privileged
+            self._apply_security_context(container, kwargs, host_config)
             host_config['binds'] = binds
             kwargs['volumes'] = [b['bind'] for b in binds.values()]
             host_config['network_mode'] = 'container:%s' % capsule.container_id

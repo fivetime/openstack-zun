@@ -447,6 +447,32 @@ attempt 到 5、每次"with its writable layer carried over";`on-failure:1` + `e
 后停,记录 `used all 1 of its retries`;`on-failure` + `exit 0` → 不重启;`always` + 用户 stop →
 `status_detail=stopped`,不复活。
 
+#### 4.3.1g cpu_policy=dedicated 明确拒绝;securityContext 两驱动对齐(2026-09-01)
+
+**`cpu_policy=dedicated`:不是 CriDriver 缺口,两个驱动上都从没工作过,坏在驱动之前。**
+实测 `cpu=2 dedicated` → claim 阶段 `KeyError: 'cpuset'`,容器卡 Creating、无任何提示。四处独立缺陷:
+
+1. 只有 **`CpusetFilter`** 会往 `limits` 里放 `cpuset`,而它**不在默认 `enabled_filters`**。
+2. NUMA 拓扑**按 `lscpu` 的 socket 分组**(`os_capability_linux.get_cpu_numa_info`),KVM 客户机
+   "一 socket 一 vCPU"→ node-04 采到 16 个 socket、1 个内存节点,zip 后**只剩一个节点、cpuset={0}**。
+3. 两处类型错(已复现):`claims.py:118 set(numa_node.id)` 对 int;`tracker.py:482 int(cpuset_mems)` 对 set。
+4. DockerDriver 把 Python `set` 直接交给 docker-py —— 生产 pod 实测 `TypeError: Object of type set
+   is not JSON serializable`。
+
+另有产品语义:启用 `CpusetFilter` 后,`enable_cpu_pinning=True` 的主机**拒绝所有 `shared` 容器**
+(上游把绑核主机当独占池),与"租户视角一台弹性机器"相悖,DaaS 也从不发 cpu_policy。
+**决定:在 API 层明确拒绝 `dedicated`**(`containers.py` create 抛 `InvalidValue`,调用方还在听),
+update schema 本就不含 cpu_policy。要真做,四处都得修,外加独占池语义要不要 —— 另立项。
+
+**`securityContext`:唯一一处方向反过来的差异,已对齐。** capsule 的 `securityContext`
+(`runAsUser`/`runAsGroup`/`fsGroup`/`readOnlyRootFilesystem`/`allowPrivilegeEscalation`/
+`capabilities`/`seccompProfile`)原本**只有 CriDriver 实现,DockerDriver 一字不读** ——
+同一个 pod spec 落到 docker 节点上以 root、可写根、全能力运行,静默。丢的是**收紧**,最危险的一类。
+读法抽到基类 `driver.security_context_of()`,DockerDriver 的 `_apply_security_context()`
+逐字段照 `_linux_security_context()` 翻成 docker 参数(`user`/`group_add`/`read_only`/
+`security_opt`/`cap_add`+`cap_drop`,`allowed_capabilities` 白名单同样在驱动层再挡一次)。
+docker-py 7.1 五个参数名在生产 pod 里验过。⚠️ 生产镜像未重打,这条要随下次 zun 发版上线。
+
 ### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
 
 **定案:只对"CRI 之外别无他处"的调用越界。**CRI 服务得了的,一律走 CRI。

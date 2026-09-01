@@ -421,6 +421,17 @@ class ContainersController(base.Controller):
             api_utils.version_check('mounts', '1.11')
 
         cpu_policy = container_dict.pop('cpu_policy', None)
+        if cpu_policy == 'dedicated':
+            # Refused here, where the caller is listening, rather than left
+            # to fail in the compute's claim: the pinning pipeline behind
+            # this value is not wired on either driver (no cpuset limit is
+            # built for a create, the NUMA topology is keyed by socket and
+            # collapses to one cpu on a virtual host, and the claim itself
+            # trips on the types it is handed). Accepting it started a
+            # container that never left Creating and said nothing.
+            raise exception.InvalidValue(_(
+                'cpu_policy "dedicated" is not supported on this cloud; '
+                'leave it unset or use "shared"'))
         container_dict['cpu_policy'] = cpu_policy
 
         privileged = container_dict.pop('privileged', None)

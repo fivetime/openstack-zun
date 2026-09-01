@@ -104,7 +104,7 @@ def _security_context(container):
     generated one, so the key never matched and every container ran as root
     with a writable root filesystem, silently.
     """
-    return (container.healthcheck or {}).get('k8s_security_context') or {}
+    return driver.security_context_of(container)
 
 
 def _apply_user(container, kwargs):

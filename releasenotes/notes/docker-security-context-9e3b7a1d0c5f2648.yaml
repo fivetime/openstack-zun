@@ -1,0 +1,11 @@
+---
+fixes:
+  - |
+    The docker driver applies a capsule's ``securityContext``. It was
+    honoured only by the CRI driver, so the same pod spec landed on a docker
+    host as root, with a writable root filesystem and every capability the
+    image had, silently. ``runAsUser``/``runAsGroup``, ``fsGroup``,
+    ``readOnlyRootFilesystem``, ``allowPrivilegeEscalation: false``,
+    ``capabilities`` (``add`` filtered by ``allowed_capabilities``) and an
+    ``Unconfined`` ``seccompProfile`` now reach docker as the corresponding
+    create options.

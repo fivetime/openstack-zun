@@ -500,6 +500,18 @@ def process_table(text):
                           for line in lines[1:]]}
 
 
+def security_context_of(container):
+    """The securityContext this container was created with, or {}.
+
+    Carried in the healthcheck column beside the probes, which is where the
+    API puts it (capsules.py) -- the same column, for the same reason: a new
+    one means a migration. Read here so both drivers see the same request;
+    until they did, a pod's securityContext reached only the CRI driver and a
+    docker host ran it as root with a writable root filesystem, silently.
+    """
+    return (container.healthcheck or {}).get('k8s_security_context') or {}
+
+
 class ContainerDriver(object):
     """Interface for container driver."""
 

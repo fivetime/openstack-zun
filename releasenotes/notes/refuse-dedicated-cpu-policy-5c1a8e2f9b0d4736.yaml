@@ -1,0 +1,10 @@
+---
+upgrade:
+  - |
+    Creating a container with ``cpu_policy: dedicated`` is now refused with
+    400. The pipeline behind it was not wired on either driver -- no cpuset
+    limit is built for a create unless the non-default ``CpusetFilter`` is
+    enabled, the NUMA topology is keyed by socket and collapses to one cpu
+    on a virtual host, and the claim trips on the types it is handed -- so
+    the value produced a container that never left Creating and said
+    nothing. Leave it unset or use ``shared``.
