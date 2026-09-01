@@ -50,8 +50,7 @@ class Image(base.ZunPersistentObject, base.ZunObject):
         return [Image._from_db_object(cls(context), obj)
                 for obj in db_objects]
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_uuid(cls, context, uuid):
         """Find an image based on uuid and return a :class:`Image` object.
 
@@ -63,8 +62,7 @@ class Image(base.ZunPersistentObject, base.ZunObject):
         image = Image._from_db_object(cls(context), db_image)
         return image
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def list(cls, context=None, limit=None, marker=None,
              sort_key=None, sort_dir=None, filters=None):
         """Return a list of Image objects.

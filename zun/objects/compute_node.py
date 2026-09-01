@@ -119,8 +119,7 @@ class ComputeNode(base.ZunPersistentObject, base.ZunObject):
         db_compute_node = dbapi.create_compute_node(context, values)
         self._from_db_object(context, self, db_compute_node)
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_uuid(cls, context, uuid):
         """Find a compute node based on uuid.
 
@@ -133,15 +132,13 @@ class ComputeNode(base.ZunPersistentObject, base.ZunObject):
             context, cls(context), db_compute_node)
         return compute_node
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_name(cls, context, hostname):
         db_compute_node = dbapi.get_compute_node_by_hostname(
             context, hostname)
         return cls._from_db_object(context, cls(), db_compute_node)
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def list(cls, context, limit=None, marker=None,
              sort_key=None, sort_dir=None, filters=None):
         """Return a list of ComputeNode objects.

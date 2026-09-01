@@ -51,8 +51,7 @@ class Registry(base.ZunPersistentObject, base.ZunObject):
         return [Registry._from_db_object(cls(context), obj)
                 for obj in db_objects]
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_id(cls, context, id):
         """Find a registry based on id and return a :class:`Registry` object.
 
@@ -64,8 +63,7 @@ class Registry(base.ZunPersistentObject, base.ZunObject):
         registry = Registry._from_db_object(cls(context), db_registry)
         return registry
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_uuid(cls, context, uuid):
         """Find a registry based on uuid and return a :class:`Registry` object.
 
@@ -77,8 +75,7 @@ class Registry(base.ZunPersistentObject, base.ZunObject):
         registry = Registry._from_db_object(cls(context), db_registry)
         return registry
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_name(cls, context, name):
         """Find a registry based on name and return a Registry object.
 
@@ -90,8 +87,7 @@ class Registry(base.ZunPersistentObject, base.ZunObject):
         registry = Registry._from_db_object(cls(context), db_registry)
         return registry
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def list(cls, context, limit=None, marker=None,
              sort_key=None, sort_dir=None, filters=None):
         """Return a list of Registry objects.

@@ -586,6 +586,18 @@ CRI 的 `Exec` RPC 返回运行时自己流式服务器的 URL,那个服务器**
 
 ⚠️ **CRI 没有 resize RPC**——终端尺寸走流内第五通道,纯字节搬运的 proxy 免费带上。
 
+### 4.5 与官方上游的合并记录
+
+- **2026-08-22**:合入 `e79265e8..c1a74da1`(12 个提交),唯一冲突在 `tests/unit/api/base.py`,取上游版。
+- **2026-09-01**:合入 `c1a74da1..09834b79`(44 个提交,hacking 清理 / pecan `_route(args, request)`
+  签名 / bindep / tox),零冲突。⚠️ **其中 `2e5a7257 Replace deprecated remotable_classmethod`
+  在合并后被 revert**(`f8895ee0`):它把 `@remotable_classmethod` 换成 `@classmethod` + `@remotable`,
+  这要求 oslo.versionedobjects 的 `remotable` 认得 classmethod;**stable/2026.1 栈的 o.vo 3.9.0 不认**
+  (包装器无条件取 `self._context`,在类上是 `AttributeError: type object 'Capsule' has no attribute
+  '_context'`),实测 api 套件 302→209、objects 135→51。`remotable_classmethod` 在 3.9.0 里仍存在,
+  只是 deprecated。**o.vo 升到认 classmethod 的版本后,把这个 revert 再 revert 掉即可**;
+  在那之前每次合上游都要留意别把它带回来。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

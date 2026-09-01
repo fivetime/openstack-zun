@@ -45,8 +45,7 @@ class ResourceProvider(base.ZunPersistentObject, base.ZunObject):
         return [ResourceProvider._from_db_object(cls(context), obj)
                 for obj in db_objects]
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_uuid(cls, context, uuid):
         """Find a resource provider based on uuid.
 
@@ -58,8 +57,7 @@ class ResourceProvider(base.ZunPersistentObject, base.ZunObject):
         provider = ResourceProvider._from_db_object(cls(context), db_provider)
         return provider
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_name(cls, context, name):
         """Find a resource provider based on name.
 
@@ -71,8 +69,7 @@ class ResourceProvider(base.ZunPersistentObject, base.ZunObject):
         provider = ResourceProvider._from_db_object(cls(context), db_provider)
         return provider
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def list(cls, context, limit=None, marker=None,
              sort_key=None, sort_dir=None, filters=None):
         """Return a list of ResourceProvider objects.

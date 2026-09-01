@@ -48,8 +48,7 @@ class ExecInstance(base.ZunPersistentObject, base.ZunObject):
         return [ExecInstance._from_db_object(cls(context), obj)
                 for obj in db_objects]
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def list_by_container_id(cls, context, container_id):
         db_objects = dbapi.list_exec_instances(
             context, filters={'container_id': container_id})

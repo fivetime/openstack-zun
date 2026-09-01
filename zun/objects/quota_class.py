@@ -41,8 +41,7 @@ class QuotaClass(base.ZunPersistentObject, base.ZunObject):
         quota_class.obj_reset_changes()
         return quota_class
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get(cls, context, class_name, resource):
         """Find a quota class based on class_name and resource name.
 
@@ -55,8 +54,7 @@ class QuotaClass(base.ZunPersistentObject, base.ZunObject):
         quota_class = QuotaClass._from_db_method(cls(context), db_quota_class)
         return quota_class
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_all(cls, context, class_name=None):
         """Find quota based on class_name
 

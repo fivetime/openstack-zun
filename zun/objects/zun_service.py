@@ -52,8 +52,7 @@ class ZunService(base.ZunPersistentObject, base.ZunObject):
         return [ZunService._from_db_object(cls(context), obj)
                 for obj in db_objects]
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_host_and_binary(cls, context, host, binary):
         """Find a zun_service based on its hostname and binary.
 
@@ -70,8 +69,7 @@ class ZunService(base.ZunPersistentObject, base.ZunObject):
             cls(context), db_zun_service)
         return zun_service
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def list(cls, context, limit=None, marker=None,
              sort_key=None, sort_dir=None):
         """Return a list of ZunService objects.
@@ -90,8 +88,7 @@ class ZunService(base.ZunPersistentObject, base.ZunObject):
         return ZunService._from_db_object_list(db_zun_services, cls,
                                                context)
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def list_by_binary(cls, context, binary):
         db_zun_services = dbapi.list_zun_services_by_binary(
             context, binary)

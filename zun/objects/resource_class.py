@@ -44,8 +44,7 @@ class ResourceClass(base.ZunPersistentObject, base.ZunObject):
         return [ResourceClass._from_db_object(cls(context), obj)
                 for obj in db_objects]
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_uuid(cls, context, uuid):
         """Find a resource class based on uuid.
 
@@ -57,8 +56,7 @@ class ResourceClass(base.ZunPersistentObject, base.ZunObject):
         resource = ResourceClass._from_db_object(cls(context), db_resource)
         return resource
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def get_by_name(cls, context, name):
         """Find a resource class based on name.
 
@@ -70,8 +68,7 @@ class ResourceClass(base.ZunPersistentObject, base.ZunObject):
         resource = ResourceClass._from_db_object(cls(context), db_resource)
         return resource
 
-    @classmethod
-    @base.remotable
+    @base.remotable_classmethod
     def list(cls, context, limit=None, marker=None, sort_key=None,
              sort_dir=None):
         """Return a list of ResourceClass objects.
