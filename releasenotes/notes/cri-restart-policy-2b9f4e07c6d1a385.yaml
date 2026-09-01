@@ -1,0 +1,25 @@
+---
+features:
+  - |
+    The CRI driver keeps a container's restart policy. The CRI has none --
+    Kubernetes keeps it in the kubelet -- so ``--restart always`` reached the
+    record and nothing read it, and a container that died on a CRI host
+    stayed dead while the same request on a docker host came back. The state
+    sync now restarts a container that stopped on its own according to its
+    policy: ``always`` and ``unless-stopped`` on any exit, ``on-failure`` on a
+    non-zero exit up to ``MaximumRetryCount`` restarts. A container stopped by
+    its owner is never restarted. The replacement keeps the sandbox, so the
+    address is unchanged, and carries the writable layer across.
+upgrade:
+  - |
+    A CRI container stopped by its owner now records ``stopped`` in
+    ``status_detail`` where it used to record the exit code the runtime
+    reported for the stop (``exit:137``). Anything reading ``status_detail``
+    to tell a stop from a crash gets the honest answer now; anything parsing
+    it for a number should expect this value too.
+issues:
+  - |
+    A CRI container that exits before the state sync's next sweep is
+    restarted on that sweep, so a restart takes up to
+    ``sync_container_state_interval`` (default 60s) rather than being
+    immediate as under dockerd. That interval is the only back-off.

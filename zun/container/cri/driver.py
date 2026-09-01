@@ -1632,6 +1632,15 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     #: container runs again, like an exit marker.
     STOPPED_BY_OWNER = 'stopped'
 
+    #: Why a container with `on-failure` stays down once its retries are
+    #: spent. Recorded on the container so inspect can say so; docker itself
+    #: leaves no trace, and a container that just stops coming back with no
+    #: word is what tickets are made of.
+    RETRIES_SPENT_REASON = _(
+        'This container exited with a non-zero code %(code)s and its '
+        'restart policy has used all %(limit)d of its retries, so it was '
+        'not started again.')
+
     def _restart_on_exit(self, context, capsule, container):
         """Apply the restart policy to a container that stopped on its own.
 
@@ -1695,11 +1704,18 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     return False
                 limit = int(policy.get('MaximumRetryCount') or 0)
                 if limit and _restart_count(container) >= limit:
-                    LOG.info("Container %(id)s exited with %(code)s and has "
-                             "used its %(limit)d restarts; leaving it "
-                             "stopped",
-                             {'id': container.uuid, 'code': code,
-                              'limit': limit})
+                    reason = self.RETRIES_SPENT_REASON % {'code': code,
+                                                          'limit': limit}
+                    if container.status_reason != reason:
+                        # Said once, on the record, rather than into the
+                        # log every sweep for as long as it stays down.
+                        LOG.info("Container %(id)s exited with %(code)s and "
+                                 "has used its %(limit)d restarts; leaving "
+                                 "it stopped",
+                                 {'id': container.uuid, 'code': code,
+                                  'limit': limit})
+                        container.status_reason = reason
+                        container.save(context)
                     return False
 
             LOG.info("Container %(id)s exited (%(detail)s) with restart "

@@ -413,6 +413,40 @@ runc 形态则是 `<cgroup_parent>/<sandbox-id>`,两种都找。
 ⚠️ **粒度是沙箱级**:限的是整个 VM 的 IO。对 zun"一个 capsule 一个 VM"正好,
 多容器 capsule 上这几个值取自沙箱的那个主体。
 
+#### 4.3.1f restart_policy:CRI 没有,zun 自己管(2026-09-01)
+
+**原状**:`--restart always` 到了记录里就没人读 —— 只有 DockerDriver 实现(交给 dockerd),
+CriDriver 一个字都不读。CRI 节点上容器死了就死了,租户没有任何提示,而 DaaS 是发这个字段的。
+CRI 本身没有重启策略:k8s 是 **kubelet** 在外面盯着状态重建,所以这里也得 zun 自己盯。
+
+**判据放在哪 —— 第一版做错了。** 我先写成"状态同步时,上一轮记录是 RUNNING、这一轮运行时报 EXITED,
+即为自己死的"。实测**一次都没触发**:`container_show` 走 `driver.show()` 后会
+`container.save()`,**API 的 show 先于 sweep 看到退出并把 STOPPED 写进库**,sweep 加载记录时
+"上一轮"已经是 STOPPED。DaaS 持续 inspect,这条路在生产上永远先到。
+⇒ **不能依赖"是谁先观察到";主人的意图要在 stop 发生的地方记下来。**
+
+**定稿**:
+- `stop()` 把 `status_detail` 记成 `STOPPED_BY_OWNER`(`'stopped'`);`_record_exit` 不覆盖
+  已有标记(否则 SIGKILL 的 137 会把主人的 stop 记成一次崩溃);容器再次 RUNNING 时清掉。
+- sweep 里:`status == STOPPED` 且 `status_detail` 以 `exit:` 开头 = **死的**,按策略处理;
+  带 `stopped` 标记的永不复活。与观察顺序无关,幂等。
+- 决定在**与 stop 路径同一把锁**下、对记录**重新读一次**后做:库里若已是主人标记、
+  `task_state` 在飞、DELETING/DELETED、或主人自己已经 start 成 RUNNING —— 主人先到,不动。
+- `always` 与 `unless-stopped` 在这里是同一个策略(二者只在 daemon 重启时有差别,本驱动无此事)。
+  `on-failure` 只重启非零退出,`MaximumRetryCount` 用完即止(0=不封顶),计数复用探针重启那份
+  `k8s_probe_state.restarts`;**退出码读不到的不重启**(对一个问不到的运行时循环重启更糟)。
+  用完重试**在记录上说一次**(`status_reason`),不每轮刷日志。
+- **重启动作分两条路**:capsule 成员走探针用的 `_restart_container`;**普通容器走 start 路径的
+  `_restart_exited`** —— 🔴 第一版用了前者,炸出 `failed to find sandbox id`:普通容器的
+  `container_id` 是**容器** id 不是沙箱 id,得按 OWNER_LABEL 找沙箱。`_restart_exited` 还会
+  **把可写层带过去**,这与 docker 的重启语义一致(docker 重启也保留可写层)。
+- 节奏 = sync 周期(60s)一次,这就是全部的退避。
+
+**实测**(node-04,期间持续 show 模拟 DaaS):`always` + `exit 1` → 5 个周期重启 5 次、
+attempt 到 5、每次"with its writable layer carried over";`on-failure:1` + `exit 3` → 重启 1 次
+后停,记录 `used all 1 of its retries`;`on-failure` + `exit 0` → 不重启;`always` + 用户 stop →
+`status_detail=stopped`,不复活。
+
 ### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
 
 **定案:只对"CRI 之外别无他处"的调用越界。**CRI 服务得了的,一律走 CRI。

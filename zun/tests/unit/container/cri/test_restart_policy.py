@@ -141,6 +141,19 @@ class RestartOnExitTest(base.TestCase):
         self.assertFalse(self.driver._restart_on_exit(
             {}, self.capsule, self.container))
 
+    def test_spent_retries_are_said_once_on_the_record(self):
+        """inspect can then say why it is not coming back; and the log is
+        not told again every sweep for as long as it stays down."""
+        self._policy('on-failure', count=2)
+        self.container.healthcheck = {'k8s_probe_state': {'restarts': 2}}
+
+        self.driver._restart_on_exit({}, self.capsule, self.container)
+        self.driver._restart_on_exit({}, self.capsule, self.container)
+
+        self.assertIn('used all 2', self.container.status_reason)
+        self.assertIn('code 1', self.container.status_reason)
+        self.container.save.assert_called_once()
+
     def test_on_failure_under_the_retry_count_restarts(self):
         self._policy('on-failure', count=2)
         self.container.healthcheck = {'k8s_probe_state': {'restarts': 1}}
