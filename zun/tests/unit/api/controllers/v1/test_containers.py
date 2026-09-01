@@ -105,6 +105,29 @@ class TestContainerController(api_base.FunctionalTest):
             self.post('/v1/containers?run=true', params=params,
                       content_type='application/json')
 
+    @patch('zun.network.neutron.NeutronAPI.find_resourceid_by_name_or_id')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    @patch('zun.compute.api.API.container_create')
+    def test_create_container_declares_ports_and_names_security_groups(
+            self, mock_container_create, mock_neutron_get_network,
+            mock_find_resourceid):
+        """The two used to be mutually exclusive, because exposed_ports made
+        a security group of its own that would have fought the explicit
+        ones. It is a declaration now, and says nothing about reachability;
+        the groups say all of it."""
+        mock_find_resourceid.return_value = 'fake-sg-id'
+        params = ('{"name": "MyDocker", "image": "ubuntu",'
+                  '"security_groups": ["web"],'
+                  '"exposed_ports": {"80/tcp": {}}}')
+        response = self.post('/v1/containers/', params=params,
+                             content_type='application/json')
+        self.assertEqual(202, response.status_int)
+        container = mock_container_create.call_args[0][1]
+        self.assertEqual(['fake-sg-id'], container.security_groups)
+        self.assertEqual({'80/tcp': {}}, container.exposed_ports)
+        # Recorded and shown: the view exports the declaration.
+        self.assertEqual({'80/tcp': {}}, response.json['exposed_ports'])
+
     def test_run_container_runtime_wrong_api_version(self):
         params = ('{"name": "MyDocker", "image": "ubuntu",'
                   '"command": "env", "memory": "512",'

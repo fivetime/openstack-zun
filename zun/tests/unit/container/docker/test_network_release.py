@@ -133,8 +133,7 @@ class TestDeleteReleases(base.TestCase):
         client = cm.start()
         self.addCleanup(cm.stop)
         client.return_value.__enter__.return_value = self.docker
-        for name in ('_cleanup_network_for_container',
-                     '_cleanup_exposed_ports', '_remove_resolv_conf',
+        for name in ('_cleanup_network_for_container', '_remove_resolv_conf',
                      '_release_networks_left_unused'):
             p = mock.patch.object(docker_driver.DockerDriver, name)
             setattr(self, name, p.start())

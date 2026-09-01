@@ -90,6 +90,9 @@ REST_API_VERSION_HISTORY = """REST API Version History:
     * 1.50 - Add user to the container: which user its process runs as.
              Without it a container that asked to drop to an unprivileged
              user ran as root, and nothing said so
+    * 1.51 - Add exposed_ports to the container response: the ports it
+             declares it listens on. A declaration, as docker's --expose
+             is; it opens nothing.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -102,7 +105,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.50'
+CURRENT_MAX_VER = '1.51'
 
 
 class Version(object):

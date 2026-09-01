@@ -473,6 +473,31 @@ update schema 本就不含 cpu_policy。要真做,四处都得修,外加独占�
 `security_opt`/`cap_add`+`cap_drop`,`allowed_capabilities` 白名单同样在驱动层再挡一次)。
 docker-py 7.1 五个参数名在生产 pod 里验过。⚠️ 生产镜像未重打,这条要随下次 zun 发版上线。
 
+#### 4.3.1h exposed_ports 改为纯声明(2026-09-01)
+
+**上游语义**(api-ref 原文):"Zun will create a security group with a set of rules to open the
+ports … and associate the security group to the container"。只有 DockerDriver 实现了:每个带
+`exposed_ports` 的容器**新建一个 SG**、每端口一条 `ingress 0.0.0.0/0`(只有 IPv4),删除时删
+`security_groups[0]`;CriDriver 一字不读——同一个请求在两种节点上是两个意思。
+
+**为什么不补 CriDriver 而是改契约**:上游这个语义在这个云上没有位置——
+- docker 的 `--expose` **本来就只是声明**(`moby/daemon/container_operations.go:116-165`:
+  `ExposedPorts` 只进 `OptionExposedPorts`,桥驱动零处消费;`-p`/`-P` 才进 `OptionPortMapping`)。
+  租户视角的"机器"上,发布走 DaaS 的 FIP 端口转发,可达性由 `security_groups` 决定。
+- 每容器一个 SG 对象踩在最贵的轴上:SG 对象建删触发全云 northd 全量 lflow 重算
+  (`northd/en-sync-sb.c:170-173`,上游 main 至今如此),而容器建删是最高频事件。
+- 租户默认配额 `secgroups=10`:第 9 个 `--expose` 容器就 OverQuota。
+- 生产零个 `zun-*` SG:DaaS 与 kubezun 都不发这个字段,没有存量。
+
+**改法全是删代码**:DockerDriver `_process_exposed_ports` → `_declare_exposed_ports`,只保留
+`kwargs['ports']`(docker 自己的声明,节点上 `docker inspect` 可见);删除路径不再碰 SG
+(否则删的会是租户后来 `add_security_group` 加上的组);`neutron.py:expose_ports()` 删;
+schema 里 `security_groups` 与 `exposed_ports` 的互斥解除(互斥只因自动 SG 会和显式 SG 打架);
+api-ref 两处描述改为声明语义;python-zunclient `--expose-port` 文案同步、与 `--security-group`
+不再互斥。CriDriver 原样"存起来、show 里回显",即为正确实现。
+⚠️ 实测时发现**视图从来没导出过 `exposed_ports`**(上游 1.24 收下就没回显过),
+**1.51** 把它加进容器响应——声明语义的另一半。
+
 ### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
 
 **定案:只对"CRI 之外别无他处"的调用越界。**CRI 服务得了的,一律走 CRI。

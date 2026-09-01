@@ -20,7 +20,6 @@ import shutil
 import types
 
 from docker import errors
-from neutronclient.common import exceptions as n_exc
 from oslo_concurrency import lockutils
 from oslo_log import log as logging
 from oslo_utils import fileutils
@@ -385,8 +384,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             host_config['runtime'] = runtime
             host_config['binds'] = binds
             kwargs['volumes'] = [b['bind'] for b in binds.values()]
-            self._process_exposed_ports(network_driver.neutron_api, container,
-                                        kwargs)
+            self._declare_exposed_ports(container, kwargs)
             # Process the first requested network at create time. The rest
             # will be processed after create.
             requested_network = requested_networks.pop()
@@ -781,28 +779,26 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
     def get_host_default_base_size(self):
         return self.base_device_size
 
-    def _process_exposed_ports(self, neutron_api, container, kwargs):
+    def _declare_exposed_ports(self, container, kwargs):
+        """Tell docker which ports the container says it listens on.
+
+        A declaration and nothing more, as docker's own ``--expose`` is: it
+        is recorded, shown by inspect, and opens nothing. What can reach the
+        container is decided by its security groups alone. This driver used
+        to turn the declaration into a security group of its own with the
+        ports open to 0.0.0.0/0 -- one group per container, on the axis
+        that costs a cloud-wide recompute, against a default quota of ten --
+        which nothing a docker user writes asks for.
+        """
         exposed_ports = {}
         if isinstance(container, objects.Container):
             exposed_ports.update(container.exposed_ports or {})
         if isinstance(container, objects.Capsule):
-            for container in (list(container.init_containers) +
-                              list(container.containers)):
-                exposed_ports.update(container.exposed_ports or {})
-
+            for member in (list(container.init_containers) +
+                           list(container.containers)):
+                exposed_ports.update(member.exposed_ports or {})
         if not exposed_ports:
             return
-
-        # process security group
-        secgroup_name = self._get_secgorup_name(container.uuid)
-        secgroup_id = neutron_api.create_security_group({'security_group': {
-            "name": secgroup_name}})['security_group']['id']
-        neutron_api.expose_ports(secgroup_id, exposed_ports)
-        if container.security_groups:
-            container.security_groups.append(secgroup_id)
-        else:
-            container.security_groups = [secgroup_id]
-        # process kwargs on creating the docker container
         ports = []
         for port in exposed_ports:
             port, proto = port.split('/')
@@ -818,9 +814,6 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             with lockutils.lock(_network_lock(rq_network['network'])):
                 network_driver.get_or_create_network(context,
                                                      rq_network['network'])
-
-    def _get_secgorup_name(self, container_uuid):
-        return consts.NAME_PREFIX + container_uuid
 
     def _write_resolv_conf(self, container):
         """A resolver the container can actually reach, or None.
@@ -902,8 +895,6 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 network_driver = zun_network.driver(context=context,
                                                     docker_api=docker)
                 self._cleanup_network_for_container(container, network_driver)
-                self._cleanup_exposed_ports(network_driver.neutron_api,
-                                            container)
                 if container.container_id:
                     docker.remove_container(container.container_id,
                                             force=force)
@@ -968,22 +959,6 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         for neutron_net in container.addresses:
             network_driver.disconnect_container_from_network(
                 container, neutron_net)
-
-    def _cleanup_exposed_ports(self, neutron_api, container):
-        exposed_ports = {}
-        if isinstance(container, objects.Container):
-            exposed_ports.update(container.exposed_ports or {})
-        if isinstance(container, objects.Capsule):
-            for container in (list(container.init_containers) +
-                              list(container.containers)):
-                exposed_ports.update(container.exposed_ports or {})
-        if not exposed_ports:
-            return
-
-        try:
-            neutron_api.delete_security_group(container.security_groups[0])
-        except n_exc.NeutronClientException:
-            LOG.exception("Failed to delete security group")
 
     def check_container_exist(self, container):
         with docker_utils.docker_client() as docker:

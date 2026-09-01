@@ -1063,15 +1063,29 @@ exec_url:
     The URL to start an exec instance.
   in: body
   type: dict
-exposed_ports:
+exposed_ports-response:
   description: |
-    A list of dictionary data to specify how to expose container's ports.
-    If this parameter is specified, Zun will create a security group with
-    a set of rules to open the ports that should be exposed, and associate
-    the security group to the container. The value is in the form of
-    ``{"<port>/<protocol>: {}"}``, where the ``port`` is the container's
+    The ports the container declares it listens on, as docker's
+    ``--expose`` declares them: recorded and shown, and nothing more. It
+    opens no port; what can reach the container is decided by its
+    ``security_groups`` alone. The value is in the form of
+    ``{"<port>/<protocol>": {}}``, where the ``port`` is the container's
     port and ``protocol`` is either ``tcp`` or ``udp``. If ``protocol``
     is not provided, ``tcp`` will be used.
+    New in microversion 1.51.
+  in: body
+  required: false
+  type: object
+exposed_ports:
+  description: |
+    The ports the container declares it listens on, as docker's
+    ``--expose`` declares them: recorded and shown, and nothing more. It
+    opens no port; what can reach the container is decided by its
+    ``security_groups`` alone. The value is in the form of
+    ``{"<port>/<protocol>": {}}``, where the ``port`` is the container's
+    port and ``protocol`` is either ``tcp`` or ``udp``. If ``protocol``
+    is not provided, ``tcp`` will be used. It may be given together with
+    ``security_groups``.
   in: body
   required: false
   type: object
@@ -1648,13 +1662,14 @@ exec_url:
   type: dict
 exposed_ports:
   description: |
-    A list of dictionary data to specify how to expose container's ports.
-    If this parameter is specified, Zun will create a security group with
-    a set of rules to open the ports that should be exposed, and associate
-    the security group to the container. The value is in the form of
-    ``{"<port>/<protocol>: {}"}``, where the ``port`` is the container's
+    The ports the container declares it listens on, as docker's
+    ``--expose`` declares them: recorded and shown, and nothing more. It
+    opens no port; what can reach the container is decided by its
+    ``security_groups`` alone. The value is in the form of
+    ``{"<port>/<protocol>": {}}``, where the ``port`` is the container's
     port and ``protocol`` is either ``tcp`` or ``udp``. If ``protocol``
-    is not provided, ``tcp`` will be used.
+    is not provided, ``tcp`` will be used. It may be given together with
+    ``security_groups``.
   in: body
   required: false
   type: object

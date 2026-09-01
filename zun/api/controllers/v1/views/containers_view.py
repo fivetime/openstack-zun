@@ -48,6 +48,7 @@ _basic_keys = (
     'tty',
     'image_driver',
     'security_groups',
+    'exposed_ports',
     'auto_remove',
     'runtime',
     'disk',

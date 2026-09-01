@@ -1,0 +1,17 @@
+---
+upgrade:
+  - |
+    ``exposed_ports`` is a declaration now, as docker's ``--expose`` is: it
+    is recorded and shown, and opens nothing. The docker driver no longer
+    creates a security group per container with the declared ports open to
+    ``0.0.0.0/0``, and no longer deletes ``security_groups[0]`` when such a
+    container is deleted. What can reach a container is decided by its
+    ``security_groups`` alone, which may now be given together with
+    ``exposed_ports``. The CRI driver never acted on the field, so the two
+    drivers now mean the same thing by it. Nothing in this cloud created
+    such groups; a deployment that has them keeps them, and can remove
+    them by name (``zun-<container uuid>``).
+features:
+  - |
+    Microversion 1.51 shows ``exposed_ports`` in the container response.
+    The field was accepted since 1.24 and never returned.

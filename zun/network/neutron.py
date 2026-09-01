@@ -361,27 +361,3 @@ class NeutronAPI(object):
         binding_vif_type = port.get('binding:vif_type')
         if binding_vif_type == 'binding_failed':
             raise exception.PortBindingFailed(port=port['id'])
-
-    def expose_ports(self, secgroup_id, ports):
-        for port in ports:
-            port, proto = port.split('/')
-            secgroup_rule = {
-                'security_group_id': secgroup_id,
-                'direction': 'ingress',
-                'port_range_min': port,
-                'port_range_max': port,
-                'protocol': proto,
-                'remote_ip_prefix': '0.0.0.0/0',
-            }
-
-            try:
-                self.create_security_group_rule({
-                    'security_group_rule': secgroup_rule})
-            except n_exceptions.NeutronClientException as ex:
-                LOG.error("Error happened during creating a "
-                          "Neutron security group "
-                          "rule: %s", ex)
-                self.delete_security_group(secgroup_id)
-                raise exception.ZunException(_(
-                    "Could not create required security group rules %s "
-                    "for setting up exported port.") % secgroup_rule)

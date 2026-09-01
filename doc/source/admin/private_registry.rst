@@ -40,9 +40,11 @@ is to run it as a Zun container:
 
 .. note::
 
-   Depending on the configuration of your tenant network, you might need
-   to make sure the container is accessible from other tenants of your cloud.
-   For example, you might need to associate a floating IP to the container.
+   ``--expose-port`` only declares the port, as docker's ``--expose`` does;
+   it opens nothing. Give the container a security group that admits 443
+   (``--security-group``), and, depending on the configuration of your
+   tenant network, make it reachable from other tenants of your cloud --
+   for example by associating a floating IP to the container.
 
 In order to make your registry accessible to external hosts,
 you must use a TLS certificate issued by a trusted Certificate Authority

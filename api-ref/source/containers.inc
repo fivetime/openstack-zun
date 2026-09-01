@@ -109,6 +109,7 @@ Response
   - exit_code: exit_code
   - health: health
   - user: user
+  - exposed_ports: exposed_ports-response
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -205,6 +206,7 @@ Response
   - exit_code: exit_code
   - health: health
   - user: user
+  - exposed_ports: exposed_ports-response
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -292,6 +294,7 @@ Response
   - exit_code: exit_code
   - health: health
   - user: user
+  - exposed_ports: exposed_ports-response
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -518,6 +521,7 @@ Return new container with updated attributes.
   - exit_code: exit_code
   - health: health
   - user: user
+  - exposed_ports: exposed_ports-response
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at
@@ -835,6 +839,7 @@ Response
   - exit_code: exit_code
   - health: health
   - user: user
+  - exposed_ports: exposed_ports-response
   - started_at: started_at
   - size_rw: size_rw
   - size_measured_at: size_measured_at

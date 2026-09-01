@@ -65,17 +65,13 @@ legacy_container_create = {
 _container_properties = copy.deepcopy(_legacy_container_properties)
 _container_properties['command'] = parameter_types.command_list
 
+# security_groups and exposed_ports used to be mutually exclusive, because
+# exposed_ports made a security group of its own that would have fought the
+# explicit ones. It is a declaration now, and the two say different things.
 container_create = {
     'type': 'object',
     'properties': _container_properties,
-    'allOf': [
-        {
-            'required': ['image'],
-        },
-        {
-            'not': {'required': ['security_groups', 'exposed_ports']}
-        }
-    ],
+    'required': ['image'],
     'additionalProperties': False
 }
 
