@@ -1,0 +1,20 @@
+---
+fixes:
+  - |
+    The docker driver releases its per-node docker network for a neutron
+    network only from the last host wrapping it. Removing the wrapper makes
+    kuryr release the subnetpool its IPAM made, and that pool is one neutron
+    object shared by every host's wrapper for the subnet: a node-scoped
+    decision was deleting a cloud-scoped resource, and every container
+    start on the other hosts then failed with "No subnetpools with
+    {'id': ...} is found". A wrapper whose neutron network is gone is
+    removed wherever it is.
+  - |
+    Wrappers nothing removes are swept. The wrapper was released only on
+    the delete path, when the last container on it left the node; a delete
+    that failed part way, or a neutron network removed while the wrapper sat
+    empty, left it behind forever with the pool it holds. ``zun-compute``
+    now sweeps the wrappers it recorded every
+    ``[compute] reclaim_stale_networks_interval`` seconds (900) with the
+    delete path's decision; ``[compute] reclaim_stale_networks`` turns it
+    off.

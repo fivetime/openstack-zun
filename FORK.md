@@ -512,6 +512,12 @@ container2 持 `d6a2adaa`,都已不存在;container3 刚重建拿到 `31ed2e55`)
 清理悬空网络:节点上 `docker network rm <neutron-net-id>`(须无容器挂着;kata 容器卡死时
 `docker rm -f` 会超时,先 `service disable` 该节点)。
 
+**同日第二刀:回收改成周期对账。** 释放原本只在"本节点最后一个容器删除"那一刻发生,删除半途失败、或
+neutron 网络被租户删掉时节点上的 docker 网络正好空着,包装就永远留下(container2 上两个 compose 网络的
+包装比它们的 neutron 网络多活了两天,各持一个池)。现在 compute 每 `reclaim_stale_networks_interval`
+(默认 900s)扫一遍本机记录的 `ZunNetwork` 行,用删除路径同一套判据;并且 **neutron 网络已不存在的,
+不管别的主机还包不包着都删**(全是垃圾)。neutron 问不到 = 不删。
+
 ### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
 
 **定案:只对"CRI 之外别无他处"的调用越界。**CRI 服务得了的,一律走 CRI。

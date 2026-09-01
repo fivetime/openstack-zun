@@ -1776,6 +1776,28 @@ class Manager(periodic_task.PeriodicTasks):
                             '%(err)s',
                             {'drv': type(drv).__name__, 'err': e})
 
+    @periodic_task.periodic_task(spacing=60)
+    @context.set_context
+    def reclaim_stale_networks(self, ctx):
+        """Remove this node's network wrappers that nothing removes.
+
+        See the docker driver: the wrapper made for a neutron network is
+        removed when the last container on it leaves this node, and only
+        then. A delete that failed part way, or a neutron network removed
+        while the wrapper sat empty, leaves it behind holding the address
+        pool kuryr made for it. The interval is checked here rather than
+        given to the decorator, for the reason at the top of this class.
+        """
+        if not CONF.compute.reclaim_stale_networks:
+            return
+        if not self._due('stale_networks',
+                         CONF.compute.reclaim_stale_networks_interval):
+            return
+        try:
+            self.driver.reclaim_stale_networks(ctx)
+        except Exception as e:
+            LOG.warning('Stale network sweep skipped: %s', str(e))
+
     @periodic_task.periodic_task(
         spacing=CONF.compute.reclaim_node_resources_interval)
     @context.set_context

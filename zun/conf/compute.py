@@ -111,6 +111,24 @@ Possible values:
              'to a container being created right now, whose row this node may '
              'simply not have read yet -- deleting it takes the network from '
              'a workload that is starting normally.'),
+    cfg.BoolOpt(
+        'reclaim_stale_networks',
+        default=True,
+        help='Whether to sweep this node\'s docker networks (the docker '
+             'driver\'s per-node wrapper for a neutron network, made on '
+             'demand for the first container here that needs it) and remove '
+             'the ones nothing here uses whose neutron network is gone, or '
+             'that no other node still wraps. The wrapper is normally removed '
+             'when the last container on it leaves this node; a delete that '
+             'failed before it got that far, or a neutron network the tenant '
+             'removed while the wrapper sat empty, leaves it behind forever, '
+             'holding the address pool kuryr made for it.'),
+    cfg.IntOpt(
+        'reclaim_stale_networks_interval',
+        default=900,
+        help='Seconds between sweeps of this node\'s docker networks. Each '
+             'sweep asks dockerd about every wrapper this node recorded and '
+             'neutron whether its network still exists.'),
     cfg.IntOpt(
         'reclaim_node_resources_interval',
         default=600,

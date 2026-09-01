@@ -42,6 +42,7 @@ from zun.container import driver
 from zun.container import orphan
 from zun.image import driver as img_driver
 from zun.network import network as zun_network
+from zun.network import neutron
 from zun import objects
 
 CONF = zun.conf.CONF
@@ -944,6 +945,11 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 if inspected is not None:
                     if inspected.get('Containers'):
                         continue
+                    # A neutron network that is gone makes every host's
+                    # wrapper of it garbage, whichever host looks first;
+                    # nothing shares its pool any more but other garbage.
+                    gone = self._neutron_network_is_gone(context,
+                                                         neutron_net_id)
                     # Only when this is the last host wrapping it. Removing
                     # the docker network makes kuryr release the subnetpool
                     # -- and that pool is one neutron object shared by every
@@ -959,20 +965,66 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                             context,
                             filters={'neutron_net_id': neutron_net_id})
                         if row.host != CONF.host]
-                    if elsewhere:
+                    if elsewhere and not gone:
                         LOG.info('Kept docker network %s: nothing on this '
                                  'host uses it, but %s still wrap it and '
                                  'share its address pool',
                                  neutron_net_id, sorted(set(elsewhere)))
                         continue
-                    docker.remove_network(neutron_net_id)
+                    try:
+                        docker.remove_network(neutron_net_id)
+                    except errors.APIError as api_error:
+                        # The row stays with the network: dropping it would
+                        # make the next sweep unable to find what it left.
+                        LOG.warning('Could not remove docker network %s: %s',
+                                    neutron_net_id, api_error)
+                        continue
                     LOG.info('Removed docker network %s: no container on '
-                             'this host uses it, and no other host wraps it',
-                             neutron_net_id)
+                             'this host uses it, and %s',
+                             neutron_net_id,
+                             'its neutron network is gone' if gone
+                             else 'no other host wraps it')
                 for row in objects.ZunNetwork.list(
                         context, filters={'neutron_net_id': neutron_net_id,
                                           'host': CONF.host}):
                     row.destroy()
+
+    def _neutron_network_is_gone(self, context, neutron_net_id):
+        """True only when neutron says the network does not exist.
+
+        Not knowing is not the same as gone: a neutron that cannot be asked
+        answers False, and the wrapper is kept for a sweep that can ask.
+        """
+        try:
+            neutron.NeutronAPI(context).get_neutron_network(neutron_net_id)
+        except exception.NetworkNotFound:
+            return True
+        except Exception as exc:
+            LOG.warning('Cannot tell whether neutron network %s still '
+                        'exists: %s', neutron_net_id, exc)
+        return False
+
+    def reclaim_stale_networks(self, context):
+        """Sweep this node's docker networks for ones left behind.
+
+        The wrapper for a neutron network is made when the first container
+        here needs it and removed when the last one leaves -- on the delete
+        path. A delete that failed before it got there, or a neutron
+        network the tenant removed while the wrapper sat empty, leaves the
+        wrapper standing with nothing to remove it: dockerd keeps it, and
+        with it the address pool kuryr made. Measured on one node: two
+        wrappers for compose networks whose neutron networks had been gone
+        for two days, each holding a pool. The same decision the delete
+        path makes, applied to everything this node recorded.
+        """
+        rows = objects.ZunNetwork.list(context, filters={'host': CONF.host})
+        neutron_net_ids = sorted({row.neutron_net_id for row in rows
+                                  if row.neutron_net_id})
+        if not neutron_net_ids:
+            return
+        with docker_utils.docker_client() as docker:
+            self._release_networks_left_unused(context, docker,
+                                               neutron_net_ids)
 
     @wrap_docker_error
     def _cleanup_network_for_container(self, container, network_driver):

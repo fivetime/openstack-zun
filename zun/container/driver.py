@@ -691,6 +691,15 @@ class ContainerDriver(object):
                               **kwargs):
         raise NotImplementedError()
 
+    def reclaim_stale_networks(self, context):
+        """Remove this node's wrappers for networks nothing here uses.
+
+        Only a driver that makes a per-node object for a neutron network
+        has anything to reclaim; the CRI driver plumbs a sandbox straight
+        into neutron and has nothing of its own to leave behind.
+        """
+        return
+
     def network_detach(self, context, container, network):
         raise NotImplementedError()
 

@@ -25,6 +25,7 @@ from unittest import mock
 
 from docker import errors
 
+from zun.common import exception
 from zun.container.docker import driver as docker_driver
 from zun.tests import base
 
@@ -46,6 +47,11 @@ class TestReleaseWhenNothingUsesIt(base.TestCase):
         patcher = mock.patch.object(docker_driver.objects.ZunNetwork, 'list',
                                     return_value=[self.row])
         self.list = patcher.start()
+        self.addCleanup(patcher.stop)
+        # neutron still has the network unless a test says otherwise.
+        patcher = mock.patch.object(self.driver, '_neutron_network_is_gone',
+                                    return_value=False)
+        self.gone = patcher.start()
         self.addCleanup(patcher.stop)
 
     def _release(self, nets=('net-1',)):
@@ -72,6 +78,28 @@ class TestReleaseWhenNothingUsesIt(base.TestCase):
         self._release()
 
         self.docker.remove_network.assert_not_called()
+        self.row.destroy.assert_not_called()
+
+    def test_a_network_neutron_no_longer_has_is_removed_wherever_it_is(self):
+        """Every host's wrapper of it is garbage; the pool it holds too."""
+        self.docker.inspect_network.return_value = {'Containers': {}}
+        self.list.return_value = [self.row, mock.Mock(host='another-host')]
+        self.gone.return_value = True
+
+        self._release()
+
+        self.docker.remove_network.assert_called_once_with('net-1')
+        self.row.destroy.assert_called_once()
+
+    def test_a_removal_dockerd_refuses_keeps_the_row(self):
+        """Dropping it would leave the next sweep unable to find what
+        this one left behind."""
+        self.docker.inspect_network.return_value = {'Containers': {}}
+        self.docker.remove_network.side_effect = errors.APIError(
+            'kuryr said no', mock.Mock(status_code=500), None)
+
+        self._release()
+
         self.row.destroy.assert_not_called()
 
     def test_the_last_host_wrapping_it_removes_it(self):
@@ -194,3 +222,69 @@ class TestDeleteReleases(base.TestCase):
         self.driver.delete(mock.Mock(), self.container, True)
 
         self._release_networks_left_unused.assert_not_called()
+
+
+class TestNeutronIsAsked(base.TestCase):
+    """Gone means neutron said so; not knowing keeps the wrapper."""
+
+    def setUp(self):
+        super(TestNeutronIsAsked, self).setUp()
+        self.driver = docker_driver.DockerDriver.__new__(
+            docker_driver.DockerDriver)
+
+    def _ask(self, side_effect=None):
+        with mock.patch.object(docker_driver.neutron, 'NeutronAPI') as api:
+            api.return_value.get_neutron_network.side_effect = side_effect
+            return self.driver._neutron_network_is_gone(mock.Mock(), 'net-1')
+
+    def test_a_network_neutron_cannot_find_is_gone(self):
+        self.assertTrue(self._ask(exception.NetworkNotFound(network='net-1')))
+
+    def test_a_network_neutron_has_is_not(self):
+        self.assertFalse(self._ask())
+
+    def test_a_neutron_that_cannot_be_asked_is_not_permission(self):
+        self.assertFalse(self._ask(IOError('neutron unreachable')))
+
+
+class TestTheSweep(base.TestCase):
+    """The delete path's decision, applied to everything this node recorded.
+
+    A delete that failed part way, or a neutron network removed while the
+    wrapper sat empty, left the wrapper standing with nothing to remove it
+    -- and the address pool kuryr made for it.
+    """
+
+    def setUp(self):
+        super(TestTheSweep, self).setUp()
+        self.driver = docker_driver.DockerDriver.__new__(
+            docker_driver.DockerDriver)
+        self.docker = mock.MagicMock()
+        cm = mock.patch.object(docker_driver.docker_utils, 'docker_client')
+        client = cm.start()
+        self.addCleanup(cm.stop)
+        client.return_value.__enter__.return_value = self.docker
+        p = mock.patch.object(self.driver, '_release_networks_left_unused')
+        self.release = p.start()
+        self.addCleanup(p.stop)
+
+    def test_every_network_this_host_recorded_is_considered_once(self):
+        rows = [mock.Mock(neutron_net_id='net-b'),
+                mock.Mock(neutron_net_id='net-a'),
+                mock.Mock(neutron_net_id='net-b')]
+        with mock.patch.object(docker_driver.objects.ZunNetwork, 'list',
+                               return_value=rows) as listed:
+            self.driver.reclaim_stale_networks(mock.Mock())
+
+        self.assertEqual({'host': docker_driver.CONF.host},
+                         listed.call_args[1]['filters'])
+        self.release.assert_called_once_with(mock.ANY, self.docker,
+                                             ['net-a', 'net-b'])
+
+    def test_nothing_recorded_asks_dockerd_nothing(self):
+        with mock.patch.object(docker_driver.objects.ZunNetwork, 'list',
+                               return_value=[]):
+            self.driver.reclaim_stale_networks(mock.Mock())
+
+        self.release.assert_not_called()
+
