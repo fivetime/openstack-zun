@@ -156,6 +156,13 @@ Interdependencies to other options:
                help='Where containerd listens. The CRI is served here and '
                     'so are the services behind it that a commit needs, so '
                     'one address covers both.'),
+    cfg.StrOpt('cri_root_dir',
+               default='/var/lib/containerd',
+               help="The runtime's own root, whose disk a block IO limit "
+                    'names. A throttle rule has to name a device, and the '
+                    'device is the one a container writes to -- so this has '
+                    'to be where the runtime keeps container filesystems, '
+                    'not where zun keeps its own files.'),
     cfg.StrOpt('cri_snapshotter',
                default='',
                help='Name of the containerd snapshotter the CRI prepares '

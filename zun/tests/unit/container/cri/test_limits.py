@@ -68,29 +68,36 @@ class SwapTest(base.TestCase):
 
 class UnenforceableLimitsTest(base.TestCase):
 
-    def _asked(self, **fields):
-        container = mock.Mock(**{f: None for f, _o
-                                 in cri_driver.CriDriver.UNENFORCEABLE_LIMITS})
+    def _asked(self, host_io=True, **fields):
+        blank = {f: None for f, _o in cri_driver.CriDriver.UNENFORCEABLE_LIMITS}
+        blank.update({f: None for f, _o
+                      in cri_driver.CriDriver.HOST_IO_LIMITS})
+        container = mock.Mock(**blank)
         for k, v in fields.items():
             setattr(container, k, v)
         driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        # What _can_limit_host_io() would have found out about this node.
+        driver._host_io_ok = host_io
         return driver.unenforceable_limits(container)
 
     def test_a_pids_limit_is_named(self):
         self.assertEqual([('pids_limit', '--pids-limit')],
                          self._asked(pids_limit=64))
 
-    def test_block_io_weight_is_named(self):
-        self.assertEqual([('blkio_weight', '--blkio-weight')],
-                         self._asked(blkio_weight=500))
+    def test_block_io_is_not_turned_down_where_the_host_can_apply_it(self):
+        """It has no CRI field either, but it is written on the host."""
+        self.assertEqual([], self._asked(blkio_weight=500, host_io=True))
+        self.assertEqual([], self._asked(device_read_bps=1048576,
+                                         host_io=True))
 
-    def test_per_device_throughput_is_named(self):
-        self.assertEqual([('device_read_bps', '--device-read-bps')],
-                         self._asked(device_read_bps=1048576))
+    def test_block_io_is_turned_down_where_the_host_cannot(self):
+        """A node without the io controller says so rather than dropping it."""
+        self.assertEqual([('blkio_weight', '--blkio-weight')],
+                         self._asked(blkio_weight=500, host_io=False))
 
     def test_everything_asked_for_is_named_at_once(self):
         """One refusal listing all of them, not one error per round trip."""
-        asked = self._asked(pids_limit=64, blkio_weight=500)
+        asked = self._asked(pids_limit=64, blkio_weight=500, host_io=False)
 
         self.assertEqual([('pids_limit', '--pids-limit'),
                           ('blkio_weight', '--blkio-weight')], asked)
@@ -101,6 +108,7 @@ class UnenforceableLimitsTest(base.TestCase):
     def test_cpu_memory_and_swap_are_not_in_the_list(self):
         """Those this driver does apply, so they are never turned down."""
         fields = [f for f, _o in cri_driver.CriDriver.UNENFORCEABLE_LIMITS]
+        fields += [f for f, _o in cri_driver.CriDriver.HOST_IO_LIMITS]
 
         for applied in ('cpu', 'memory', 'swap', 'disk'):
             self.assertNotIn(applied, fields)

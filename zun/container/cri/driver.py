@@ -39,6 +39,7 @@ import zun.conf
 from zun.container import driver
 from zun.container import orphan
 from zun.container.cri import commit as cri_commit
+from zun.container.cri import hostio
 from zun.container.cri import resources as cri_resources
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
@@ -299,6 +300,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         self.runtime_stub = api_pb2_grpc.RuntimeServiceStub(channel)
         # Filled on first use by _runtime_snapshotter().
         self._snapshotter = None
+        # Filled on first use by _can_limit_host_io()/_io_device().
+        self._host_io_ok = None
+        self._io_dev = None
         self.image_stub = api_pb2_grpc.ImageServiceStub(channel)
         # containerd's own task service, on the same socket. The CRI is a view
         # of containerd, not the whole of it: pausing a task and sending it a
@@ -374,6 +378,69 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         )
         LOG.debug("podsandbox is created: %s", sandbox_resp)
         capsule.container_id = sandbox_resp.pod_sandbox_id
+        self._apply_host_io_limits(capsule, sandbox_resp.pod_sandbox_id)
+
+    def _apply_host_io_limits(self, subject, sandbox_id):
+        """Hold the sandbox to the block IO limits it was created with.
+
+        Written on the host rather than asked of the runtime: the CRI has no
+        field for a block IO limit, and the thing worth limiting is what
+        reaches the node's disk -- which for a VM runtime is the VMM's own
+        traffic, not what the guest thinks it is doing to its virtual one.
+
+        Best effort is not an option here: the compute manager has already
+        refused a container asking for a limit this node cannot apply, so
+        reaching here and failing means the limit was accepted and dropped.
+        It is raised, and the container fails with a reason.
+        """
+        weight = hostio.io_weight(getattr(subject, 'blkio_weight', None))
+        line = None
+        device = self._io_device()
+        if device:
+            line = hostio.io_max_line(device, subject)
+        if weight is None and line is None:
+            return
+
+        cgroup = self._sandbox_cgroup(subject, sandbox_id)
+        if cgroup is None:
+            raise exception.ZunException(_(
+                'Could not find the cgroup of sandbox %(id)s, so the block '
+                'IO limits it asked for were not applied.')
+                % {'id': sandbox_id})
+        hostio.enable_io_controller(
+            cgroup[len(hostio.CGROUP_ROOT):])
+        if weight is not None:
+            self._write_cgroup(cgroup, 'io.weight', str(weight))
+        if line is not None:
+            self._write_cgroup(cgroup, 'io.max', line)
+        LOG.info('Sandbox %(id)s held to io.weight=%(w)s io.max=%(m)s',
+                 {'id': sandbox_id[:12], 'w': weight, 'm': line})
+
+    def _sandbox_cgroup(self, subject, sandbox_id):
+        """Where the sandbox's processes are accounted, on the host.
+
+        The runtime is told a cgroup parent and puts the sandbox under it.
+        A VM runtime renames the leaf with a `kata_` prefix -- it manages
+        that controller itself, and says so by the name -- so both shapes
+        are looked for rather than assumed.
+        """
+        parent = self._sandbox_cgroup_parent(subject)
+        for leaf in ('kata_%s' % sandbox_id, sandbox_id):
+            path = os.path.join(hostio.CGROUP_ROOT, parent.strip('/'), leaf)
+            if os.path.isdir(path):
+                return path
+        return None
+
+    @staticmethod
+    def _write_cgroup(cgroup, name, value):
+        path = os.path.join(cgroup, name)
+        try:
+            with open(path, 'w') as handle:
+                handle.write(value)
+        except OSError as e:
+            raise exception.ZunException(_(
+                'Could not write %(value)s to %(path)s: %(err)s')
+                % {'value': value, 'path': path, 'err': e})
 
     def _get_sandbox_config(self, capsule, dns_servers=None,
                             dns_searches=None, labels=None):
@@ -893,6 +960,13 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     #: than a way out. Fixing it properly means a field in the CRI itself.
     UNENFORCEABLE_LIMITS = (
         ('pids_limit', '--pids-limit'),
+    )
+
+    #: The block IO limits, which the CRI cannot carry either but which are
+    #: applied on the host instead -- see hostio. Reported as unenforceable
+    #: only where the host cannot do it, so a node without the io controller
+    #: turns them down rather than accepting them and doing nothing.
+    HOST_IO_LIMITS = (
         ('blkio_weight', '--blkio-weight'),
         ('device_read_bps', '--device-read-bps'),
         ('device_write_bps', '--device-write-bps'),
@@ -902,8 +976,50 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def unenforceable_limits(self, container):
         """Which of the limits asked for this driver would have dropped."""
-        return [(field, option) for field, option in self.UNENFORCEABLE_LIMITS
-                if getattr(container, field, None)]
+        asked = [(field, option) for field, option in self.UNENFORCEABLE_LIMITS
+                 if getattr(container, field, None)]
+        if not self._can_limit_host_io():
+            asked += [(field, option) for field, option in self.HOST_IO_LIMITS
+                      if getattr(container, field, None)]
+        return asked
+
+    def _can_limit_host_io(self):
+        """Whether this node can hold a sandbox to a block IO limit.
+
+        Two things have to be true and neither can be assumed: the host has
+        to offer the io controller, and the disk behind the runtime's root
+        has to be resolvable, because a throttle rule names a device.
+        """
+        cached = getattr(self, '_host_io_ok', None)
+        if cached is None:
+            cached = bool(hostio.has_io_controller() and self._io_device())
+            self._host_io_ok = cached
+        return cached
+
+    def _io_device(self):
+        """The whole disk behind the runtime's root, as MAJ:MIN.
+
+        ⚠️ The disk, never a partition: the io controller matches bios at
+        the disk level and a partition's dev_t silently matches nothing.
+        """
+        cached = getattr(self, '_io_dev', None)
+        if cached is not None:
+            return cached or None
+        self._io_dev = ''
+        try:
+            src, _err = utils.execute(
+                'findmnt', '-no', 'SOURCE', '--target', CONF.cri_root_dir)
+            src = src.strip().split('[')[0]
+            parent, _err = utils.execute('lsblk', '-no', 'pkname', src)
+            parent = [x.strip() for x in parent.strip().splitlines()]
+            disk = ('/dev/' + parent[0]) if parent and parent[0] else src
+            majmin, _err = utils.execute('lsblk', '-dno', 'MAJ:MIN', disk)
+            self._io_dev = majmin.strip().splitlines()[0].strip()
+        except Exception as e:
+            LOG.warning('Cannot resolve the disk behind %(root)s, so this '
+                        'node cannot apply a block IO limit: %(err)s',
+                        {'root': CONF.cri_root_dir, 'err': e})
+        return self._io_dev or None
 
     def node_support_disk_quota(self):
         """Whether this node can hold a container to the disk it asked for.
