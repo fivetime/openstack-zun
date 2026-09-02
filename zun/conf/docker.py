@@ -17,6 +17,24 @@ docker_group = cfg.OptGroup(name='docker',
                             title='Options for docker')
 
 docker_opts = [
+    cfg.BoolOpt('verify_wiring',
+                default=True,
+                help='After starting a container, check that the host-side '
+                     'interface kuryr makes for each of its neutron ports '
+                     'actually exists, and refuse the start when it does '
+                     'not. Every status said the container was fine while '
+                     'its packets went nowhere: docker said running, the '
+                     'port said ACTIVE -- the one witness that does not '
+                     'lie is the interface in the host network namespace. '
+                     'Assumes zun-compute shares the host network '
+                     'namespace, as the charts deploy it; turn it off '
+                     'where it does not.'),
+    cfg.IntOpt('verify_wiring_timeout',
+               default=10, min=1,
+               help='Seconds to wait for the host-side interface to appear '
+                    'after a start before calling the container unwired. '
+                    'Plumbing is ordinarily complete when docker start '
+                    'returns; this covers a slow node, not a broken one.'),
     cfg.StrOpt('docker_remote_api_version',
                default='1.26',
                help='Docker remote api version. Override it according to '

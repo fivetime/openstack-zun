@@ -518,6 +518,18 @@ neutron 网络被租户删掉时节点上的 docker 网络正好空着,包装就
 (默认 900s)扫一遍本机记录的 `ZunNetwork` 行,用删除路径同一套判据;并且 **neutron 网络已不存在的,
 不管别的主机还包不包着都删**(全是垃圾)。neutron 问不到 = 不删。
 
+#### 4.3.1j 半接线检测:started 必须真的接了线(2026-09-02)
+
+生产事故形态:挣扎中的节点上容器"起来了",docker 说 running、neutron 端口 ACTIVE、SB binding up,
+**唯独宿主机上没有那个端口的 tap 接口**——所有状态都在说谎,包全进黑洞,追了两小时。
+不说谎的证人是宿主网络命名空间里的接口本身,而 zun-compute(hostNetwork)看得到。
+
+- **start 时**:`_assert_wired` 等 `('tap'+port_id)[:14]`(kuryr 的命名,NIC_NAME_LEN=14)出现,
+  超时(`[docker] verify_wiring_timeout`,10s)即停容器、报 `never wired: no host interface …`。
+- **运行期**:状态同步循环里 `_watch_wiring`,**连续两轮**缺失才把真话写进 `status_reason` 并记 ERROR
+  (保持 Running——docker 对进程没说错,错的是网络)。恢复即清零。
+- `[docker] verify_wiring=false` 可关;前提是 zun-compute 共享宿主网络命名空间(chart 就是这么部的)。
+
 ### 4.3.2 越过 CRI 那一层:什么时候可以,怎么做
 
 **定案:只对"CRI 之外别无他处"的调用越界。**CRI 服务得了的,一律走 CRI。

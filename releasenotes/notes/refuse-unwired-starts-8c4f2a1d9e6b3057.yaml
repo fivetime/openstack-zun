@@ -1,0 +1,14 @@
+---
+fixes:
+  - |
+    A started container must actually be wired. On a struggling node a
+    container could come up with every status saying it was fine -- docker
+    running, the neutron port ACTIVE, the southbound binding up -- while no
+    interface for its port existed on the host, and every packet to it went
+    nowhere. The docker driver now waits for the host-side interface kuryr
+    makes (``('tap' + port_id)[:14]``) after a start and refuses the start
+    by name when it never appears (``[docker] verify_wiring``, on by
+    default; ``verify_wiring_timeout`` 10s), and the state sync marks a
+    running container whose interface has gone -- on the second
+    consecutive miss -- in its ``status_reason``. Assumes ``zun-compute``
+    shares the host network namespace, as the charts deploy it.

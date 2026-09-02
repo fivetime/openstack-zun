@@ -16,6 +16,7 @@ import errno
 import eventlet
 import functools
 import os
+import time
 import shutil
 import types
 
@@ -193,6 +194,9 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         for driver_name in CONF.image_driver_list:
             driver = img_driver.load_image_driver(driver_name)
             self.image_drivers[driver_name] = driver
+
+        #: Seen unwired once; acted on at the second consecutive look.
+        self._unwired = set()
 
     def _get_host_storage_info(self):
         host_info = self.get_host_info()
@@ -989,6 +993,72 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                                           'host': CONF.host}):
                     row.destroy()
 
+    @staticmethod
+    def _host_interfaces_of(container):
+        """The host-side interface kuryr made for each of its ports.
+
+        kuryr names the host end of a container's veth pair
+        ('tap' + port_id)[:NIC_NAME_LEN] -- tap plus the first eleven
+        characters of the neutron port id (kuryr/lib/utils.py).
+        """
+        ports = sorted({addr['port']
+                        for addrs in (container.addresses or {}).values()
+                        for addr in addrs or [] if addr.get('port')})
+        return [(port_id, ('tap' + port_id)[:14]) for port_id in ports]
+
+    def _assert_wired(self, container):
+        """Refuse to call a container started that has no way to speak.
+
+        Measured in production: a container came up on a struggling node
+        with every status saying it was fine -- docker said running, the
+        neutron port said ACTIVE, the southbound binding said up -- while
+        no interface for its port existed on the host, and every packet
+        to it went nowhere. Two hours of tracing ended at a missing tap.
+        The one witness that does not lie is the interface itself, and
+        this process shares the host's network namespace and can look.
+        """
+        if not CONF.docker.verify_wiring:
+            return
+        deadline = time.time() + CONF.docker.verify_wiring_timeout
+        for port_id, ifname in self._host_interfaces_of(container):
+            while not os.path.exists('/sys/class/net/' + ifname):
+                if time.time() >= deadline:
+                    raise exception.ZunException(_(
+                        'the container started but its network was never '
+                        'wired: no host interface %(ifname)s exists for '
+                        'port %(port)s') % {'ifname': ifname,
+                                            'port': port_id})
+                time.sleep(0.5)
+
+    def _watch_wiring(self, container):
+        """Say so when a running container's wiring has gone.
+
+        Detection only, on the second consecutive miss: the interface can
+        be mid-flight for a moment, but one that stays gone means the
+        container is a black hole -- fine in every status and reachable
+        by no packet. The record keeps Running, because docker is not
+        wrong about the process; the reason field carries the truth.
+        """
+        if not CONF.docker.verify_wiring:
+            return
+        missing = [ifname for _port, ifname
+                   in self._host_interfaces_of(container)
+                   if not os.path.exists('/sys/class/net/' + ifname)]
+        if not missing:
+            self._unwired.discard(container.uuid)
+            return
+        if container.uuid not in self._unwired:
+            self._unwired.add(container.uuid)
+            return
+        reason = ('the container is running but not wired: host '
+                  'interface(s) %s are gone' % ', '.join(missing))
+        if container.status_reason != reason:
+            container.status_reason = reason
+            container.save()
+        LOG.error('Container %(uuid)s is running but not wired: %(gone)s '
+                  'missing on this host',
+                  {'uuid': container.uuid, 'gone': missing})
+
     def _neutron_network_is_gone(self, context, neutron_net_id):
         """True only when neutron says the network does not exist.
 
@@ -1198,6 +1268,8 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             container = id_to_container_map[cid]
             # sync status
             local_container = id_to_local_container_map[cid]
+            if local_container.status == consts.RUNNING:
+                self._watch_wiring(container)
             if container.status != local_container.status:
                 old_status = container.status
                 container.status = local_container.status
@@ -1447,6 +1519,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                                                 docker_api=docker)
             try:
                 network_driver.on_container_started(container)
+                self._assert_wired(container)
             except Exception as e:
                 LOG.error('network driver failed on starting container: %s',
                           str(e))
@@ -1458,7 +1531,8 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 except Exception:
                     pass
                 container.status = consts.STOPPED
-                container.status_reason = _("failed to configure network")
+                container.status_reason = _(
+                    "failed to configure network: %s") % e
             self._apply_volume_io_limits(context, container)
             return container
 
