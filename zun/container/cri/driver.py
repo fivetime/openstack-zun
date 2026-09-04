@@ -1847,6 +1847,19 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 state['restarts'] = _restart_count(container) + 1
                 healthcheck['k8s_probe_state'] = state
                 container.healthcheck = healthcheck
+            elif not self._sandbox_alive(capsule.container_id):
+                # The sandbox itself died -- the pod ceiling OOM-killed a
+                # gVisor sentry whose containers overran it, or a VMM
+                # crashed. CreateContainer in a dead sandbox is refused, so
+                # restarting the one container would retry into the same
+                # refusal every sweep, forever.
+                try:
+                    self._rebuild_capsule(context, capsule)
+                except Exception as e:
+                    LOG.error("Could not rebuild capsule %(id)s after its "
+                              "sandbox died: %(err)s",
+                              {'id': capsule.uuid, 'err': e})
+                    return False
             elif not self._restart_container(context, capsule, container):
                 return False
             # The replacement is created and started; the record still
@@ -1856,6 +1869,76 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             self._record_start(container)
             container.save(context)
             return True
+
+    def _sandbox_alive(self, pod_id):
+        """Whether the sandbox can still hold a container.
+
+        NOTREADY and gone read the same here: both refuse CreateContainer,
+        and the rebuild is the answer to both.
+        """
+        if not pod_id:
+            return False
+        try:
+            resp = self.runtime_stub.PodSandboxStatus(
+                api_pb2.PodSandboxStatusRequest(pod_sandbox_id=pod_id))
+        except grpc.RpcError:
+            return False
+        return resp.status.state == api_pb2.SANDBOX_READY
+
+    def _rebuild_capsule(self, context, capsule):
+        """Rebuild a capsule whose sandbox itself died, keeping its address.
+
+        A sandbox is supposed to outlive its containers, but it can die
+        too: the pod ceiling OOM-kills a gVisor sentry whose containers
+        overran it, a VMM crashes. The Neutron port is the part that
+        survives -- it belongs to the capsule, not the sandbox, and
+        create_or_update_port re-binds it by id -- so the capsule keeps
+        the address every client of the pod knows it by, the same
+        invariant a container restart keeps.
+
+        Init containers run again, the way kubelet reruns them whenever a
+        pod's sandbox is recreated: their work was done *into* the old
+        sandbox. Every member's restart tally moves, since every member's
+        incarnation died with the sandbox.
+        """
+        LOG.info("Rebuilding capsule %(id)s: its sandbox died and cannot "
+                 "hold containers again", {'id': capsule.uuid})
+        self._delete_sandbox(context, capsule, capsule.container_id)
+        requested_networks = []
+        for network_id, addrs in (capsule.addresses or {}).items():
+            net = {'network': network_id}
+            port_id = next((a.get('port') for a in addrs if a.get('port')),
+                           None)
+            if port_id:
+                net['port'] = port_id
+            requested_networks.append(net)
+        if not requested_networks:
+            raise exception.ZunException(_(
+                'Capsule %s records no network to rebuild onto')
+                % capsule.uuid)
+        self._create_pod_sandbox(context, capsule, requested_networks)
+        capsule.save(context)
+        for member in list(capsule.init_containers or []):
+            volumes = {member.uuid: objects.VolumeMapping.list_by_container(
+                context, member.uuid)}
+            self._create_container(context, capsule, member, volumes)
+            self._wait_for_init_container(context, member)
+            member.save(context)
+        for member in list(capsule.containers or []):
+            volumes = {member.uuid: objects.VolumeMapping.list_by_container(
+                context, member.uuid)}
+            healthcheck = dict(member.healthcheck or {})
+            state = dict(healthcheck.get('k8s_probe_state') or {})
+            state['restarts'] = _restart_count(member) + 1
+            healthcheck['k8s_probe_state'] = state
+            member.healthcheck = healthcheck
+            self._create_container(context, capsule, member, volumes)
+            member.status = consts.RUNNING
+            member.status_detail = None
+            self._record_start(member)
+            member.save(context)
+        capsule.status = consts.RUNNING
+        capsule.save(context)
 
     def _restart_container(self, context, capsule, container):
         """Replace a container in place, keeping its sandbox.

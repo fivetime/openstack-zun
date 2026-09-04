@@ -70,6 +70,13 @@ class RestartOnExitTest(base.TestCase):
             self.driver, '_restart_exited'))
         self.capsule_restarted = self._patch(mock.patch.object(
             self.driver, '_restart_container', return_value=True))
+        # The sandbox is normally still there -- a container dying inside a
+        # healthy sandbox is the ordinary shape; the rebuild path is for a
+        # sandbox that died too.
+        self.sandbox_alive = self._patch(mock.patch.object(
+            self.driver, '_sandbox_alive', return_value=True))
+        self.rebuilt = self._patch(mock.patch.object(
+            self.driver, '_rebuild_capsule'))
         self._patch(mock.patch.object(self.driver, '_record_start'))
 
     def _patch(self, patcher):
@@ -287,3 +294,46 @@ class OwnerStopIsMarkedTest(base.TestCase):
 
         self.assertEqual(consts.RUNNING, container.status)
         self.assertIsNone(container.status_detail)
+
+
+class SandboxDeathTest(RestartOnExitTest):
+    """A sandbox that died takes every container with it.
+
+    The pod ceiling OOM-kills a gVisor sentry whose containers overran it; a
+    VMM crashes. CreateContainer in a dead sandbox is refused, so restarting
+    the one container would retry into the same refusal every sweep, forever
+    -- measured, before the rebuild path existed. The rebuild keeps the
+    capsule's Neutron port, so the pod keeps its address.
+    """
+
+    def setUp(self):
+        super(SandboxDeathTest, self).setUp()
+        self.member_capsule = mock.Mock(uuid='cap-1', container_id='sb-1',
+                                        containers=[self.container])
+
+    def test_a_dead_sandbox_is_rebuilt_not_restarted_into(self):
+        self._policy('always')
+        self.sandbox_alive.return_value = False
+
+        self.assertTrue(self.driver._restart_on_exit(
+            {}, self.member_capsule, self.container))
+
+        self.rebuilt.assert_called_once_with({}, self.member_capsule)
+        self.capsule_restarted.assert_not_called()
+
+    def test_a_live_sandbox_is_not_rebuilt(self):
+        self._policy('always')
+
+        self.assertTrue(self.driver._restart_on_exit(
+            {}, self.member_capsule, self.container))
+
+        self.rebuilt.assert_not_called()
+        self.capsule_restarted.assert_called_once()
+
+    def test_a_rebuild_that_fails_leaves_the_death_on_the_record(self):
+        self._policy('always')
+        self.sandbox_alive.return_value = False
+        self.rebuilt.side_effect = exception.ZunException('no network')
+
+        self.assertFalse(self.driver._restart_on_exit(
+            {}, self.member_capsule, self.container))
