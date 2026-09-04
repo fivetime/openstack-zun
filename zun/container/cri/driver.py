@@ -470,6 +470,16 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             linux=api_pb2.LinuxPodSandboxConfig(
                 cgroup_parent=self._sandbox_cgroup_parent(capsule)),
         )
+        agg = cri_resources.sandbox_resources(self._member_resources(capsule))
+        if agg:
+            # The pod-level ceiling, the field kubelet fills for every pod.
+            # containerd turns it into the io.kubernetes.cri.sandbox-*
+            # annotations that kata sizes its VM by and gVisor sizes its
+            # sentry by; without it both read the host's own figures --
+            # measured on a runsc sandbox booting with --cpu-num 16
+            # --total-memory 31G for a capsule limited to 1 cpu / 256Mi.
+            config.linux.resources.CopyFrom(
+                api_pb2.LinuxContainerResources(**agg))
         if labels:
             # What ties a sandbox back to whoever owns it. A container records
             # its container id, not its sandbox id -- there is one field and
@@ -486,6 +496,26 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # is missing rather than like a resolver setting.
             config.dns_config.searches.extend(dns_searches)
         return config
+
+    @staticmethod
+    def _member_resources(capsule):
+        """Each member's (cpu, memory) as recorded, for the sandbox ceiling.
+
+        A capsule's members carry the limits; a container created through
+        the Container API is its own only member and carries them itself.
+        Read defensively: a member list that cannot be loaded here must not
+        stop the sandbox from being created -- the ceiling is an
+        improvement, not a precondition.
+        """
+        try:
+            members = list(getattr(capsule, 'containers', None) or [])
+            members += list(getattr(capsule, 'init_containers', None) or [])
+        except Exception:
+            members = []
+        if not members:
+            members = [capsule]
+        return [(getattr(m, 'cpu', None), getattr(m, 'memory', None))
+                for m in members]
 
     @staticmethod
     def _sandbox_cgroup_parent(capsule):

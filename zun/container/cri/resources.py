@@ -86,3 +86,43 @@ def _number(value):
         return 0
 
 
+
+
+def sandbox_resources(members):
+    """The sandbox-level resource block: the members' ceilings, summed.
+
+    This is the field kubelet fills for every pod
+    (LinuxPodSandboxConfig.resources, "the sum of container resources"),
+    and it is how a sandboxed runtime learns the pod's ceiling at all: a
+    VM or a sentry holds every container inside one host process, so the
+    per-container blocks land in cgroups that hold no processes. containerd
+    turns this block into the io.kubernetes.cri.sandbox-* annotations that
+    kata sizes its VM by and gVisor sizes its sentry by; without it both
+    fall back to the host's own figures.
+
+    The arithmetic mirrors kubelet's pod-level rule (ResourceConfigForPod):
+    a ceiling is the sum of the members' limits, and one member without a
+    limit lifts the pod's ceiling for that resource entirely -- summing the
+    rest anyway would squeeze the unlimited member under a number nobody
+    asked for. Shares are a weight, not a ceiling, so they sum over
+    whichever members declared one.
+
+    `members` is a list of (cpu, memory_mb) pairs, in whatever mix of
+    str/number/None the records hold; returns {} when nothing is limited.
+    """
+    cpus = [_number(cpu) for cpu, _ in members]
+    mems = [_number(memory) for _, memory in members]
+    resources = {}
+    if cpus and all(c > 0 for c in cpus):
+        total = sum(cpus)
+        resources['cpu_quota'] = int(total * _CPU_PERIOD_US)
+        resources['cpu_period'] = _CPU_PERIOD_US
+    shares = sum(c for c in cpus if c > 0)
+    if shares > 0:
+        resources['cpu_shares'] = int(1024 * shares)
+    if mems and all(m > 0 for m in mems):
+        limit = int(sum(int(m) for m in mems)) * 1024 * 1024
+        resources['memory_limit_in_bytes'] = limit
+        # The kubelet default: swap off, the total is the memory limit.
+        resources['memory_swap_limit_in_bytes'] = limit
+    return resources
