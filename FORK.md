@@ -616,6 +616,57 @@ CRI 的 `Exec` RPC 返回运行时自己流式服务器的 URL,那个服务器**
   只是 deprecated。**o.vo 升到认 classmethod 的版本后,把这个 revert 再 revert 掉即可**;
   在那之前每次合上游都要留意别把它带回来。
 
+### 4.6 运行时档位与 pod 级 cgroup(2026-09-04,gVisor 兼容实测定案)
+
+在测试床验证 gVisor(runsc release-20260817.0,containerd 2.4.0-beta)全链路,
+**结论:兼容**——创建/调度(runtimeClassName→capsule.runtime→handler)、OVN 网络
+(podIP 不变式、DNS、TCP 双向)、ExecSync、logs、stats(CPU/内存/网络计数)、
+重启机制全部实测通过。这次实测同时捞出四个**与 runtime 无关**的存量 bug,均已修:
+
+1. **restart_policy 对 capsule 成员从未生效**(`619a3576`):`_restart_on_exit` 的
+   fresh 读用了 `objects.Container.get_by_uuid`,它按 `TYPE_CONTAINER` 过滤,
+   capsule 成员是 `TYPE_CAPSULE_CONTAINER` → 永远 `ContainerNotFound` → 每趟静默
+   False。**测试当年正是 mock 了这个错误调用才全绿**;现在 mock any-type getter,
+   typed getter 设为必炸,回归即红(突变验证 7 红)。
+2. **pod 级 cgroup 没人写**(`109163fc` + `823dbf5a`):K8s 里 pod 总限额由 kubelet
+   在调运行时**之前**写进 pod cgroup;本链路无 kubelet,该 cgroup 全是 `max`。
+   对 gVisor 是致命的:所有容器进程都在 sentry 一个宿主进程里,per-container
+   cgroup 是空的,pod cgroup 是限额唯一能咬住的地方——实测 1C/256Mi 的 capsule,
+   sentry 按宿主 16C/31G 定容,512MB 分配跑通、4 忙循环烧 4 核。现在 driver 兼任
+   kubelet:建沙箱前按成员限额之和(kubelet 同款算法,单成员无限额则该项整体放开)
+   预建 pod cgroup 并写 `cpu.max`/`memory.max`/`memory.swap.max=0`,写不进则拒绝
+   创建(fail-closed)。**只对 `cri_pod_cgroup_runtimes`(默认 runc,runsc)生效**
+   ——kata 在 guest 里执行限额,宿主按成员和截断会饿死 VMM(kubelet 靠
+   RuntimeClass overhead 解决,我们没有这个来源)。同时 sandbox 配置补了
+   `LinuxPodSandboxConfig.resources`(kubelet 本来就填的字段),kata 的 VM 定容
+   注解(`io.kubernetes.cri.sandbox-*`)因此就位;⚠️ **runsc 不读这组注解**,
+   它读自己 boot 进的 cgroup——所以 cgroup 必须先于沙箱存在,顺序即语义。
+   实测修后:sentry 自视 256Mi/2C,4 忙循环被压在恰好 1.0 CPU(内核 throttle)。
+3. **沙箱本体死亡 = 永久卡死**(`94665a44` + 两个跟进):pod cgroup 落地后,超限
+   分配会让内核把整个 sentry OOM 杀掉(VMM 崩溃同形);死沙箱拒绝 CreateContainer,
+   重启机制每趟撞同一堵墙。现在 sweep 重启前先问沙箱(`PodSandboxStatus`),
+   NOTREADY/不存在都算死 → **整 capsule 原位重建**:Neutron port 属于 capsule 不属于
+   沙箱,`create_or_update_port` 按 id 复绑,**IP 跨沙箱死亡保持不变**(实测);
+   init 容器照 kubelet 语义重跑;全员重启计数 +1。跟进修了两处只有实跑才暴露的坑:
+   sweep 的周期 context 无项目,SG 解析查 `tenant_id=None` 报"安全组不存在"
+   (重建改用 capsule 属主身份的 context);重建构造的网络请求缺
+   `preserve_on_delete` 硬键(从 capsule.addresses 原值回读)。
+4. **"runtime 不认识就跳过"遮蔽重启**:半途失败的重建会留下"记录已标死、运行时
+   无尸体"的形态,sweep 的保守守卫连重启判定一起跳过,capsule 带着 always 永远
+   Stopped。已标死(status_detail 带 `exit:`)的记录即使无尸体也进重启判定,
+   锁内 fresh 读保留全部安全检查;未标死的(创建中/运行时恢复中)照旧不动。
+
+**gVisor 的限额语义与 kubelet+runsc 对齐后仍有一点档位差**:内存超限杀的是整个
+sentry(pod 死 → 自动重建,分钟级),不是像 runc 那样只杀超限进程(容器级 cgroup
+先咬住,pod 活着)。这是 gVisor 结构使然,kubelet 下同样如此,不是我们的缺口。
+kubezun 侧配套(`42b5b02`):`PhaseOf` 学会看 restartPolicy——Stopped + Always
+不再进 Failed 终态(终态是单行道,capsule 在下面复活了 K8s 也永远报死);
+OnFailure 非零退出同理,Never 保持原判。
+
+另:ExecSync 一个已知尖角——exec 的命令若留下持有 stdout 的后台进程,该 ExecSync
+永不返回,会占死 zun-compute 对该节点的 RPC 通道(504 compute-node-unresponsive),
+直到进程退出。跨 runtime 皆然,列为待办(需要 ExecSync 带 timeout 或改走流式)。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
