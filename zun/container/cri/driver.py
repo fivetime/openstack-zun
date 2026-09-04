@@ -1927,11 +1927,17 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         self._delete_sandbox(context, capsule, capsule.container_id)
         requested_networks = []
         for network_id, addrs in (capsule.addresses or {}).items():
-            net = {'network': network_id}
-            port_id = next((a.get('port') for a in addrs if a.get('port')),
-                           None)
-            if port_id:
-                net['port'] = port_id
+            addr = next((a for a in addrs if a.get('port')), None)
+            net = {
+                'network': network_id,
+                # Carried from the address record so a rebuild does not
+                # change who owns the port's lifetime: True marks a port the
+                # creator brought and Zun must never delete.
+                'preserve_on_delete': bool((addr or {}).get(
+                    'preserve_on_delete')),
+            }
+            if addr:
+                net['port'] = addr['port']
             requested_networks.append(net)
         if not requested_networks:
             raise exception.ZunException(_(
