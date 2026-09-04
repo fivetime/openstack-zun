@@ -1499,9 +1499,21 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     # gone is caught by capsule deletion and by the orphan
                     # sweep, both of which check against Kubernetes rather than
                     # against one runtime query.
+                    #
+                    # ⚠️ One shape must still act: a record already marked dead
+                    # whose corpse the runtime no longer holds -- a removed
+                    # sandbox takes its containers with it, and a rebuild that
+                    # failed half-way leaves exactly this. Skipping it here
+                    # skipped the restart machinery too, so the capsule sat
+                    # Stopped forever with a policy saying always. A record
+                    # not marked dead -- mid-creation, runtime recovering --
+                    # carries no exit mark and is left alone as before.
                     LOG.debug("Runtime does not report container %s; leaving "
                               "its status alone", container.container_id)
-                    continue
+                    if not ((container.status_detail or '').startswith('exit:')
+                            and self._restart_on_exit(context, capsule,
+                                                      container)):
+                        continue
                 except Exception as e:
                     LOG.warning("Could not read state of container %(id)s: "
                                 "%(err)s",
