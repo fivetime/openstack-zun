@@ -371,6 +371,11 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         servers = _dns_servers(capsule) or dns_servers
         sandbox_config = self._get_sandbox_config(
             capsule, servers, _dns_searches(capsule), labels=labels)
+        # Before the sandbox exists, the way kubelet orders it: runsc reads
+        # the cgroup it boots into to size its sentry, so a ceiling written
+        # after the boot enforces without informing.
+        self._apply_pod_ceiling(capsule, capsule.runtime
+                                or CONF.container_runtime)
         sandbox_resp = self.runtime_stub.RunPodSandbox(
             api_pb2.RunPodSandboxRequest(
                 config=sandbox_config,
@@ -496,6 +501,67 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # is missing rather than like a resolver setting.
             config.dns_config.searches.extend(dns_searches)
         return config
+
+    # Where cgroup v2 lives on every systemd host. A module constant so a
+    # test can point it at a scratch directory.
+    CGROUP_ROOT = '/sys/fs/cgroup'
+
+    def _apply_pod_ceiling(self, capsule, runtime):
+        """Write the pod-level cgroup ceilings -- the job kubelet does.
+
+        Kubernetes enforces a pod's total at the pod cgroup, which kubelet
+        itself creates and writes before the runtime is ever called; the
+        runtime only files its processes under it. This chain has no
+        kubelet, and nothing else writes that cgroup: measured, a runsc
+        sandbox for a capsule limited to 1 cpu and 256Mi sat under
+        cpu.max=max memory.max=max, and a 512MB allocation inside ran to
+        completion. gVisor is the runtime this decides everything for --
+        every container process lives inside one sandbox process, so the
+        per-container cgroups hold nothing and the pod cgroup is the only
+        place a ceiling can bite.
+
+        Only for the runtimes in cri_pod_cgroup_runtimes: those whose every
+        process lives in the pod's cgroup and which enforce nothing
+        themselves. A VM runtime (kata-*) enforces inside the guest, and
+        capping the VMM at the members' sum would starve it -- kubelet
+        covers that with RuntimeClass overhead, which this driver has no
+        source for.
+
+        Fail closed: a ceiling that was asked for and could not be written
+        is the tenant running unlimited, which is the hole this exists to
+        close.
+        """
+        if runtime not in CONF.cri_pod_cgroup_runtimes:
+            return
+        agg = cri_resources.sandbox_resources(self._member_resources(capsule))
+        if not agg:
+            return
+        path = self.CGROUP_ROOT + self._sandbox_cgroup_parent(capsule)
+        writes = {}
+        if 'cpu_quota' in agg:
+            writes['cpu.max'] = '%d %d' % (agg['cpu_quota'],
+                                           agg['cpu_period'])
+        if 'memory_limit_in_bytes' in agg:
+            writes['memory.max'] = str(agg['memory_limit_in_bytes'])
+            # Swap off, the kubelet default: the memory ceiling must not be
+            # quietly widened by the host's swap.
+            writes['memory.swap.max'] = str(
+                agg['memory_swap_limit_in_bytes']
+                - agg['memory_limit_in_bytes'])
+        if not writes:
+            return
+        try:
+            os.makedirs(path, exist_ok=True)
+            for name, value in writes.items():
+                with open(os.path.join(path, name), 'w') as f:
+                    f.write(value)
+        except OSError as e:
+            raise exception.ZunException(
+                'The pod ceiling for capsule %(uuid)s could not be written '
+                'to %(path)s: %(err)s -- refusing to run it unlimited'
+                % {'uuid': capsule.uuid, 'path': path, 'err': e})
+        LOG.debug('Pod ceiling for %(uuid)s: %(writes)s',
+                  {'uuid': capsule.uuid, 'writes': writes})
 
     @staticmethod
     def _member_resources(capsule):
@@ -3125,6 +3191,15 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             if e.code() != grpc.StatusCode.NOT_FOUND:
                 raise
             LOG.debug("podsandbox %s was already gone", pod_id)
+
+        # The pod cgroup is ours when _apply_pod_ceiling made it before the
+        # runtime did; the runtime removes only what it created, so the
+        # directory would outlive the capsule one empty dir at a time. Gone
+        # already, or still holding the runtime's children, are both fine.
+        try:
+            os.rmdir(self.CGROUP_ROOT + self._sandbox_cgroup_parent(owner))
+        except OSError:
+            pass
 
     def _remove_container(self, container_id):
         """Remove one container, quietly when it is already gone."""

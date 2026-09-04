@@ -190,6 +190,19 @@ Interdependencies to other options:
                     'what it can. On a kata capsule the figures under here '
                     'describe the virtual machine, which is the right unit '
                     'for a node and the wrong one for a container.'),
+    cfg.ListOpt('cri_pod_cgroup_runtimes',
+                default=['runc', 'runsc'],
+                help='Runtimes for which the driver writes the pod-level '
+                     'cgroup ceilings (cpu.max, memory.max) before creating '
+                     'the sandbox -- the job kubelet does in a Kubernetes '
+                     'node, which nothing else does here. It is the only '
+                     'place a limit can bite for a runtime whose every '
+                     'process lives in the pod cgroup: gVisor holds all '
+                     'containers inside one sandbox process, so the '
+                     'per-container cgroups hold nothing. A VM runtime '
+                     '(kata-*) does not belong on this list: it enforces '
+                     'inside the guest, and capping the VMM at the members\' '
+                     'sum would starve the VMM itself.'),
     cfg.IntOpt('default_disk',
                default=10,
                help='The default disk size a container can use '
