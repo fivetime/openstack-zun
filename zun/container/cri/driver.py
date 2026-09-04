@@ -1686,7 +1686,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         with lockutils.lock(container.uuid,
                             lock_file_prefix=consts.NAME_PREFIX):
             try:
-                fresh = objects.Container.get_by_uuid(context, container.uuid)
+                # ⚠️ Not objects.Container.get_by_uuid: that getter filters on
+                # TYPE_CONTAINER, and a capsule member is TYPE_CAPSULE_CONTAINER,
+                # so for every capsule member -- the whole kubezun path -- it
+                # raised ContainerNotFound and this returned False, silently,
+                # every sweep. `--restart always` on a capsule never restarted
+                # anything.
+                fresh = objects.Container.get_container_any_type(
+                    context, container.uuid)
             except exception.ContainerNotFound:
                 return False
             if (fresh.task_state is not None

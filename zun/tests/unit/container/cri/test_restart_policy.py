@@ -53,9 +53,18 @@ class RestartOnExitTest(base.TestCase):
         # ordinary shape; what matters is the mark, not the status.
         self.fresh = mock.Mock(status=consts.STOPPED, task_state=None,
                                status_detail='exit:1')
+        # The fresh read must be the any-type getter: the sweep hands this
+        # method capsule members (TYPE_CAPSULE_CONTAINER), and the typed
+        # Container.get_by_uuid cannot see those -- it raised
+        # ContainerNotFound for every capsule member and the restart policy
+        # silently never applied to capsules. This mock was on get_by_uuid
+        # once, which is exactly how that stayed green.
+        self._patch(mock.patch.object(
+            cri_driver.objects.Container, 'get_container_any_type',
+            return_value=self.fresh))
         self._patch(mock.patch.object(
             cri_driver.objects.Container, 'get_by_uuid',
-            return_value=self.fresh))
+            side_effect=exception.ContainerNotFound(container='u-1')))
         self._patch(mock.patch.object(cri_driver.lockutils, 'lock'))
         self.restarted = self._patch(mock.patch.object(
             self.driver, '_restart_exited'))
@@ -219,7 +228,7 @@ class RestartOnExitTest(base.TestCase):
 
     def test_a_record_that_is_gone_is_not_restarted(self):
         self._policy('always')
-        cri_driver.objects.Container.get_by_uuid.side_effect = (
+        cri_driver.objects.Container.get_container_any_type.side_effect = (
             exception.ContainerNotFound(container='u-1'))
 
         self.assertFalse(self.driver._restart_on_exit(
