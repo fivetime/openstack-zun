@@ -1903,6 +1903,15 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         """
         LOG.info("Rebuilding capsule %(id)s: its sandbox died and cannot "
                  "hold containers again", {'id': capsule.uuid})
+        # The sweep runs on a projectless admin context, and the network
+        # path filters by the context's project: security group resolution
+        # searches tenant_id=None, finds nothing, and refuses the rebuild
+        # with "security group not found" for groups that exist. Measured on
+        # the first sandbox death after the ceiling landed. The rebuild acts
+        # for the capsule's owner, so it carries the owner's project.
+        context = zun_context.RequestContext(
+            user_id=capsule.user_id, project_id=capsule.project_id,
+            is_admin=True, overwrite=False)
         self._delete_sandbox(context, capsule, capsule.container_id)
         requested_networks = []
         for network_id, addrs in (capsule.addresses or {}).items():
