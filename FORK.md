@@ -713,6 +713,56 @@ owner 标签。清扫:在 node-04 埋一个带标签、无记录的诱饵沙箱,
 切分必错,用 `-o json`;② `crictl rmp` 默认 2 秒超时对 kata 沙箱不够,报
 `DeadlineExceeded` 不是删不掉,加 `--timeout 120s`。
 
+### 4.8 一条 exec 冻住整个 zun-compute(2026-09-08,`0e433fed`/`e5d27e1d`/`cb16b3b6`)
+
+**症状**:`kubectl exec pod -- sh -c "sleep 120 &"`。`sh` 立刻退出,但 `sleep` 继承了
+exec 的 stdout 写端,运行时要等这根管子关闭才回 ExecSync——请求里的 `timeout` 管的是
+杀命令,管不到这段等待。实测:这条 ExecSync 挂了整整 120 秒,而**同一时段 zun-compute
+的日志一行都没有**——没有周期任务、没有心跳、没有别的请求(另一条 exec 60 秒后 504
+`compute-node-unresponsive`,第三个 capsule 上的 exec 等了 53 秒才回)。
+
+**根因有两层**,分别修:
+
+1. **gRPC 调用阻塞在 C 里,eventlet hub 拿不回 CPU**。zun-compute 是 eventlet 进程,
+   `runtime_stub.ExecSync()` 这种阻塞式 unary 调用在 `cygrpc` 的 `next_event()` 里
+   等,整个 OS 线程停住,所有绿色线程一起停。这不只是 exec:**每一次慢的 CRI 调用
+   都在冻进程**——PullImage 拉一个大镜像的几分钟里,这台节点心跳全停(`service_down_time`
+   180 秒,拉够久就被判 down)。修法照 nova 对 libvirt 的做法:四个 unary stub
+   (runtime/image/task/snapshot)包一层 `eventlet.tpool.Proxy`,调用跑在原生线程池,
+   hub 继续转。commit 用的三个流式 stub(content/diff/ctrd_image)**不包**——Proxy 回来的
+   是迭代器,每 next 一次又阻塞 hub,换个脸的同一个问题(Container API commit 路径,
+   不在 capsule 主干,留待)。
+2. **包了 tpool 之后当场死锁**(第一版 `0e433fed` 部署到 node-06 一分钟内服务无响应,
+   py-spy:20 个 tpool 工作线程全部停在各自私有 hub 的 `hub.run` 里)。eventlet 的
+   monkey patch 把 `threading` 模块的 Lock/Condition 换成绿色版,而 gRPC 用它们保护
+   channel 状态(`cygrpc._ChannelState.condition`)。绿色锁只在**同一个 hub 的 greenlet 之间**
+   成立;两个原生线程争同一把,输的一方要 switch 到另一个线程上的 greenlet——
+   `greenlet.error: Cannot switch to a different thread`——然后永远等不到唤醒。
+   压力实验坐实:40 个并发调用方经 tpool 打 720 次调用(含 ExecSync),monkey-patched
+   状态下 60 秒**0 个完成**;把 `grpc._channel`/`grpc._utilities`/`cygrpc` 三个模块的
+   `threading` 全局改绑回 `eventlet.patcher.original('threading')` 后 **2.0 秒全部完成**。
+   gRPC 本来就不向 hub 让步(等待都在 C 里),绿色原语对它一无所用。落在
+   `_grpc_on_native_threads()`,driver 导入时执行一次,单测钉住三个模块
+   (`test_exec_hold.py::NativeThreadingTest`)。⚠️ 为什么 node-04/05 没死锁而 06 死锁:
+   04 零 capsule、05 两个,并发量到不了争锁;06 六个 capsule 的探针+stats 一开就撞上。
+   **"两台正常"不是"代码正常"的证据,得看最忙的那台。**
+
+**第三层:让那条 exec 本身也有界。** ExecSync 加客户端 deadline = 命令 timeout +
+`EXEC_REPLY_MARGIN`(15 秒),整体压在 `rpc_response_timeout`(60)以下,API 回的是原因不是
+504。containerd 侧还有 `drain_exec_sync_io_timeout`(节点 drop-in
+`70-exec-drain.toml` = 5s),运行时自己放弃等管子,回 "io is still held by other
+processes",driver 把它翻成"命令已结束但它起的进程还占着输出,后台进程请重定向输出"。
+⚠️ **这个 drain 对 kata 无效**——查过 3.31.0 源码:shim 的 `wait()` 对 exec 先
+`<-execs.exitIOch` 再 `WaitProcess`(`containerd-shim-v2/wait.go:39`),**退出事件本身
+就等 IO 关闭**,containerd 的 drain 根本轮不到。实测:runc 沙箱 15 秒回 drain 错误
+(5 秒 drain + 10 秒 kill 等待);kata 沙箱一直沉默到子进程退出,由我们的 deadline 在
+45 秒收口。所以 deadline 触发时的文案两种原因都点(命令超时 / 输出被占),并给出
+重定向的办法——kata 档租户看到的就是这条。
+
+**验证**(三台 `cb16b3b6` + drop-in):holder exec 45.4 秒回 400 带新文案;它挂着的时候
+同节点另一个 capsule 的 exec **0.8 秒**回(修前 53–60 秒);node-05/06 每 60 秒 71 条
+周期任务、零 greenlet 错误;控制组 `echo hi; sleep 2; echo done` 2.8 秒输出完整。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
