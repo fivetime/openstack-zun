@@ -22,8 +22,12 @@ those two minutes -- no other request, no periodic task, no heartbeat.
 
 from unittest import mock
 
+from eventlet import patcher
 from eventlet import tpool
 import grpc
+from grpc import _channel as grpc_channel
+from grpc import _utilities as grpc_utilities
+from grpc._cython import cygrpc
 
 from zun.common import exception
 from zun.container.cri import driver as cri_driver
@@ -155,3 +159,25 @@ class OffHubTest(base.TestCase):
         driver.runtime_stub._obj.Version = mock.Mock(return_value='v')
 
         self.assertEqual('v', driver.runtime_stub.Version('req'))
+
+
+class NativeThreadingTest(base.TestCase):
+    """gRPC holds real locks, whatever eventlet did to the threading module.
+
+    Without this, calls through tpool deadlock the moment two workers
+    contend for the channel: measured as twenty workers parked in private
+    hubs and a service that answered nothing. The check is on the module
+    globals gRPC reads at call time.
+    """
+
+    def test_every_grpc_module_reads_the_native_threading(self):
+        native = patcher.original('threading')
+
+        for mod in (grpc_channel, grpc_utilities, cygrpc):
+            self.assertIs(native, mod.threading, mod.__name__)
+
+    def test_the_rebinding_covers_the_channel_state_lock(self):
+        # The lock that deadlocked lives in the Cython channel, so the
+        # extension module has to be among those rebound, not only the
+        # Python ones.
+        self.assertIn(cygrpc, cri_driver._GRPC_NATIVE)

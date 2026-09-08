@@ -15,8 +15,13 @@ import datetime
 import os
 import time
 
+from eventlet import patcher
 from eventlet import tpool
 import grpc
+from grpc import _channel as grpc_channel
+from grpc import _common as grpc_common
+from grpc import _utilities as grpc_utilities
+from grpc._cython import cygrpc
 import base64
 import json
 import posixpath
@@ -69,12 +74,45 @@ LOG = logging.getLogger(__name__)
 EXEC_REPLY_MARGIN = 15
 
 
+def _grpc_on_native_threads():
+    """Give gRPC back the real threading primitives.
+
+    eventlet's monkey patch swaps the threading module's locks and
+    conditions for green ones, and gRPC guards its channel state with those.
+    A green lock only works between greenlets on one hub; contended from
+    two native threads it tries to switch a greenlet that lives on another
+    thread's hub -- "greenlet.error: Cannot switch to a different thread" --
+    and every tpool worker ends up parked in a private hub waiting for a
+    wake-up that will never cross threads. Measured: with six capsules'
+    probes and stats going through tpool, all twenty workers were stuck
+    inside a minute and the service answered nothing.
+
+    gRPC never yields to the hub anyway (its waits are in C), so the green
+    primitives bought it nothing. This rebinds the module globals the grpc
+    package reads at call time; the same rebinding is what the stress test
+    behind this comment proved: forty concurrent callers, seven hundred
+    calls, two seconds, against a deadlock at zero.
+
+    Returns the modules rebound, for the test that pins this down.
+    """
+    native = patcher.original('threading')
+    rebound = []
+    for mod in (grpc_channel, grpc_utilities, grpc_common, cygrpc):
+        if getattr(mod, 'threading', None) is not None:
+            mod.threading = native
+            rebound.append(mod)
+    return rebound
+
+
+_GRPC_NATIVE = _grpc_on_native_threads()
+
+
 def _off_hub(stub):
     """A gRPC stub whose every call runs on a native thread.
 
-    See CriDriver.__init__ for why. Only for stubs whose calls are all
-    unary: a streaming call would come back as an iterator that blocks the
-    hub on each step.
+    See CriDriver.__init__ for why, and _grpc_on_native_threads for what
+    makes it safe. Only for stubs whose calls are all unary: a streaming
+    call would come back as an iterator that blocks the hub on each step.
     """
     return tpool.Proxy(stub)
 
@@ -338,9 +376,12 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # froze the whole service for the two minutes the child lived. The
         # same freeze hides in every slow call; an image pull is the long
         # one. Same device nova uses for libvirt (tpool.Proxy on the
-        # connection). The streaming stubs a commit uses stay direct: a
-        # Proxy would return an iterator that blocks the hub on each step,
-        # which is the problem again with a different face.
+        # connection) -- with one thing nova does not need: gRPC has to be
+        # holding real locks, not eventlet's, or the threads deadlock on
+        # its channel state (_grpc_on_native_threads, at import). The
+        # streaming stubs a commit uses stay direct: a Proxy would return
+        # an iterator that blocks the hub on each step, which is the
+        # problem again with a different face.
         self.runtime_stub = _off_hub(api_pb2_grpc.RuntimeServiceStub(channel))
         # Filled on first use by _runtime_snapshotter().
         self._snapshotter = None
