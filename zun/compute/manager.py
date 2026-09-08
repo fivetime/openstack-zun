@@ -1708,7 +1708,12 @@ class Manager(periodic_task.PeriodicTasks):
         # port bound here can belong to a container the database has moved,
         # and deleting it because this node has not heard of it would take the
         # network from a container that is running somewhere else.
+        # ⚠️ Capsules too: Container.list answers only TYPE_CONTAINER rows,
+        # and a capsule's port carries the capsule's uuid. Listed alone, every
+        # capsule whose sandbox is down for the moment -- being rebuilt, say
+        # -- would have its port taken for an orphan's.
         known = {c.uuid for c in objects.Container.list(ctx)}
+        known.update(c.uuid for c in objects.Capsule.list(ctx))
 
         now = timeutils.utcnow()
         for port in ports:

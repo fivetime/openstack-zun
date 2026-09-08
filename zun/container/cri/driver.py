@@ -337,24 +337,65 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def create_capsule(self, context, capsule, image, requested_networks,
                        requested_volumes):
+        """Create a capsule, and leave nothing behind when that fails.
 
-        self._create_pod_sandbox(context, capsule, requested_networks)
+        ⚠️ The sandbox -- a VM under Kata -- and its Neutron port exist before
+        the first member container does, so a create that fails on a member
+        has already made both. Left in place, they outlive everything that
+        could ever remove them: the manager unsets the host of a container it
+        could not create, and the API deletes a hostless capsule by dropping
+        its rows, without a word to any compute node. Measured: 9 sandboxes
+        running for three weeks, each holding a port and an address, none of
+        them known to the database. What this makes, it unmakes on its way out.
+        """
+        try:
+            self._create_pod_sandbox(context, capsule, requested_networks)
 
-        # TODO(hongbin): handle init containers
-        for container in capsule.init_containers:
-            self._create_container(context, capsule, container,
-                                   requested_volumes)
-            self._wait_for_init_container(context, container)
-            container.save(context)
+            # TODO(hongbin): handle init containers
+            for container in capsule.init_containers:
+                self._create_container(context, capsule, container,
+                                       requested_volumes)
+                self._wait_for_init_container(context, container)
+                container.save(context)
 
-        for container in capsule.containers:
-            self._create_container(context, capsule, container,
-                                   requested_volumes)
-            container.status = consts.RUNNING
-            container.save(context)
+            for container in capsule.containers:
+                self._create_container(context, capsule, container,
+                                       requested_volumes)
+                container.status = consts.RUNNING
+                container.save(context)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                self._undo_create(context, capsule)
 
         capsule.status = consts.RUNNING
         return capsule
+
+    def _undo_create(self, context, capsule):
+        """Remove the sandbox and ports a failed create has already made.
+
+        Each step is attempted on its own: a sandbox that will not go is no
+        reason to keep its port, and neither failure is allowed to replace
+        the error that got us here -- that one is what the tenant needs to
+        read. Whatever was removed is also unrecorded, so the row that is
+        about to be saved as ERROR does not point at things that are gone.
+        """
+        if capsule.container_id:
+            try:
+                self._delete_sandbox(context, capsule, capsule.container_id)
+                capsule.container_id = None
+            except Exception as e:
+                LOG.error("Could not remove sandbox %(id)s left by the "
+                          "failed create of %(uuid)s: %(err)s",
+                          {'id': capsule.container_id, 'uuid': capsule.uuid,
+                           'err': e})
+        if capsule.addresses:
+            try:
+                self._delete_neutron_ports(context, capsule)
+                capsule.addresses = {}
+            except Exception as e:
+                LOG.error("Could not release the ports left by the failed "
+                          "create of %(uuid)s: %(err)s",
+                          {'uuid': capsule.uuid, 'err': e})
 
     def _create_pod_sandbox(self, context, capsule, requested_networks,
                             labels=None):
@@ -369,6 +410,13 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # every capsule on it, while this is the resolver for one capsule's
         # tenant.
         servers = _dns_servers(capsule) or dns_servers
+        # Every sandbox this driver makes is stamped with its owner. The
+        # orphan sweep reaps only what carries this label and has no row
+        # behind it; a sandbox without it is taken for the kubelet's and
+        # never touched -- which is what a capsule's sandbox used to be, so
+        # no sweep could ever have reached the ones this driver leaked.
+        labels = dict(labels or {})
+        labels.setdefault(self.OWNER_LABEL, capsule.uuid)
         sandbox_config = self._get_sandbox_config(
             capsule, servers, _dns_searches(capsule), labels=labels)
         # Before the sandbox exists, the way kubelet orders it: runsc reads

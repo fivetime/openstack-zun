@@ -118,6 +118,32 @@ class TestManager(base.TestCase):
         mock_reclaim_mounts.assert_called_once()
         mock_execute.assert_not_called()
 
+    @mock.patch.object(manager.objects.Capsule, 'list')
+    @mock.patch.object(manager.objects.Container, 'list')
+    @mock.patch.object(manager.neutron, 'NeutronAPI')
+    def test_reclaim_orphan_ports_knows_capsules(self, mock_neutron_api,
+                                                 mock_containers,
+                                                 mock_capsules):
+        # Container.list answers TYPE_CONTAINER rows only; a capsule's port
+        # carries the capsule's uuid, which is in Capsule.list alone. A sweep
+        # that asked only the first would take every down capsule port for an
+        # orphan's -- a capsule mid-rebuild, say.
+        mock_containers.return_value = [mock.Mock(uuid='container-1')]
+        mock_capsules.return_value = [mock.Mock(uuid='capsule-1')]
+
+        def port(device_id):
+            return {'id': 'port-of-' + device_id, 'device_id': device_id,
+                    'status': 'DOWN', 'created_at': '2020-01-01T00:00:00Z',
+                    'description': manager.neutron.PORT_OWNER_PREFIX + 'x'}
+
+        api = mock_neutron_api.return_value
+        api.list_ports.return_value = {'ports': [
+            port('container-1'), port('capsule-1'), port('gone-1')]}
+
+        self.compute_manager.reclaim_orphan_ports(self.context)
+
+        api.delete_port.assert_called_once_with('port-of-gone-1')
+
     @mock.patch.object(Container, 'save')
     def test_init_container_sets_creating_error(self, mock_save):
         container = Container(self.context, **utils.get_test_container())

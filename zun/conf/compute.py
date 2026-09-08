@@ -154,17 +154,20 @@ Possible values:
              'and cannot be told apart from stale ones.'),
     cfg.StrOpt(
         'reclaim_orphan_containers',
-        default='docker_only',
+        default='all',
         choices=['off', 'docker_only', 'all'],
         help='Whether to reap runtime objects nothing claims any more -- a '
              'task whose container record is gone, which keeps running with '
              'its memory, its VM and its ports, invisible to the daemon that '
              'started it. docker_only sweeps the Docker path, whose '
              'authority (dockerd) is local and complete. all also sweeps the '
-             'CRI path, where the real authority is Kubernetes and lives in '
-             'kubezun: turn it on only where no other sweep runs, because '
-             'two sweepers racing for the same sandbox is a hard thing to '
-             'debug.'),
+             'CRI path, and only the sandboxes that carry this driver\'s '
+             'owner label and have no row behind them. That set is one no '
+             'other sweep can see: kubezun reconciles capsules that exist '
+             'against the pods that own them, and a sandbox whose row is '
+             'gone is invisible to it -- the two cannot race for the same '
+             'sandbox, because one works on rows and the other on their '
+             'absence.'),
     cfg.IntOpt(
         'reclaim_orphan_containers_interval',
         default=600,
