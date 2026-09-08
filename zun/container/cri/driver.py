@@ -1407,14 +1407,34 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # The margin is for the runtime's own drain wait (see
         # drain_exec_sync_io_timeout in the deployed containerd config),
         # so a runtime that does give up answers first, with a reason.
-        response = self.runtime_stub.ExecSync(
-            api_pb2.ExecSyncRequest(
-                container_id=container_id,
-                cmd=self._as_argv(cmd),
-                timeout=timeout,
-            ),
-            timeout=timeout + EXEC_REPLY_MARGIN,
-        )
+        started = time.monotonic()
+        try:
+            response = self.runtime_stub.ExecSync(
+                api_pb2.ExecSyncRequest(
+                    container_id=container_id,
+                    cmd=self._as_argv(cmd),
+                    timeout=timeout,
+                ),
+                timeout=timeout + EXEC_REPLY_MARGIN,
+            )
+        except grpc.RpcError as e:
+            if (e.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+                    and time.monotonic() - started
+                    >= timeout + EXEC_REPLY_MARGIN - 1):
+                # Our deadline, not the runtime's: the runtime had its
+                # timeout and a margin on top to kill the command and say
+                # so, and said nothing. That is what held output looks
+                # like on kata, whose shim reports an exec's exit only
+                # once its streams close -- so no drain setting reaches
+                # it -- and what a hung runtime looks like too. Both are
+                # worth the same words to the caller.
+                raise exception.Invalid(_(
+                    'Command did not finish within %d seconds, or it '
+                    'finished but a process it started is still holding '
+                    'its output open. Start background processes with '
+                    'their output redirected, e.g. '
+                    '"cmd >/dev/null 2>&1 &"') % timeout)
+            raise
         return response.exit_code, response.stdout, response.stderr
 
     def execute_create(self, context, container, command, interactive=False):

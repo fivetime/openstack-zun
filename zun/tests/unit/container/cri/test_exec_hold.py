@@ -73,6 +73,31 @@ class ExecDeadlineTest(base.TestCase):
         self.assertGreater(deadline, 30)
         self.assertLess(deadline, 60)
 
+    def test_our_own_deadline_names_held_output_as_a_cause(self):
+        # The runtime had 30 seconds plus the margin to kill the command
+        # and say so. Reaching our deadline means it could not -- on kata
+        # the exit itself waits for the child's stdout to close.
+        self.exec_sync.side_effect = _RpcError(
+            grpc.StatusCode.DEADLINE_EXCEEDED, 'Deadline Exceeded')
+        with mock.patch.object(cri_driver.time, 'monotonic',
+                               side_effect=[100.0, 100.0 + 30 + 15]):
+            e = self.assertRaises(exception.Invalid,
+                                  self.driver._exec_in_container,
+                                  'abc', ['sh', '-c', 'sleep 365d &'], 30)
+
+        self.assertIn('did not finish within 30 seconds', str(e))
+        self.assertIn('holding its output open', str(e))
+
+    def test_the_runtime_s_own_timeout_is_left_to_the_caller(self):
+        # Answered well before our deadline, so this is the runtime's kill
+        # at the command's timeout: the caller's message, not ours.
+        self.exec_sync.side_effect = _RpcError(
+            grpc.StatusCode.DEADLINE_EXCEEDED, 'timeout 30s exceeded')
+        with mock.patch.object(cri_driver.time, 'monotonic',
+                               side_effect=[100.0, 130.5]):
+            self.assertRaises(grpc.RpcError, self.driver._exec_in_container,
+                              'abc', ['sleep', '100'], 30)
+
     def test_a_probe_gets_the_same_bound(self):
         probe = {'exec': {'command': ['true']}, 'timeoutSeconds': 3}
         container = mock.Mock(container_id='abc')
