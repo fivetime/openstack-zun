@@ -667,6 +667,52 @@ OnFailure 非零退出同理,Never 保持原判。
 永不返回,会占死 zun-compute 对该节点的 RPC 通道(504 compute-node-unresponsive),
 直到进程退出。跨 runtime 皆然,列为待办(需要 ExecSync 带 timeout 或改走流式)。
 
+### 4.7 创建失败的 capsule 会把沙箱和端口永远留在节点上(2026-09-08,`f6823d29`)
+
+**怎么发现的**:三台测试床节点上有 15 个 Ready 沙箱,Zun 数据库里只有 6 个 capsule。
+逐个 UUID 比对,9 个沙箱 Zun 查无此记录,却都是活着的 kata VM(qemu 进程在、
+RSS 1.2–1.8 GB/台),**每个还占着一个 Neutron port 和一个 IP**。node-04 上 5 个全是
+孤儿——调度器以为这台是空的。年龄 8 月 16 日到 9 月 2 日,不是一次事故,是稳定泄漏。
+
+**泄漏链(每一环都有日志/代码实证,不是推理)**:
+1. 创建在沙箱建好之后失败。`create_capsule` 先 `RunPodSandbox`(此时 port 已建、VM 已起),
+   再逐个建成员容器;成员失败(那次是镜像路径的 `ImagesStub.PullImage`),沙箱已在。
+2. `_fail_container(..., unset_host=True)` 把 `host` 抹成 None(上游 `bc8375bb`)。
+3. API 删除走 `if capsule.host: RPC else: destroy rows`(上游 `69c311a1`):无 host
+   就**直接删库,从不通知任何计算节点**;`container` 表无 `deleted` 列,硬删,事后无痕。
+   删端口在驱动路径里,自然也没做——这就是端口和沙箱同时留下的原因。
+4. 三道兜底网各漏一半:`reclaim_orphan_containers` 默认 `docker_only`,CRI 沙箱不扫;
+   `reclaim_orphan_ports` 只收 `DOWN` 的端口,而孤儿沙箱活着端口就一直 `ACTIVE`;
+   kubezun 的 `sweepOrphans` 拿 Zun 记录比 pod——**记录没了它看不见**。
+   ⚠️ 更深一层:就算把清扫开到 `all` 也收不到——`create_capsule` 建沙箱时**从不打
+   owner 标签**(只有 Container API 路径打),而 `reap_orphans` 对无标签的沙箱一律当
+   kubelet 的不碰。三道网的盲区正好重叠在同一个洞上。
+
+**定案**(`f6823d29`,四处一起改才成立):
+- `create_capsule` 失败时自己收尾:先拆沙箱、再删端口,两步各自独立(一步失败不
+  拖累另一步),且都不许替换原始异常——租户要读的是创建为什么失败;收掉的引用
+  从对象上清空,存成 ERROR 的行不再指向已不存在的东西。**这是主修,从源头断掉。**
+- `_create_pod_sandbox` 给每个沙箱打 `io.zun.container.uuid` 标签(capsule 路径补齐)。
+- `reclaim_orphan_ports` 的 `known` 加上 `Capsule.list`——`Container.list` 只回
+  `TYPE_CONTAINER` 行,和 9 月 4 日 restart_policy 那个 bug 是同一个坑;不补的话任何
+  沙箱临时不在(重建中)超过 10 分钟的 capsule,端口会被当孤儿删掉。
+- `reclaim_orphan_containers` 默认改 `all`。原来的 help 说"CRI 路径的权威在 kubezun,
+  两个清扫会抢"——前提不成立:kubezun 只能清**有记录的** capsule,`reap_orphans` 只清
+  **没记录的**带标签沙箱,集合不相交,抢不起来。这道网现在只管 zun-compute 在建沙箱
+  与失败处理之间崩溃这类修不掉的情况。
+
+**验证**:单测 258 绿,红检(把三处修复换回 HEAD)新用例 6/6 转红;测试床活体:
+镜像拉不到的 pod → capsule Error、host=None → node-06 上**无该沙箱、Neutron 无该端口**
+→ 删 pod 走无 host 分支,记录消失,节点与 Neutron 仍干净;正常 pod 的新沙箱带
+owner 标签。清扫:在 node-04 埋一个带标签、无记录的诱饵沙箱,第一轮周期任务收掉
+(`[k8s.io] reaped orphan 00000000-dead-beef-… (age 433s): 1 reaped, 0 too young,
+0 failed`),同一轮对 6 个有记录的 capsule 沙箱一个没碰。
+存量 19 个沙箱(9 活 + 10 死壳)与 9 个端口已手工清理。
+
+⚠️ 顺手记两条判据教训:① `crictl pods` 的 CREATED 列是多词("8 days ago"),按列号
+切分必错,用 `-o json`;② `crictl rmp` 默认 2 秒超时对 kata 沙箱不够,报
+`DeadlineExceeded` 不是删不掉,加 `--timeout 120s`。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
