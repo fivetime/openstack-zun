@@ -15,6 +15,7 @@ import datetime
 import os
 import time
 
+from eventlet import tpool
 import grpc
 import base64
 import json
@@ -60,6 +61,37 @@ from zun import objects
 
 CONF = zun.conf.CONF
 LOG = logging.getLogger(__name__)
+
+# Seconds past a command's own timeout before the exec call is abandoned.
+# Covers the runtime killing the command at its timeout and then waiting its
+# configured drain period for held output. Must keep cri_exec_timeout plus
+# this below [DEFAULT] rpc_response_timeout, or the API answers 504 first.
+EXEC_REPLY_MARGIN = 15
+
+
+def _off_hub(stub):
+    """A gRPC stub whose every call runs on a native thread.
+
+    See CriDriver.__init__ for why. Only for stubs whose calls are all
+    unary: a streaming call would come back as an iterator that blocks the
+    hub on each step.
+    """
+    return tpool.Proxy(stub)
+
+
+def _output_still_held(rpc_error):
+    """Whether an exec failed only because a child kept its output open.
+
+    containerd says so in the status detail, in the words of its
+    drain_exec_sync_io_timeout: the exec process exited and 'io is still
+    held by other processes'. The status code is UNKNOWN, which says nothing,
+    so the words are all there is to go on.
+    """
+    try:
+        details = rpc_error.details() or ''
+    except Exception:
+        return False
+    return 'io is still held' in details
 
 
 # DNS_SEARCHES_ANNOTATION carries the resolver search list from whoever created
@@ -298,23 +330,35 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     def __init__(self):
         super(CriDriver, self).__init__()
         channel = grpc.insecure_channel(CONF.cri_containerd_address)
-        self.runtime_stub = api_pb2_grpc.RuntimeServiceStub(channel)
+        # Every call on these stubs runs on a native thread. zun-compute is
+        # an eventlet process, and a gRPC call blocks in C: the hub does not
+        # get the CPU back until the reply arrives, so nothing else in the
+        # process runs -- no other request, no periodic task, no heartbeat.
+        # Measured: one exec whose command left a child holding its stdout
+        # froze the whole service for the two minutes the child lived. The
+        # same freeze hides in every slow call; an image pull is the long
+        # one. Same device nova uses for libvirt (tpool.Proxy on the
+        # connection). The streaming stubs a commit uses stay direct: a
+        # Proxy would return an iterator that blocks the hub on each step,
+        # which is the problem again with a different face.
+        self.runtime_stub = _off_hub(api_pb2_grpc.RuntimeServiceStub(channel))
         # Filled on first use by _runtime_snapshotter().
         self._snapshotter = None
         # Filled on first use by _can_limit_host_io()/_io_device().
         self._host_io_ok = None
         self._io_dev = None
-        self.image_stub = api_pb2_grpc.ImageServiceStub(channel)
+        self.image_stub = _off_hub(api_pb2_grpc.ImageServiceStub(channel))
         # containerd's own task service, on the same socket. The CRI is a view
         # of containerd, not the whole of it: pausing a task and sending it a
         # signal exist here and have no CRI call at all. Reaching past the CRI
         # is a deliberate exception, kept to the calls that are only here --
         # anything the CRI does serve is served through the CRI.
-        self.task_stub = tasks_pb2_grpc.TasksStub(channel)
+        self.task_stub = _off_hub(tasks_pb2_grpc.TasksStub(channel))
         # The snapshot service, for the one thing the CRI cannot say: which
         # host directory holds a container's writable layer. Restart uses it
         # to carry that layer from a dead incarnation into its replacement.
-        self.snapshot_stub = snapshots_pb2_grpc.SnapshotsStub(channel)
+        self.snapshot_stub = _off_hub(
+            snapshots_pb2_grpc.SnapshotsStub(channel))
         # The three services a commit needs, all past the CRI, which has no
         # notion of making an image out of a container.
         self.diff_stub = ctrd_diff_pb2_grpc.DiffStub(channel)
@@ -1313,12 +1357,22 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         tenant's OVN network, and a kata sandbox's namespace holds only a tap
         device -- so a probe has to run where the application is.
         """
+        # Two clocks. The request's timeout is the runtime's: it kills the
+        # command when that runs out. The call's deadline is ours, and it is
+        # the only thing that ends the call when the command exits but a
+        # child it started keeps its output open -- the runtime waits for
+        # that pipe to close, for as long as it takes (a year, for
+        # `sleep 365d &`), and no timeout on the request touches that wait.
+        # The margin is for the runtime's own drain wait (see
+        # drain_exec_sync_io_timeout in the deployed containerd config),
+        # so a runtime that does give up answers first, with a reason.
         response = self.runtime_stub.ExecSync(
             api_pb2.ExecSyncRequest(
                 container_id=container_id,
                 cmd=self._as_argv(cmd),
                 timeout=timeout,
-            )
+            ),
+            timeout=timeout + EXEC_REPLY_MARGIN,
         )
         return response.exit_code, response.stdout, response.stderr
 
@@ -1410,6 +1464,16 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
                 raise exception.Invalid(
                     _('Command did not finish within %d seconds') % timeout)
+            if _output_still_held(e):
+                # The command is done; what the runtime could not do is
+                # collect its output, because a process the command started
+                # still holds the write end. The output is gone, and the
+                # caller can avoid the next one.
+                raise exception.Invalid(_(
+                    'The command finished, but a process it started is '
+                    'still holding its output open, so the output could not '
+                    'be collected. Start background processes with their '
+                    'output redirected, e.g. "cmd >/dev/null 2>&1 &"'))
             raise
         # stderr is included because a caller running a command wants to see
         # why it failed, and there is no second stream to send it down.
