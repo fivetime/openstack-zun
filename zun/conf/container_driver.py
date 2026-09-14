@@ -133,6 +133,30 @@ Interdependencies to other options:
                     '[DEFAULT] rpc_response_timeout: a command that outlives '
                     'that never sends a reply, so the caller sees a server '
                     'error instead of the timeout that actually happened.'),
+    cfg.IntOpt('cri_read_timeout',
+               default=15,
+               help='Seconds a CRI call that only reads -- a status, a list, '
+                    'a statistics sample -- may take. Every call to the '
+                    'runtime is bounded: a call about a sandbox whose shim '
+                    'has stopped answering does not return at all, and on '
+                    'this service each one keeps a worker thread with it, '
+                    'so twenty of them are enough to stop every call to the '
+                    'runtime on the node. Short, because reads come often: '
+                    'a node is scraped for statistics every few seconds.'),
+    cfg.IntOpt('cri_request_timeout',
+               default=120,
+               help='Seconds a CRI call that changes something -- creating, '
+                    'starting, stopping or removing a sandbox or a '
+                    'container -- may take. The same bound, and the same '
+                    'default, as the kubelet\'s --runtime-request-timeout. '
+                    'A stop is allowed its grace period on top.'),
+    cfg.IntOpt('cri_pull_timeout',
+               default=1800,
+               help='Seconds an image pull may take. Far longer than any '
+                    'other call, because a pull is bounded by the image and '
+                    'the registry rather than by the runtime, but still '
+                    'bounded: a pull that will never finish must not keep '
+                    'its worker thread forever.'),
     cfg.IntOpt('cri_push_timeout',
                default=600,
                help='Seconds a push of a committed image to its registry '

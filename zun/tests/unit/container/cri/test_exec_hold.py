@@ -181,7 +181,7 @@ class OffHubTest(base.TestCase):
 
     def test_a_call_through_the_proxy_reaches_the_stub(self):
         driver = self._driver()
-        driver.runtime_stub._obj.Version = mock.Mock(return_value='v')
+        driver.runtime_stub._obj._stub.Version = mock.Mock(return_value='v')
 
         self.assertEqual('v', driver.runtime_stub.Version('req'))
 

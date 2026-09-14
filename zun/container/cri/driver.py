@@ -107,14 +107,86 @@ def _grpc_on_native_threads():
 _GRPC_NATIVE = _grpc_on_native_threads()
 
 
-def _off_hub(stub):
-    """A gRPC stub whose every call runs on a native thread.
+# Calls that only read. Everything else changes something and gets the
+# longer request bound; a call missing from both lists is still bounded.
+_READ_CALLS = frozenset([
+    # CRI runtime service
+    'Version', 'Status', 'RuntimeConfig',
+    'ListPodSandbox', 'PodSandboxStatus',
+    'ListContainers', 'ContainerStatus',
+    'ContainerStats', 'ListContainerStats',
+    'PodSandboxStats', 'ListPodSandboxStats',
+    'ListMetricDescriptors', 'ListPodSandboxMetrics',
+    # CRI image service
+    'ListImages', 'ImageStatus', 'ImageFsInfo',
+    # containerd's own task and snapshot services
+    'Get', 'List', 'Mounts', 'Stat', 'Usage',
+])
 
-    See CriDriver.__init__ for why, and _grpc_on_native_threads for what
-    makes it safe. Only for stubs whose calls are all unary: a streaming
-    call would come back as an iterator that blocks the hub on each step.
+# Calls whose request carries a timeout the runtime itself honours: the
+# grace a stop allows before it kills, the time a command is let run. The
+# call has to outlast that, or it is abandoned before the runtime has done
+# what it was asked.
+_CALLS_WITH_THEIR_OWN_TIMEOUT = frozenset(['StopContainer', 'ExecSync'])
+
+
+def _deadline_for(method, request):
+    """Seconds a call to the runtime may take before it is abandoned."""
+    if method == 'PullImage':
+        return CONF.cri_pull_timeout
+    if method in _READ_CALLS:
+        return CONF.cri_read_timeout
+    deadline = CONF.cri_request_timeout
+    if method in _CALLS_WITH_THEIR_OWN_TIMEOUT:
+        deadline += int(getattr(request, 'timeout', 0) or 0)
+    return deadline
+
+
+class _Bounded(object):
+    """A gRPC stub whose every call has a deadline.
+
+    gRPC gives a call no deadline unless it is asked to, and a call with
+    none can wait forever. That is not hypothetical: when a sandbox's shim
+    stops answering, containerd does not answer about it either, and a
+    statistics call that covers the whole node -- ListContainerStats --
+    does not answer at all. Measured on the testbed after a guest kernel
+    left one shim stuck: nineteen of the twenty worker threads were each
+    waiting in a ListContainerStats that would never return, the twentieth
+    in the StopPodSandbox of a delete, and every exec, log and status call
+    for the node's other, healthy capsules queued behind them and timed
+    out as a 504 -- while the node kept its heartbeat and looked up.
+    Asked directly, containerd answered for those healthy capsules in a
+    second.
+
+    A deadline the caller passes is kept; one it does not pass is chosen
+    by what the call does (_deadline_for).
     """
-    return tpool.Proxy(stub)
+
+    def __init__(self, stub):
+        self._stub = stub
+
+    def __getattr__(self, name):
+        call = getattr(self._stub, name)
+        if not callable(call):
+            return call
+
+        def bounded(request, *args, **kwargs):
+            if kwargs.get('timeout') is None:
+                kwargs['timeout'] = _deadline_for(name, request)
+            return call(request, *args, **kwargs)
+        return bounded
+
+
+def _off_hub(stub):
+    """A gRPC stub whose every call runs on a native thread, with a deadline.
+
+    See CriDriver.__init__ for why the thread, _grpc_on_native_threads for
+    what makes it safe, and _Bounded for why the deadline: a thread that is
+    never given back is a smaller pool, and the pool is small. Only for
+    stubs whose calls are all unary: a streaming call would come back as an
+    iterator that blocks the hub on each step.
+    """
+    return tpool.Proxy(_Bounded(stub))
 
 
 def _output_still_held(rpc_error):
