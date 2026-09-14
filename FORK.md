@@ -763,6 +763,44 @@ processes",driver 把它翻成"命令已结束但它起的进程还占着输出,
 同节点另一个 capsule 的 exec **0.8 秒**回(修前 53–60 秒);node-05/06 每 60 秒 71 条
 周期任务、零 greenlet 错误;控制组 `echo hi; sleep 2; echo done` 2.8 秒输出完整。
 
+### 4.9 一个卡死的 shim 堵死整台节点的 CRI 通道(2026-09-14,`74a53df9`)
+
+**怎么发现的**:测试床健康巡检。node-05/06 两台 VM 在 09:49 同时出现卡在
+`kvm_async_pf_task_wait_schedule` 的 D 状态进程——客户机向 incus 宿主机要一页内存,
+宿主机再没回"页已就绪"(内核 09:52 起报 hung task,10 秒复查 CPU 计数纹丝不动)。触发点
+是两个经 Container API 新建的 kata-qemu 容器(`q3`/`qdef`,admin 身份,非本会话所建);
+宿主机侧根因不在本仓库。node-05 上被卡住的恰是 zun-compute 主线程本身(判 down,不可
+kill);node-06 上卡住的是 `q3` 的 shim 和另一个 capsule 共用 shim 里的一个线程。
+
+**我们自己的缺陷在 node-06 暴露**:心跳正常、服务 `up`,但 111111/222222 四个 CoreDNS
+capsule 的 exec/logs **全部 60 秒后 504**。py-spy:tpool 20 个工作线程里 **19 个卡在
+`ListContainerStats`**、1 个卡在删除 `q3` 的 `StopPodSandbox`。`ListContainerStats` 是
+节点级调用,containerd 挨个问 task,一个 task 不答整条不返回;kubezun 的指标抓取每轮
+都发一条新的,**gRPC 不给就没有 deadline**,每条都带走一个线程,池满后所有 CRI 调用排队。
+对照组坐实这是我们的问题不是 containerd 的:直接 crictl 问,**同节点 3 个健康 capsule
+的 stats ~1 秒、exec 160 毫秒**,只有真坏的两个超时。§4.8 把调用挪上 tpool 保住了 hub,
+却把"冻整个进程"换成了"心跳活着、CRI 全堵"——**更难从外面看出来**。
+
+**修法**:四个 unary stub 外面再包一层 `_Bounded`,每个调用没传 `timeout` 就按类别补:
+读(status/list/stats/images、containerd task Get、snapshot Mounts)`cri_read_timeout`
+15 秒——读得频繁,短才不会在抓取周期里叠满池子;改动(run/stop/remove sandbox、
+create/start/stop/remove container、update、task kill/pause)`cri_request_timeout`
+120 秒,**与 kubelet `--runtime-request-timeout` 默认值一致**,`StopContainer`/`ExecSync`
+再加上请求自带的 timeout(优雅期/命令时限);`PullImage` `cri_pull_timeout` 1800 秒;
+两张表都没列的方法按 120 秒兜底——**漏列只会变长,不会变成无界**。调用方显式给的保留。
+
+**验证**(故障现场未动,node-06 仍有卡死的 shim):部署后健康 capsule 的 exec **0.8 秒**
+(修前 60 秒/504),logs 0.8 秒;与卡死 shim 同沙箱的那个 capsule exec 2.8 秒报错返回;
+5 分钟观察窗每 30 秒采样 10 次:tpool 在途 CRI 调用 **6–9 个**(上限 20,修前 20/20 满),健康 capsule exec **740–822 毫秒**;在同一台节点上建/exec/删一个新 pod:
+19 秒 Running、exec 0.8 秒、删除 30 秒,删后沙箱/端口/capsule 记录零残留。
+单测 287 绿,红检新增 10 个用例在修前全红。
+
+⚠️ 遗留(未做,有意):两个节点级统计(`measure_writable_layers`/`sample_counters`
+的 `ListContainerStats`、`_sandbox_networks` 的 `ListPodSandboxStats`)仍是"一个坏沙箱 →
+整台节点这一轮没有数据"。现在它们会在 15 秒后放手而不是永远挂着,但计费采样那一轮会
+整台丢;要做到"坏沙箱只丢自己"需超时后退回逐容器 `ContainerStats`,这改变了
+`test_sample_counters` 里"整台不答就一条不报"的既定语义,单独决定。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
