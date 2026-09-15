@@ -801,6 +801,34 @@ create/start/stop/remove container、update、task kill/pause)`cri_request_timeo
 整台丢;要做到"坏沙箱只丢自己"需超时后退回逐容器 `ContainerStats`,这改变了
 `test_sample_counters` 里"整台不答就一条不报"的既定语义,单独决定。
 
+### 4.10 CNI 插件不能依赖宿主机上的 Python(2026-09-15,`427ea54a`)
+
+**背景**:capsule 的网卡由 CNI 插件 `zun-cni` 接入 Neutron,插件由 containerd 在**宿主机**上执行。原插件
+`zun.cni.cmd.cni` 是 Python console script:向 daemon 要 VIF(`/addNetwork`),自己转成 CNI 结果。测试床的
+daemon 和 venv 都在宿主机上,所以一直能用;生产用 openstack-helm 部署,daemon 跑在容器里,镜像里的插件拷到
+宿主机后 shebang 指向不存在的解释器——生产 capsule 从未能建成网络(此前还因 containerd 读 kubelet 的 CNI 目录,
+沙箱落到 multus)。
+
+**定案**:把"VIF → CNI 结果"挪进 daemon,宿主机只放一个转发器。
+- daemon 新增 `/cni`:收同样的请求(`CNI_*` + `config_zun`),整次调用在 daemon 内完成,回 CNI 原生格式——ADD
+  回结果、DEL 回空、VERSION 回 supportedVersions(不解析 CNI_ARGS,runtime 发 VERSION 时不带)、失败回带码的
+  CNI 错误(端口激活超时保留 timeout 码;DEL 遇 ResourceNotReady 仍成功,同 `/delNetwork`)。转换函数抽成
+  `vif_to_cni_result()`,Python 插件复用,旧端点不变。
+- `tools/zun-cni-shim`:Go 标准库、静态;收集 `CNI_*` 与 stdin 配置转发到配置里 `zun_cni_daemon`(默认
+  `http://127.0.0.1:9036`),打印回包;VERSION 本地答;daemon 不可达或回非 CNI 错误体时仍输出 CNI 错误并非零退出,
+  **绝不空成功**(chart 旧脚本在找不到插件时会生成转发给 bridge 插件的替身——静默接到 Linux bridge)。
+
+**验证**:单测 endpoint 11 个(修前 9 红,剩下 1 个钉住旧端点不变)、shim 8 个。测试床 node-04 用 shim 顶替
+Python 插件跑租户 pod,ADD/DEL 均 `/cni 200`,port ACTIVE 绑本机、删除后 port/沙箱/br-int 接口清零,与 Python 插件
+对照组一致。生产(zun-worker1~3,镜像 + chart + containerd drop-in,部署细节在平台文档
+OpenStack-Helm-Deploy.md §14.2.10):5 个 kata-qemu capsule 分布三台,IP == port IP,9 向跨节点 ping 0%,
+删除 15s 清零。
+
+⚠️ 上生产才暴露、测试床暴露不了的两处(都因测试床 daemon 在宿主机上):① 插口经 privsep 调 **`ovs-vsctl`**
+(`zun/network/linux_net.py`),zun 镜像原本没有——镜像 bindep 补 openvswitch-switch;② os-vif 拔 tap 用它自己的
+privsep 上下文 `vif_plug_ovs_privileged`,不配 helper_command 就回退 `sudo zun-rootwrap`,容器里没有,DEL 失败、
+capsule 删除卡住——部署侧配 helper_command。**测试床验证的是代码,不是镜像与 chart**。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
