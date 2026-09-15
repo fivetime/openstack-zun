@@ -851,9 +851,16 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         lines = ['nameserver %s' % server for server in container.dns]
         if container.dns_search:
             lines.append('search %s' % ' '.join(container.dns_search))
-        # A container's own name is one label, and the default of one dot
-        # would send it to the search domain only after trying it whole.
-        lines.append('options ndots:0')
+        # A service name is one label, and it must be tried in the search
+        # domain before it is tried whole. ndots is the number of dots a
+        # name needs to be tried whole *first*, so it is 1, not 0: with 0,
+        # `web` went to the public DNS as a top-level name, which exists
+        # and answers 127.0.53.53, and a compose service named web was
+        # unreachable by its own name (measured in alpine, 2026-09-15:
+        # ndots:0 gave 127.0.53.53, ndots:1 gave web.<search domain>).
+        # Written out rather than left to the default, so the file says
+        # which way round it is.
+        lines.append('options ndots:1')
         with open(path, 'w') as handle:
             handle.write('\n'.join(lines) + '\n')
         os.chmod(path, 0o644)

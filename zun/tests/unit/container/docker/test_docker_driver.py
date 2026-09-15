@@ -984,12 +984,18 @@ class TestResolvConfForAVmRuntime(base.DriverTestCase):
         self.assertIn('nameserver 8.8.8.8', written)
 
     def test_a_single_label_is_tried_in_the_search_domain_first(self):
-        """A service name is one label, and the default of one dot would
-        send it whole to the resolver before the search domain."""
+        """ndots is how many dots a name needs to be tried whole first.
+
+        With 0 a one-label service name went whole to the resolver, and
+        `web` is a public top-level name that answers 127.0.53.53; with 1
+        it is tried in the search domain first.
+        """
         path = self.driver._write_resolv_conf(
             self._container(dns=['1.1.1.1'], dns_search=['example.local']))
 
-        self.assertIn('options ndots:0', open(path).read())
+        written = open(path).read()
+        self.assertIn('options ndots:1', written)
+        self.assertNotIn('ndots:0', written)
 
     def test_it_is_readable_by_the_container(self):
         path = self.driver._write_resolv_conf(
