@@ -25,8 +25,10 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 
+from zun.cni import api as cni_api
 from zun.cni.plugins import zun_cni_registry
 from zun.cni import utils as cni_utils
+from zun.common import consts
 from zun.common import context as zun_context
 from zun.common import exception
 from zun.common import utils
@@ -45,6 +47,8 @@ class DaemonServer(object):
             '/addNetwork', methods=['POST'], view_func=self.add)
         self.application.add_url_rule(
             '/delNetwork', methods=['POST'], view_func=self.delete)
+        self.application.add_url_rule(
+            '/cni', methods=['POST'], view_func=self.cni)
         self.headers = {'ContentType': 'application/json',
                         'Connection': 'close'}
 
@@ -98,6 +102,81 @@ class DaemonServer(object):
                           'Params: %s.', params)
             return '', httplib.INTERNAL_SERVER_ERROR, self.headers
         return '', httplib.NO_CONTENT, self.headers
+
+    def _cni_output(self, dct, status):
+        output = {'cniVersion': cni_api.CNIRunner.VERSION}
+        output.update(dct)
+        return jsonutils.dumps(output), status, self.headers
+
+    def _cni_error(self, msg, status, code=consts.CNI_EXCEPTION_CODE):
+        return self._cni_output({'code': code, 'msg': msg}, status)
+
+    def cni(self):
+        """One whole CNI call, answered in the words CNI expects.
+
+        /addNetwork answers with a VIF object and leaves turning it into a CNI
+        result to the plugin -- which is why the plugin the runtime executes
+        has needed this Python environment, and so could only run on a host
+        that has one. Here the daemon does that conversion itself, so the
+        binary on the host has nothing left to do but forward the call and
+        print what comes back. A deployment whose daemon runs in a container
+        cannot put this environment on the host at all.
+
+        Success is 200 with the CNI result (nothing for DEL). A failure is a
+        non-200 status whose body is a CNI error, which the forwarder prints
+        and exits non-zero on.
+        """
+        # VERSION carries no CNI_ARGS and no container, and CNIParameters
+        # cannot be built without them: answer it before parsing the rest.
+        body = flask.request.get_json(silent=True) or {}
+        if body.get('CNI_COMMAND') == 'VERSION':
+            return self._cni_output(
+                {'supportedVersions': cni_api.CNIRunner.SUPPORTED_VERSIONS},
+                httplib.OK)
+
+        try:
+            params = self._prepare_request()
+            command = params.CNI_COMMAND
+        except Exception:
+            LOG.exception('Exception when reading CNI params.')
+            return self._cni_error('could not read the CNI request',
+                                   httplib.BAD_REQUEST)
+
+        if command == 'ADD':
+            try:
+                vif = self.plugin.add(params)
+                result = cni_api.vif_to_cni_result(
+                    vif, params.CNI_IFNAME, params.CNI_CONTAINERID)
+            except exception.ResourceNotReady:
+                LOG.error('Error when processing CNI ADD request')
+                return self._cni_error(
+                    'the port did not become active in time',
+                    httplib.GATEWAY_TIMEOUT, code=consts.CNI_TIMEOUT_CODE)
+            except Exception as e:
+                LOG.exception('Error when processing CNI ADD request. CNI '
+                              'Params: %s', params)
+                return self._cni_error(str(e),
+                                       httplib.INTERNAL_SERVER_ERROR)
+            return self._cni_output(result, httplib.OK)
+
+        if command == 'DEL':
+            try:
+                self.plugin.delete(params)
+            except exception.ResourceNotReady:
+                # Same as /delNetwork: without VIF metadata there is nothing
+                # to unplug, and the runtime has to be let move on.
+                LOG.warning('Error when processing CNI DEL request. '
+                            'Ignoring this error, capsule/container is most '
+                            'likely gone')
+            except Exception as e:
+                LOG.exception('Error when processing CNI DEL request. CNI '
+                              'Params: %s.', params)
+                return self._cni_error(str(e),
+                                       httplib.INTERNAL_SERVER_ERROR)
+            return '', httplib.OK, self.headers
+
+        return self._cni_error('unknown CNI_COMMAND: %s' % command,
+                               httplib.BAD_REQUEST)
 
     def run(self):
         address = CONF.cni_daemon.cni_daemon_host

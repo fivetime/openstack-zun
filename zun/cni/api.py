@@ -29,6 +29,47 @@ LOG = logging.getLogger(__name__)
 CONF = cfg.CONF
 
 
+def vif_to_cni_result(vif, ifname, container_id):
+    """The CNI ADD result for a VIF: its interface, addresses and routes.
+
+    Shared by the plugin that runs this conversion itself and by the daemon's
+    /cni endpoint, which runs it on the plugin's behalf so that the binary
+    the runtime executes on the host needs no Python at all.
+    """
+    result = {}
+    nameservers = []
+    cni_ip_list = result.setdefault("ips", [])
+    cni_routes_list = result.setdefault("routes", [])
+    result["interfaces"] = [
+        {
+            "name": ifname,
+            "mac": vif.address,
+            "sandbox": container_id}]
+    for subnet in vif.network.subnets.objects:
+        cni_ip = {}
+        nameservers.extend(subnet.dns)
+
+        ip = subnet.ips.objects[0].address
+
+        cni_ip['version'] = str(ip.version)
+        cni_ip['address'] = "%s/%s" % (ip, subnet.cidr.prefixlen)
+        cni_ip['interface'] = len(result["interfaces"]) - 1
+
+        if subnet.obj_attr_is_set('gateway'):
+            cni_ip['gateway'] = str(subnet.gateway)
+
+        if subnet.routes.objects:
+            routes = [
+                {'dst': str(route.cidr), 'gw': str(route.gateway)}
+                for route in subnet.routes.objects]
+            cni_routes_list.extend(routes)
+        cni_ip_list.append(cni_ip)
+
+    if nameservers:
+        result['dns'] = {'nameservers': nameservers}
+    return result
+
+
 class CNIRunner(object, metaclass=abc.ABCMeta):
     # TODO(ivc): extend SUPPORTED_VERSIONS and format output based on
     # requested params.CNI_VERSION and/or params.config.cniVersion
@@ -88,39 +129,8 @@ class CNIRunner(object, metaclass=abc.ABCMeta):
             return 1
 
     def _vif_data(self, vif, params):
-        result = {}
-        nameservers = []
-
-        cni_ip_list = result.setdefault("ips", [])
-        cni_routes_list = result.setdefault("routes", [])
-        result["interfaces"] = [
-            {
-                "name": params["CNI_IFNAME"],
-                "mac": vif.address,
-                "sandbox": self.get_container_id(params)}]
-        for subnet in vif.network.subnets.objects:
-            cni_ip = {}
-            nameservers.extend(subnet.dns)
-
-            ip = subnet.ips.objects[0].address
-
-            cni_ip['version'] = str(ip.version)
-            cni_ip['address'] = "%s/%s" % (ip, subnet.cidr.prefixlen)
-            cni_ip['interface'] = len(result["interfaces"]) - 1
-
-            if subnet.obj_attr_is_set('gateway'):
-                cni_ip['gateway'] = str(subnet.gateway)
-
-            if subnet.routes.objects:
-                routes = [
-                    {'dst': str(route.cidr), 'gw': str(route.gateway)}
-                    for route in subnet.routes.objects]
-                cni_routes_list.extend(routes)
-            cni_ip_list.append(cni_ip)
-
-        if nameservers:
-            result['dns'] = {'nameservers': nameservers}
-        return result
+        return vif_to_cni_result(vif, params["CNI_IFNAME"],
+                                 self.get_container_id(params))
 
 
 class CNIDaemonizedRunner(CNIRunner):
