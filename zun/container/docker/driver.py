@@ -179,6 +179,11 @@ def _network_lock(neutron_net_id):
     return '%snetwork-%s' % (consts.NAME_PREFIX, neutron_net_id)
 
 
+
+def _read_only(volmap):
+    """Whether an attachment was asked for read-only; absent means no."""
+    return bool(getattr(volmap, 'read_only', False))
+
 class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                    driver.CapsuleDriver):
     """Implementation of container drivers for Docker."""
@@ -879,7 +884,8 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         for volume in requested_volumes:
             volume_driver = self._get_volume_driver(volume)
             source, destination = volume_driver.bind_mount(context, volume)
-            binds[source] = {'bind': destination}
+            binds[source] = {'bind': destination,
+                             'mode': 'ro' if _read_only(volume) else 'rw'}
         return binds
 
     def _setup_network_for_container(self, context, container,

@@ -93,6 +93,9 @@ REST_API_VERSION_HISTORY = """REST API Version History:
     * 1.51 - Add exposed_ports to the container response: the ports it
              declares it listens on. A declaration, as docker's --expose
              is; it opens nothing.
+    * 1.52 - Add read_only to a mount: the attachment is bound read-only.
+             Without it a file handed in as a secret could be rewritten
+             by the container, and grown until the node's disk was full.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -105,7 +108,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.51'
+CURRENT_MAX_VER = '1.52'
 
 
 class Version(object):

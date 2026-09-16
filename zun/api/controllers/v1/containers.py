@@ -687,6 +687,7 @@ class ContainersController(base.Controller):
                            'read_iops', 'write_iops'):
                 if mount.get(io_key) is not None:
                     volume_dict[io_key] = mount[io_key]
+            volume_dict['read_only'] = bool(mount.get('read_only'))
 
             volmapp = objects.VolumeMapping(context, **volume_dict)
             requested_volumes[container.uuid].append(volmapp)

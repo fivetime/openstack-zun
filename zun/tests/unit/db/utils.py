@@ -157,6 +157,7 @@ def get_test_volume_mapping(**kwargs):
         'write_bps': kwargs.get('write_bps', None),
         'read_iops': kwargs.get('read_iops', None),
         'write_iops': kwargs.get('write_iops', None),
+        'read_only': kwargs.get('read_only', False),
     }
 
 

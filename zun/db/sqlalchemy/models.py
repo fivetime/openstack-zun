@@ -226,6 +226,7 @@ class VolumeMapping(Base):
     write_bps = Column(BigInteger, nullable=True)
     read_iops = Column(Integer, nullable=True)
     write_iops = Column(Integer, nullable=True)
+    read_only = Column(Boolean, nullable=True)
     container_uuid = Column(String(36), ForeignKey('container.uuid'))
     container = orm.relationship(
         Container,

@@ -1099,8 +1099,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         for volume in volmaps:
             volume_driver = self._get_volume_driver(volume)
             source, destination = volume_driver.bind_mount(context, volume)
-            mounts.append(api_pb2.Mount(container_path=destination,
-                                        host_path=source))
+            mounts.append(api_pb2.Mount(
+                container_path=destination, host_path=source,
+                readonly=bool(getattr(volume, 'read_only', False))))
         return mounts
 
     def _wait_for_init_container(self, context, container, timeout=3600):

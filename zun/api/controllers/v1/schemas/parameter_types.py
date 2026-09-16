@@ -286,6 +286,12 @@ mounts = {
             'write_iops': {
                 'type': ['integer', 'null'],
                 'minimum': 1,
+            },
+            # Mounted read-only: the container can read it and cannot
+            # write it. For a contents (bind) volume that is also what
+            # keeps the file from growing on the node's disk.
+            'read_only': {
+                'type': ['boolean', 'null'],
             }
         },
         'additionalProperties': False,
