@@ -87,19 +87,34 @@ def _credential_for(context, repository, container):
     So a credential is used only for the host it belongs to. Having
     none for the target means an anonymous push, which fails as
     `unauthorized` and says what is actually wrong.
+
+    The container's own project, and among several for the host the
+    newest: a credential re-made after a rotation sits beside the copy
+    a login left before it, and the first row the query returned was
+    the old one -- every push after the rotation went out with a secret
+    the registry no longer knew (2026-09-16).
     """
     host = repository.split('/')[0]
     if container.registry and container.registry.domain == host:
         return container.registry
     try:
-        found = objects.Registry.list(context, filters={'domain': host})
+        found = objects.Registry.list(
+            context, filters={'domain': host,
+                              'project_id': container.project_id})
     except Exception as exc:                                # noqa: BLE001
         LOG.warning('could not look up a credential for %s: %s', host, exc)
         return None
     if found:
-        return found[0]
+        return max(found, key=_credential_age)
     LOG.info('no credential for %s; pushing anonymously', host)
     return None
+
+
+def _credential_age(registry):
+    """When the credential was last given, for choosing the newest."""
+    stamp = getattr(registry, 'updated_at', None) or \
+        getattr(registry, 'created_at', None)
+    return stamp.timestamp() if stamp is not None else 0
 
 
 def _image_id_of(committed):

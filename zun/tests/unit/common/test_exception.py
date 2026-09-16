@@ -221,6 +221,29 @@ class TestPushingWithTheCredentialThatCanWriteThere(base.TestCase):
         self.assertIs(container.registry, chosen)
         listed.assert_not_called()
 
+    def test_the_lookup_is_the_containers_projects_and_the_newest_wins(self):
+        """A rotation leaves the old copy beside the new credential."""
+        import datetime
+        from zun.compute import manager
+
+        old = mock.Mock(domain='harbor.example.com',
+                        updated_at=None,
+                        created_at=datetime.datetime(2026, 9, 15, 5, 0))
+        new = mock.Mock(domain='harbor.example.com',
+                        updated_at=None,
+                        created_at=datetime.datetime(2026, 9, 16, 5, 14))
+        container = self._container()
+        container.project_id = 'p-1'
+        with mock.patch.object(manager.objects.Registry, 'list',
+                               return_value=[old, new]) as listed:
+            chosen = manager._credential_for(
+                mock.Mock(), 'harbor.example.com/team/app', container)
+
+        self.assertIs(new, chosen)
+        self.assertEqual({'domain': 'harbor.example.com',
+                          'project_id': 'p-1'},
+                         listed.call_args[1]['filters'])
+
     def test_no_credential_anywhere_is_an_anonymous_push_not_a_crash(self):
         from zun.compute import manager
 
