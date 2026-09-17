@@ -237,6 +237,10 @@ class VolumeMapping(Base):
     read_iops = Column(Integer, nullable=True)
     write_iops = Column(Integer, nullable=True)
     read_only = Column(Boolean, nullable=True)
+    # API 1.54: a contents file's mode and owner (migration f2a3b4c5d6e7).
+    file_mode = Column(Integer, nullable=True)
+    file_uid = Column(BigInteger, nullable=True)
+    file_gid = Column(BigInteger, nullable=True)
     container_uuid = Column(String(36), ForeignKey('container.uuid'))
     container = orm.relationship(
         Container,

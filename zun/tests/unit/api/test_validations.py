@@ -196,7 +196,7 @@ class TestSchemaValidations(base.BaseTestCase):
 
     def test_create_schema_wrong_environment(self):
         request_to_validate = {'image': 'nginx',
-                               'environment': {'xyz': 'pqr', 'pqr': None}}
+                               'environment': {'xyz': 'pqr', 'pqr': 123}}
         with self.assertRaisesRegex(exception.SchemaValidationError,
                                     "Invalid input for field"
                                     " 'pqr'"):

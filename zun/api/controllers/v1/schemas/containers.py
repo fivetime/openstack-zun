@@ -162,6 +162,8 @@ query_param_top = {
     'additionalProperties': False
 }
 query_param_stop = copy.deepcopy(query_param_reboot)
+# 1.54: the signal a stop sends first, docker's `stop --signal`.
+query_param_stop['properties']['signal'] = parameter_types.signal
 
 query_param_resize = {
     'type': 'object',
@@ -196,6 +198,8 @@ query_param_execute_command = {
         'run': parameter_types.boolean,
         'interactive': parameter_types.boolean,
         'command': parameter_types.exec_command,
+        # 1.54: start it and do not wait, docker's `exec -d`.
+        'detach': parameter_types.boolean,
     },
     'additionalProperties': False
 }
@@ -212,7 +216,12 @@ query_param_commit = {
     'type': 'object',
     'properties': {
         'repository': parameter_types.string_ps_args,
-        'tag': parameter_types.string_ps_args
+        'tag': parameter_types.string_ps_args,
+        # 1.54
+        'message': parameter_types.commit_text,
+        'author': parameter_types.commit_text,
+        'changes': parameter_types.commit_changes,
+        'pause': parameter_types.boolean_extended,
     },
     'required': ['repository'],
     'additionalProperties': False

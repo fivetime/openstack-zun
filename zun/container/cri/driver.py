@@ -321,6 +321,20 @@ def _refuse_what_cri_cannot_carry(container):
                 '%(field)s is not supported on this host: %(why)s.')
                 % {'field': field, 'why': why})
     _supplemental_groups(container)
+    unset = _unset_variables(container)
+    if unset:
+        raise exception.Invalid(_(
+            'An environment variable without a value (%s) asks for the '
+            'image\'s value to be removed, and the runtime interface can '
+            'only set variables, not remove them.') % ', '.join(unset))
+
+
+def _unset_variables(container):
+    """Environment variables given no value: docker's `-e NAME` (1.54)."""
+    environment = getattr(container, 'environment', None)
+    if not isinstance(environment, dict):
+        return []
+    return sorted(key for key, value in environment.items() if value is None)
 
 
 def _supplemental_groups(container):
@@ -1662,6 +1676,33 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             'a terminal resize travels on the exec stream and needs no '
             'separate call'))
 
+    def execute_detached(self, exec_id):
+        """docker's `exec -d`: not something this runtime can do.
+
+        An exec here is run to completion inside one call; there is no
+        session to leave behind.
+        """
+        raise exception.Invalid(_(
+            'This host runs an exec to completion and cannot leave one '
+            'running; start the command in the background from a shell '
+            'instead'))
+
+    def _exited_within(self, container, seconds):
+        """Whether the container's process exits within `seconds`."""
+        deadline = time.time() + seconds
+        while True:
+            try:
+                resp = self.runtime_stub.ContainerStatus(
+                    api_pb2.ContainerStatusRequest(
+                        container_id=container.container_id))
+                if resp.status.state == api_pb2.CONTAINER_EXITED:
+                    return True
+            except grpc.RpcError:
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.5)
+
     def execute_run(self, exec_id, command):
         # Bounded well below the RPC reply timeout. A command that outlives
         # that — `sh` with nothing on stdin is enough — leaves the caller with
@@ -2594,7 +2635,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             raise exception.ZunException(_('%s') % answer['error'])
         return answer
 
-    def commit(self, context, container, repository=None, tag=None):
+    def commit(self, context, container, repository=None, tag=None,
+               message=None, author=None, changes=None, pause=None):
         """Make an image of what this container has written.
 
         Recorded in containerd's own image store rather than kept aside,
@@ -2602,7 +2644,16 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         else on this node would look for it too.
         """
         name = '%s:%s' % (repository, tag or 'latest')
+        if changes:
+            # Checked here, where a refusal reaches the caller, rather
+            # than in the helper process.
+            try:
+                cri_commit.apply_changes({}, changes)
+            except ValueError as exc:
+                raise exception.Invalid(_('Cannot commit: %s') % exc)
         self._run_commit_cli({
+            'message': message, 'author': author,
+            'changes': list(changes or []),
             'action': 'commit', 'name': name, 'uuid': container.uuid,
             'container_id': container.container_id,
             'image': container.image,
@@ -2758,7 +2809,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     #: archive is about 44 KiB of command, half of what was seen to work.
     _PUT_CHUNK = 32 * 1024
 
-    def put_archive(self, context, container, path, data):
+    def put_archive(self, context, container, path, data,
+                    copy_uidgid=False, no_overwrite_dir_non_dir=False):
         """`docker cp` writing.
 
         Carried in through exec, in pieces, rather than on a stream.
@@ -2772,6 +2824,12 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         says which part failed rather than leaving a half-written
         archive behind.
         """
+        if copy_uidgid or no_overwrite_dir_non_dir:
+            raise exception.Invalid(_(
+                'This host copies an archive in with tar inside the '
+                'container, which can neither chown the files to the '
+                'container\'s user nor refuse to replace a directory with a '
+                'file; copy without those options'))
         staged = '/tmp/.zun-put-%s.tar' % uuidutils.generate_uuid()
         self._run_or_raise(container, ['rm', '-f', staged], path)
         try:
@@ -3343,12 +3401,21 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 % ((err or out or '').strip()[:200] or 'ps is not in the image'))
         return driver.process_table(out)
 
-    def stop(self, context, container, timeout=None):
+    def stop(self, context, container, timeout=None, signal=None):
         if not container.container_id:
             return container
+        grace = int(timeout or CONF.docker.default_timeout)
+        if signal:
+            # The runtime interface stops with the image's STOPSIGNAL and
+            # has no field for another, so the asked-for signal goes
+            # through the task service first, the grace is waited out
+            # here, and the stop that follows has nothing left to wait for.
+            self.kill(context, container, signal)
+            if self._exited_within(container, grace):
+                grace = 0
         self.runtime_stub.StopContainer(api_pb2.StopContainerRequest(
             container_id=container.container_id,
-            timeout=int(timeout or CONF.docker.default_timeout)))
+            timeout=grace))
         container.status = consts.STOPPED
         container.status_reason = None
         # The owner asked for this. Without the mark, the next look at the

@@ -89,6 +89,25 @@ class VolumeDriver(object, metaclass=abc.ABCMeta):
         raise NotImplementedError()
 
 
+def _apply_file_attributes(filename, volmap):
+    """The contents file's mode and owner, as asked for (API 1.54).
+
+    Set on the node's copy, which is what the container sees through the
+    bind. Unset keeps what writing the file gave it.
+    """
+    mode = getattr(volmap, 'file_mode', None)
+    uid = getattr(volmap, 'file_uid', None)
+    gid = getattr(volmap, 'file_gid', None)
+    uid = uid if isinstance(uid, int) else None
+    gid = gid if isinstance(gid, int) else None
+    if uid is not None or gid is not None:
+        os.chown(filename,
+                 uid if uid is not None else -1,
+                 gid if gid is not None else -1)
+    if isinstance(mode, int):
+        os.chmod(filename, mode)
+
+
 class Local(VolumeDriver):
 
     supported_providers = ['local']
@@ -101,6 +120,7 @@ class Local(VolumeDriver):
         with open(filename, 'wb') as fd:
             content = utils.decode_file_data(volmap.contents)
             fd.write(content)
+        _apply_file_attributes(filename, volmap)
 
     @validate_volume_provider(supported_providers)
     def update_file(self, context, volmap, contents):

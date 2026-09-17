@@ -99,9 +99,12 @@ class API(rpc_service.API):
         self._cast(container.host, 'container_reboot', container=container,
                    timeout=timeout)
 
-    def container_stop(self, context, container, timeout):
+    def container_stop(self, context, container, timeout, signal=None):
+        # The signal (1.54) is sent only when one was asked for, so that a
+        # compute node older than it still takes the call.
+        extra = {'signal': signal} if signal else {}
         self._cast(container.host, 'container_stop', container=container,
-                   timeout=timeout)
+                   timeout=timeout, **extra)
 
     def container_start(self, context, container):
         self._cast(container.host, 'container_start', container=container)
@@ -125,10 +128,12 @@ class API(rpc_service.API):
                           container=container, stdout=stdout, stderr=stderr)
 
     @check_container_host
-    def container_exec(self, context, container, command, run, interactive):
+    def container_exec(self, context, container, command, run, interactive,
+                       detach=False):
+        extra = {'detach': True} if detach else {}
         return self._call(container.host, 'container_exec',
                           container=container, command=command, run=run,
-                          interactive=interactive)
+                          interactive=interactive, **extra)
 
     @check_container_host
     def container_exec_resize(self, context, container, exec_id, height,
@@ -172,10 +177,11 @@ class API(rpc_service.API):
 
     @check_container_host
     def container_put_archive(self, context, container, path, data,
-                              decode_data):
+                              decode_data, options=None):
+        extra = {'options': options} if options else {}
         return self._call(container.host, 'container_put_archive',
                           container=container, path=path, data=data,
-                          decode_data=decode_data)
+                          decode_data=decode_data, **extra)
 
     @check_container_host
     def container_stats(self, context, container):
@@ -197,9 +203,12 @@ class API(rpc_service.API):
                           container_path=container_path, contents=contents)
 
     @check_container_host
-    def container_commit(self, context, container, repository, tag):
+    def container_commit(self, context, container, repository, tag,
+                         options=None):
+        extra = {'options': options} if options else {}
         return self._call(container.host, 'container_commit',
-                          container=container, repository=repository, tag=tag)
+                          container=container, repository=repository, tag=tag,
+                          **extra)
 
     def add_security_group(self, context, container, security_group):
         return self._cast(container.host, 'add_security_group',

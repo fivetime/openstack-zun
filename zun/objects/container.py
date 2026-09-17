@@ -75,7 +75,8 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
         'status': z_fields.ContainerStatusField(nullable=True),
         'status_reason': fields.StringField(nullable=True),
         'task_state': z_fields.TaskStateField(nullable=True),
-        'environment': fields.DictOfStringsField(nullable=True),
+        # A null value (1.54) removes the variable the image sets.
+        'environment': fields.DictOfNullableStringsField(nullable=True),
         'workdir': fields.StringField(nullable=True),
         'auto_remove': fields.BooleanField(nullable=True),
         'ports': z_fields.ListOfIntegersField(nullable=True),

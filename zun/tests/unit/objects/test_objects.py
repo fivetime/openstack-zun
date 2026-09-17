@@ -341,7 +341,7 @@ object_data = {
     'Container': '1.52-410dfe7d51b691abdac909fc42a5d52e',
     'Cpuset': '1.0-06c4e6335683c18b87e2e54080f8c341',
     'Volume': '1.0-034768f2f5c5e89acb5ee45c6d3f3403',
-    'VolumeMapping': '1.7-08e2f3bbb1c87ec5026242217344a16b',
+    'VolumeMapping': '1.8-08c5cb727aa9969de1db72da5db7edb8',
     'Image': '1.2-80504fdd797e9dd86128a91680e876ad',
     'MyObj': '1.0-34c4b1aadefd177b13f9a2f894cc23cd',
     'NUMANode': '1.0-6da86e2dd7f28253e2b9ac60c002ea8f',

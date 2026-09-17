@@ -69,8 +69,10 @@ def _committer(request):
 
 
 def do_commit(request):
-    digest = _committer(request).commit(_Container(request), request['name'],
-                                        source=request.get('source'))
+    digest = _committer(request).commit(
+        _Container(request), request['name'],
+        source=request.get('source'), message=request.get('message'),
+        author=request.get('author'), changes=request.get('changes'))
     return {'digest': digest, 'name': request['name']}
 
 

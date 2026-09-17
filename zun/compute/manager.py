@@ -875,20 +875,25 @@ class Manager(periodic_task.PeriodicTasks):
     @wrap_exception()
     @wrap_container_event(prefix='compute',
                           finish_action=container_actions.STOP)
-    def _do_container_stop(self, context, container, timeout):
+    def _do_container_stop(self, context, container, timeout, signal=None):
         LOG.debug('Stopping container: %s', container.uuid)
         with notifications.lifecycle(context, container, 'stop',
                                      host=self.host), \
                 self._update_task_state(context, container,
                                         consts.CONTAINER_STOPPING):
             # NOTE(hongbin): capsule shouldn't reach here
-            container = self.driver.stop(context, container, timeout)
+            if signal:
+                container = self.driver.stop(context, container, timeout,
+                                             signal=signal)
+            else:
+                container = self.driver.stop(context, container, timeout)
             return container
 
-    def container_stop(self, context, container, timeout):
+    def container_stop(self, context, container, timeout, signal=None):
         @utils.synchronized(container.uuid)
         def do_container_stop():
-            self._do_container_stop(context, container, timeout)
+            self._do_container_stop(context, container, timeout,
+                                    signal=signal)
 
         utils.spawn_n(do_container_stop)
 
@@ -1053,7 +1058,8 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
-    def container_exec(self, context, container, command, run, interactive):
+    def container_exec(self, context, container, command, run, interactive,
+                       detach=False):
         LOG.debug('Executing command in container: %s', container.uuid)
         try:
             # By the container's own type, not by which driver this service
@@ -1063,6 +1069,15 @@ class Manager(periodic_task.PeriodicTasks):
             driver = self._get_driver(container)
             exec_id = driver.execute_create(context, container, command,
                                             interactive)
+            if run and detach:
+                # Started and left running (1.54): nothing to wait for,
+                # so no output and no exit code yet -- the exec id is
+                # what a caller asks about later.
+                driver.execute_detached(exec_id)
+                return {"output": None,
+                        "exit_code": None,
+                        "exec_id": exec_id,
+                        "token": None}
             if run:
                 output, exit_code = driver.execute_run(exec_id, command)
                 return {"output": output,
@@ -1280,12 +1295,15 @@ class Manager(periodic_task.PeriodicTasks):
 
     @translate_exception
     def container_put_archive(self, context, container, path, data,
-                              decode_data):
+                              decode_data, options=None):
         LOG.debug('Copying resource to the container: %s', container.uuid)
         if decode_data:
             data = utils.decode_file_data(data)
         try:
             # NOTE(hongbin): capsule shouldn't reach here
+            if options:
+                return self.driver.put_archive(context, container, path,
+                                               data, **options)
             return self.driver.put_archive(context, container, path, data)
         except exception.DockerError as e:
             LOG.error(
@@ -1399,15 +1417,23 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
-    def container_commit(self, context, container, repository, tag=None):
+    def container_commit(self, context, container, repository, tag=None,
+                         options=None):
         LOG.debug('Committing the container: %s', container.uuid)
+        options = dict(options or {})
         if _names_a_registry(repository):
             # A repository that names a registry is asking for the image
             # to end up there. Uploading it to an image service this
             # deployment does not read would make an image nobody can
             # run: absent from a listing, unusable by name.
             return self._commit_to_registry(context, container, repository,
-                                            tag)
+                                            tag, options)
+        if options:
+            # The image-service path uploads a snapshot and carries none
+            # of these; refused rather than dropped.
+            raise exception.Invalid(_(
+                'commit options (%s) are applied only to a commit that '
+                'goes to a registry') % ', '.join(sorted(options)))
         snapshot_image = None
         try:
             # NOTE(miaohb): Glance is the only driver that support image
@@ -1429,7 +1455,8 @@ class Manager(periodic_task.PeriodicTasks):
         utils.spawn_n(do_container_commit)
         return {"uuid": snapshot_image.id}
 
-    def _commit_to_registry(self, context, container, repository, tag):
+    def _commit_to_registry(self, context, container, repository, tag,
+                            options=None):
         """Commit, then send it where its name says it belongs.
 
         Two steps and one of them is slow, so only the first is waited
@@ -1439,14 +1466,24 @@ class Manager(periodic_task.PeriodicTasks):
         was asked for, and its absence needs explaining.
         """
         tag = tag or 'latest'
+        options = dict(options or {})
+        # docker's --pause=false: the writable layer is read while the
+        # container keeps running. The pause is this service's own step,
+        # so it is this service that skips it.
+        pause = options.pop('pause', True)
         unpause = False
-        if container.status == consts.RUNNING:
+        if pause and container.status == consts.RUNNING:
             container = self.driver.pause(context, container)
             container.save(context)
             unpause = True
         try:
-            committed = self.driver.commit(context, container, repository,
-                                           tag)
+            if options or not pause:
+                committed = self.driver.commit(context, container,
+                                               repository, tag, pause=pause,
+                                               **options)
+            else:
+                committed = self.driver.commit(context, container,
+                                               repository, tag)
         finally:
             if unpause:
                 try:

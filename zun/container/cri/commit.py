@@ -27,6 +27,7 @@ back with files the tenant deleted.
 
 import hashlib
 import json
+import shlex
 import zlib
 
 import grpc
@@ -205,8 +206,14 @@ class Committer(object):
         digest.update(decompressor.flush())
         return 'sha256:' + digest.hexdigest()
 
-    def commit(self, container, name, source=None):
-        """Build the image and record it, returning its manifest digest."""
+    def commit(self, container, name, source=None, message=None,
+               author=None, changes=None):
+        """Build the image and record it, returning its manifest digest.
+
+        message, author and changes are docker's commit options: the
+        history entry's comment, the image's author, and Dockerfile
+        instructions applied to the image's config.
+        """
         layer = self.diff_layer(container.container_id)
         diff_id = self.diff_id(layer)
 
@@ -214,9 +221,16 @@ class Committer(object):
         config = json.loads(self.read_blob(manifest['config']['digest']))
         config.setdefault('rootfs', {}).setdefault('diff_ids', [])
         config['rootfs']['diff_ids'].append(diff_id)
-        config.setdefault('history', []).append({
+        entry = {
             'created_by': 'zun commit %s' % container.uuid,
-            'comment': 'committed from container %s' % container.uuid})
+            'comment': message or
+            'committed from container %s' % container.uuid}
+        if author:
+            entry['author'] = author
+            config['author'] = author
+        config.setdefault('history', []).append(entry)
+        if changes:
+            apply_changes(config.setdefault('config', {}), changes)
         config_blob = json.dumps(config, separators=(',', ':')).encode()
         config_desc = self.write_blob(config_blob)
 
@@ -252,6 +266,90 @@ class Committer(object):
                  {'container': container.uuid, 'name': name,
                   'digest': manifest_desc['digest']})
         return manifest_desc['digest']
+
+
+#: The Dockerfile instructions docker's commit applies (`--change`).
+CHANGE_INSTRUCTIONS = ('CMD', 'ENTRYPOINT', 'ENV', 'EXPOSE', 'LABEL',
+                       'STOPSIGNAL', 'USER', 'VOLUME', 'WORKDIR')
+
+
+def _command(argument):
+    """The exec form as given, the shell form under /bin/sh -c."""
+    text = argument.strip()
+    if text.startswith('['):
+        try:
+            value = json.loads(text)
+        except ValueError:
+            value = None
+        if isinstance(value, list) and all(isinstance(v, str)
+                                           for v in value):
+            return value
+    return ['/bin/sh', '-c', text]
+
+
+def _pairs(argument, legacy_space):
+    """`k=v k2="v 2"`, or the legacy `k v` form ENV and LABEL allow."""
+    words = shlex.split(argument)
+    if not words:
+        raise ValueError('expected key=value')
+    if legacy_space and '=' not in words[0]:
+        key, _sep, rest = argument.strip().partition(' ')
+        if not rest.strip():
+            raise ValueError('%s has no value' % key)
+        return [(key, rest.strip())]
+    out = []
+    for word in words:
+        key, sep, value = word.partition('=')
+        if not sep or not key:
+            raise ValueError('expected key=value, got %r' % word)
+        out.append((key, value))
+    return out
+
+
+def apply_changes(config, changes):
+    """Apply docker commit's --change instructions to an image config.
+
+    Raises ValueError for an instruction docker's commit does not take,
+    so that a request is refused rather than half applied.
+    """
+    for change in changes:
+        instruction, _sep, argument = change.strip().partition(' ')
+        instruction = instruction.upper()
+        argument = argument.strip()
+        if instruction not in CHANGE_INSTRUCTIONS:
+            raise ValueError('%s is not an instruction commit applies'
+                             % instruction)
+        if instruction in ('CMD', 'ENTRYPOINT'):
+            key = 'Cmd' if instruction == 'CMD' else 'Entrypoint'
+            config[key] = _command(argument)
+        elif instruction == 'ENV':
+            env = [e for e in (config.get('Env') or [])]
+            for key, value in _pairs(argument, legacy_space=True):
+                env = [e for e in env if e.partition('=')[0] != key]
+                env.append('%s=%s' % (key, value))
+            config['Env'] = env
+        elif instruction == 'LABEL':
+            labels = dict(config.get('Labels') or {})
+            labels.update(_pairs(argument, legacy_space=True))
+            config['Labels'] = labels
+        elif instruction == 'EXPOSE':
+            ports = dict(config.get('ExposedPorts') or {})
+            for port in argument.split():
+                if '/' not in port:
+                    port += '/tcp'
+                ports[port] = {}
+            config['ExposedPorts'] = ports
+        elif instruction == 'VOLUME':
+            volumes = dict(config.get('Volumes') or {})
+            paths = (_command(argument) if argument.startswith('[')
+                     else argument.split())
+            for path in paths:
+                volumes[path] = {}
+            config['Volumes'] = volumes
+        else:
+            key = {'STOPSIGNAL': 'StopSignal', 'USER': 'User',
+                   'WORKDIR': 'WorkingDir'}[instruction]
+            config[key] = argument
 
 
 def _mount(mount):

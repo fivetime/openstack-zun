@@ -34,6 +34,13 @@ Services which consume this:
 Interdependencies to other options:
 * None
 """),
+    cfg.IntOpt('max_contents_size',
+               default=1048576,
+               min=1,
+               help='The largest file, in bytes, a container may be handed '
+                    'as contents (a bind mount written on the node). The '
+                    'file is written to the node\'s own disk, which every '
+                    'container on the node shares.'),
     cfg.StrOpt('volume_dir',
                default='$state_path/mnt',
                help='At which the docker volume will create.'),

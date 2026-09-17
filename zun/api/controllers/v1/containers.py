@@ -167,6 +167,48 @@ def _raw_stats_from_reports(container):
     return current
 
 
+def _check_contents_size(contents, destination):
+    """Refuse a contents file larger than the node will write (1.54).
+
+    The file is written to the node's own disk, which every container on
+    the node shares. The encoded size bounds the decoded one from above,
+    so the decoded size is only worked out when it could matter.
+    """
+    limit = CONF.volume.max_contents_size
+    if not contents or len(contents) <= limit:
+        return
+    try:
+        size = len(utils.decode_file_data(contents))
+    except Exception:                                       # noqa: BLE001
+        size = len(contents)
+    if size > limit:
+        raise exception.InvalidValue(_(
+            'The file for %(path)s is %(size)d bytes; the largest a '
+            'container may be handed is %(limit)d') %
+            {'path': destination, 'size': size, 'limit': limit})
+
+
+def _commit_options(kwargs):
+    """docker's commit options (1.54), only those that were given.
+
+    `changes` arrives as Dockerfile instructions, one per line, and goes
+    on as a list. `pause` is docker's: true unless told otherwise.
+    """
+    options = {}
+    for key in ('message', 'author'):
+        if kwargs.get(key):
+            options[key] = kwargs[key]
+    changes = [line.strip() for line in
+               (kwargs.get('changes') or '').splitlines() if line.strip()]
+    if changes:
+        options['changes'] = changes
+    if kwargs.get('pause') not in (None, ''):
+        pause = strutils.bool_from_string(kwargs['pause'], strict=False)
+        if not pause:
+            options['pause'] = False
+    return options
+
+
 class ContainersController(base.Controller):
     """Controller for Containers."""
 
@@ -700,6 +742,14 @@ class ContainersController(base.Controller):
             elif volume_type == 'bind':
                 volume_dict['contents'] = mount.pop('source', '')
                 volume_dict['volume_provider'] = 'local'
+                _check_contents_size(volume_dict['contents'],
+                                     mount['destination'])
+            if volume_type != 'bind' and any(
+                    mount.get(key) is not None
+                    for key in ('mode', 'uid', 'gid')):
+                raise exception.InvalidValue(_(
+                    'mode, uid and gid apply to a file handed in as contents '
+                    '(type bind) only'))
 
             volume_object = objects.Volume(context, **volume_dict)
             volume_object.create(context)
@@ -710,6 +760,10 @@ class ContainersController(base.Controller):
                 if mount.get(io_key) is not None:
                     volume_dict[io_key] = mount[io_key]
             volume_dict['read_only'] = bool(mount.get('read_only'))
+            for key, field in (('mode', 'file_mode'), ('uid', 'file_uid'),
+                               ('gid', 'file_gid')):
+                if mount.get(key) is not None:
+                    volume_dict[field] = int(mount[key])
 
             volmapp = objects.VolumeMapping(context, **volume_dict)
             requested_volumes[container.uuid].append(volmapp)
@@ -970,10 +1024,13 @@ class ContainersController(base.Controller):
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception
     @validation.validate_query_param(pecan.request, schema.query_param_stop)
-    def stop(self, container_ident, timeout=None, **kwargs):
+    def stop(self, container_ident, timeout=None, signal=None, **kwargs):
         """Stop container.
 
         :param container_ident: UUID or Name of a container.
+        :param signal: the signal sent first, before the timeout runs out
+            and the container is killed. Since 1.54; unset means the
+            image's STOPSIGNAL, or SIGTERM.
         """
         container = api_utils.get_resource('Container', container_ident)
         check_policy_on_container(container.as_dict(), "container:stop")
@@ -982,7 +1039,11 @@ class ContainersController(base.Controller):
                   container.uuid)
         context = pecan.request.context
         compute_api = pecan.request.compute_api
-        compute_api.container_stop(context, container, timeout)
+        if signal not in (None, '', 'None'):
+            compute_api.container_stop(context, container, timeout,
+                                       signal=signal)
+        else:
+            compute_api.container_stop(context, container, timeout)
         pecan.response.status = 202
 
     @pecan.expose('json')
@@ -1089,7 +1150,8 @@ class ContainersController(base.Controller):
     @exception.wrap_pecan_controller_exception
     @validation.validate_query_param(pecan.request,
                                      schema.query_param_execute_command)
-    def execute(self, container_ident, run=True, interactive=False, **kwargs):
+    def execute(self, container_ident, run=True, interactive=False,
+                detach=False, **kwargs):
         """Execute command in a running container.
 
         :param container_ident: UUID or Name of a container.
@@ -1103,15 +1165,24 @@ class ContainersController(base.Controller):
         try:
             run = strutils.bool_from_string(run, strict=True)
             interactive = strutils.bool_from_string(interactive, strict=True)
+            detach = strutils.bool_from_string(detach, strict=True)
         except ValueError:
             bools = ', '.join(strutils.TRUE_STRINGS + strutils.FALSE_STRINGS)
-            raise exception.InvalidValue(_('Valid run or interactive '
+            raise exception.InvalidValue(_('Valid run, interactive or detach '
                                            'values are: %s') % bools)
+        if detach and (not run or interactive):
+            raise exception.InvalidValue(_(
+                'detach starts a command and does not wait for it; it cannot '
+                'be combined with an interactive session'))
         LOG.debug('Calling compute.container_exec with %(uuid)s command '
                   '%(command)s',
                   {'uuid': container.uuid, 'command': kwargs['command']})
         context = pecan.request.context
         compute_api = pecan.request.compute_api
+        if detach:
+            return compute_api.container_exec(context, container,
+                                              kwargs['command'],
+                                              run, interactive, detach=True)
         return compute_api.container_exec(context, container,
                                           kwargs['command'],
                                           run, interactive)
@@ -1285,6 +1356,26 @@ class ContainersController(base.Controller):
                   {'uuid': container.uuid, 'path': kwargs['path']})
         context = pecan.request.context
         compute_api = pecan.request.compute_api
+        # 1.54: docker's copyUIDGID (`cp -a`, the files owned by the
+        # container's user) and noOverwriteDirNonDir. Sent on only when
+        # asked for, so a compute node that predates them is not handed
+        # an argument it does not take.
+        options = {}
+        for key in ('copy_uidgid', 'no_overwrite_dir_non_dir'):
+            if kwargs.get(key) in (None, ''):
+                continue
+            try:
+                value = strutils.bool_from_string(kwargs[key], strict=True)
+            except ValueError:
+                raise exception.InvalidValue(
+                    _('%s must be a boolean') % key)
+            if value:
+                options[key] = True
+        if options:
+            compute_api.container_put_archive(
+                context, container, kwargs['path'], kwargs['data'],
+                kwargs['decode_data'], options=options)
+            return
         compute_api.container_put_archive(
             context, container, kwargs['path'], kwargs['data'],
             kwargs['decode_data'])
@@ -1325,6 +1416,11 @@ class ContainersController(base.Controller):
         context = pecan.request.context
         compute_api = pecan.request.compute_api
         pecan.response.status = 202
+        options = _commit_options(kwargs)
+        if options:
+            return compute_api.container_commit(
+                context, container, kwargs.get('repository', None),
+                kwargs.get('tag', None), options=options)
         return compute_api.container_commit(context, container,
                                             kwargs.get('repository', None),
                                             kwargs.get('tag', None))

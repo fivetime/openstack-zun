@@ -167,6 +167,9 @@ def get_test_volume_mapping(**kwargs):
         'read_iops': kwargs.get('read_iops', None),
         'write_iops': kwargs.get('write_iops', None),
         'read_only': kwargs.get('read_only', False),
+        'file_mode': kwargs.get('file_mode', None),
+        'file_uid': kwargs.get('file_uid', None),
+        'file_gid': kwargs.get('file_gid', None),
     }
 
 

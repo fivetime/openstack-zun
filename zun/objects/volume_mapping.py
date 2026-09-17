@@ -54,7 +54,8 @@ class VolumeMapping(base.ZunPersistentObject, base.ZunObject):
     # Version 1.5: Add method "count"
     # Version 1.6: Add per-attachment io ceilings
     # Version 1.7: Add read_only
-    VERSION = '1.7'
+    # Version 1.8: Add file_mode, file_uid, file_gid
+    VERSION = '1.8'
 
     fields = {
         'id': fields.IntegerField(),
@@ -69,6 +70,9 @@ class VolumeMapping(base.ZunPersistentObject, base.ZunObject):
         'read_iops': fields.IntegerField(nullable=True),
         'write_iops': fields.IntegerField(nullable=True),
         'read_only': fields.BooleanField(nullable=True),
+        'file_mode': fields.IntegerField(nullable=True),
+        'file_uid': fields.IntegerField(nullable=True),
+        'file_gid': fields.IntegerField(nullable=True),
         'container_uuid': fields.UUIDField(nullable=True),
         'container': fields.ObjectField('ContainerBase', nullable=True),
         'connection_info': fields.SensitiveStringField(nullable=True),

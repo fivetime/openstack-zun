@@ -101,6 +101,11 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              group_add, oom_score_adj, tmpfs, and healthcheck start_period
              and disable. A driver that cannot apply one refuses the
              create rather than dropping it.
+    * 1.54 - Add an environment value of null (the image's variable is
+             removed); commit message, author, changes and pause; stop
+             signal; execute detach; put_archive copy_uidgid and
+             no_overwrite_dir_non_dir; a contents mount's mode, uid and
+             gid; and [volume] max_contents_size.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -113,7 +118,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.53'
+CURRENT_MAX_VER = '1.54'
 
 
 class Version(object):

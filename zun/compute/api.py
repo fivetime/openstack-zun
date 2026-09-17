@@ -150,9 +150,10 @@ class API(object):
         self._record_action_start(context, container, container_actions.REBOOT)
         return self.rpcapi.container_reboot(context, container, *args)
 
-    def container_stop(self, context, container, *args):
+    def container_stop(self, context, container, *args, **kwargs):
         self._record_action_start(context, container, container_actions.STOP)
-        return self.rpcapi.container_stop(context, container, *args)
+        return self.rpcapi.container_stop(context, container, *args,
+                                          **kwargs)
 
     def container_start(self, context, container):
         self._record_action_start(context, container, container_actions.START)
@@ -181,8 +182,9 @@ class API(object):
         return '%s?token=%s&uuid=%s&stream=logs' % (
             base, answer.get('token'), container.uuid)
 
-    def container_exec(self, context, container, *args):
-        data = self.rpcapi.container_exec(context, container, *args)
+    def container_exec(self, context, container, *args, **kwargs):
+        data = self.rpcapi.container_exec(context, container, *args,
+                                          **kwargs)
         token = data.pop('token', None)
         exec_id = data.get('exec_id')
         # The node running the container says which proxy reaches it; only it
@@ -236,8 +238,9 @@ class API(object):
                                   container_actions.REMOVE_SECURITY_GROUP)
         return self.rpcapi.remove_security_group(context, container, *args)
 
-    def container_put_archive(self, context, container, *args):
-        return self.rpcapi.container_put_archive(context, container, *args)
+    def container_put_archive(self, context, container, *args, **kwargs):
+        return self.rpcapi.container_put_archive(context, container, *args,
+                                                 **kwargs)
 
     def container_stats(self, context, container):
         return self.rpcapi.container_stats(context, container)
@@ -253,9 +256,10 @@ class API(object):
         return self.rpcapi.capsule_update_file(context, capsule,
                                                container_path, contents)
 
-    def container_commit(self, context, container, *args):
+    def container_commit(self, context, container, *args, **kwargs):
         self._record_action_start(context, container, container_actions.COMMIT)
-        return self.rpcapi.container_commit(context, container, *args)
+        return self.rpcapi.container_commit(context, container, *args,
+                                            **kwargs)
 
     def image_delete(self, context, image):
         return self.rpcapi.image_delete(context, image, image.host)

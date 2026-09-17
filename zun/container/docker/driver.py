@@ -186,6 +186,43 @@ def _read_only(volmap):
     return bool(getattr(volmap, 'read_only', False))
 
 
+def _stop_with_signal(docker, container_id, timeout, signal):
+    """docker's stop with its own signal (Engine API 1.42, `?signal=`).
+
+    docker-py's stop has no argument for it, so the request is made the
+    way docker-py makes its own: the daemon sends the signal, waits the
+    timeout, and kills.
+    """
+    params = {'signal': str(signal)}
+    wait = None
+    if timeout:
+        params['t'] = int(timeout)
+        wait = int(timeout)
+    # The HTTP call lasts as long as the daemon waits, and more.
+    http_timeout = (docker.timeout or 60) + (wait or 10)
+    res = docker._post(docker._url('/containers/{0}/stop', container_id),
+                       params=params, timeout=http_timeout)
+    docker._raise_for_status(res)
+
+
+def _put_archive_with(docker, container_id, path, data, copy_uidgid,
+                      no_overwrite_dir_non_dir):
+    """put_archive with docker's two options, which docker-py cannot send.
+
+    copyUIDGID chowns the files to the container's user (`cp -a`);
+    noOverwriteDirNonDir refuses to replace a directory with a file or a
+    file with a directory.
+    """
+    params = {'path': path}
+    if copy_uidgid:
+        params['copyUIDGID'] = '1'
+    if no_overwrite_dir_non_dir:
+        params['noOverwriteDirNonDir'] = '1'
+    res = docker._put(docker._url('/containers/{0}/archive', container_id),
+                      params=params, data=data)
+    docker._raise_for_status(res)
+
+
 def _healthcheck(container):
     """The container's healthcheck in docker-py's shape, or None.
 
@@ -1593,9 +1630,12 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
     @check_container_id
     @wrap_docker_error
-    def stop(self, context, container, timeout):
+    def stop(self, context, container, timeout, signal=None):
         with docker_utils.docker_client() as docker:
-            if timeout:
+            if signal:
+                _stop_with_signal(docker, container.container_id, timeout,
+                                  signal)
+            elif timeout:
                 docker.stop(container.container_id,
                             timeout=int(timeout))
             else:
@@ -1705,6 +1745,11 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 container.container_id, command, stdin=stdin, tty=tty)
             exec_id = create_res['Id']
             return exec_id
+
+    def execute_detached(self, exec_id):
+        """Start an exec and leave it running (docker's `exec -d`)."""
+        with docker_utils.docker_client() as docker:
+            docker.exec_start(exec_id, detach=True)
 
     def execute_run(self, exec_id, command):
         with docker_utils.docker_client() as docker:
@@ -1863,10 +1908,16 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
     @check_container_id
     @wrap_docker_error
-    def put_archive(self, context, container, path, data):
+    def put_archive(self, context, container, path, data,
+                    copy_uidgid=False, no_overwrite_dir_non_dir=False):
         with docker_utils.docker_client() as docker:
             try:
-                docker.put_archive(container.container_id, path, data)
+                if copy_uidgid or no_overwrite_dir_non_dir:
+                    _put_archive_with(docker, container.container_id, path,
+                                      data, copy_uidgid,
+                                      no_overwrite_dir_non_dir)
+                else:
+                    docker.put_archive(container.container_id, path, data)
             except errors.APIError as api_error:
                 if is_not_found(api_error):
                     raise exception.Invalid(_("%s") % str(api_error))
@@ -1934,14 +1985,31 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
     @check_container_id
     @wrap_docker_error
-    def commit(self, context, container, repository=None, tag=None):
+    def commit(self, context, container, repository=None, tag=None,
+               message=None, author=None, changes=None, pause=None):
         with docker_utils.docker_client() as docker:
             repository = str(repository)
+            # The pause is the caller's step: the compute manager pauses
+            # the container itself when it was asked to (pause True) and
+            # does not when it was not (False). docker is told not to
+            # pause whenever the caller said which; with nothing said the
+            # call is what it always was.
+            options = {}
+            if message:
+                options['message'] = message
+            if author:
+                options['author'] = author
+            if changes:
+                options['changes'] = list(changes)
+            if options or pause is not None:
+                options['pause'] = False
             if tag is None or tag == "None":
-                return docker.commit(container.container_id, repository)
+                return docker.commit(container.container_id, repository,
+                                     **options)
             else:
                 tag = str(tag)
-                return docker.commit(container.container_id, repository, tag)
+                return docker.commit(container.container_id, repository, tag,
+                                     **options)
 
     def _encode_utf8(self, value):
         return value.encode('utf-8')

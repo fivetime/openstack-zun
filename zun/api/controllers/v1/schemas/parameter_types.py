@@ -400,7 +400,24 @@ mounts = {
             # keeps the file from growing on the node's disk.
             'read_only': {
                 'type': ['boolean', 'null'],
-            }
+            },
+            # 1.54, contents (bind) volumes only: the file's mode and
+            # owner as the container sees them.
+            'mode': {
+                'type': ['integer', 'null'],
+                'minimum': 0,
+                'maximum': 0o7777,
+            },
+            'uid': {
+                'type': ['integer', 'null'],
+                'minimum': 0,
+                'maximum': 4294967294,
+            },
+            'gid': {
+                'type': ['integer', 'null'],
+                'minimum': 0,
+                'maximum': 4294967294,
+            },
         },
         'additionalProperties': False,
         'anyOf': [
@@ -418,7 +435,9 @@ environment = {
     'type': ['object', 'null'],
     'patternProperties': {
         '.+': {
-            'type': ['string']
+            # null (1.54): the variable is removed from what the image
+            # sets, docker's `-e NAME` with no value.
+            'type': ['string', 'null']
         },
     },
 }
@@ -536,6 +555,20 @@ signal = {
 exec_command = {
     'type': ['string'],
     'minLength': 1,
+}
+
+# 1.54: docker's commit options. `changes` is Dockerfile instructions,
+# one per line, of the kinds docker's commit applies.
+commit_changes = {
+    'type': ['string', 'null'],
+    'maxLength': 16384,
+    'pattern': '^(\\s*(CMD|ENTRYPOINT|ENV|EXPOSE|LABEL|STOPSIGNAL|USER|'
+               'VOLUME|WORKDIR)\\s[^\\n]*(\\n|$))*$',
+}
+
+commit_text = {
+    'type': ['string', 'null'],
+    'maxLength': 4096,
 }
 
 dns = {

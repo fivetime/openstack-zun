@@ -857,6 +857,24 @@ DaaS 网关按名拒绝了一串 docker 选项,理由都是"zun 没有字段"。
   现在在 `properties` 下;其他键仍放行(capsule 路径把探针与安全上下文存在同一列)。
 - 同 1.49 以来的惯例,新字段不按请求版本门控;1.53 用来让调用方判断服务端有没有这批字段。
 
+### 4.12 API 1.54:动作上的 docker 选项与内容卷属性(2026-09-17)
+
+| 接口 | 新参数 | DockerDriver | CriDriver |
+|---|---|---|---|
+| create | `environment` 的值可为 `null`(docker 的 `-e NAME`:去掉镜像里的这个变量) | docker-py 写成不带 `=` 的 `NAME` | 拒绝(CRI 只能设变量不能删) |
+| create `mounts[]`(仅 `type: bind` 的内容卷) | `mode`(0..0o7777)、`uid`、`gid` | 节点上写文件后 chmod/chown(`Local.attach`,两驱动共用) | 同左 |
+| create | `[volume] max_contents_size`(默认 1 MiB,按解码后字节) | 超限 400 | 同左 |
+| stop | `signal` | Engine API `POST /containers/{id}/stop?signal=&t=`(docker-py 不支持,直接发) | 经 containerd 任务服务发信号,等 timeout,退了就 `StopContainer(0)`,没退再按 timeout 停 |
+| execute | `detach`(须 `run=true` 且非交互) | `exec_start(detach=True)`,立即返回 exec_id,无输出与退出码 | 拒绝(exec 在一次调用里跑完) |
+| put_archive | `copy_uidgid`、`no_overwrite_dir_non_dir` | Engine API 的 `copyUIDGID`/`noOverwriteDirNonDir`(直接发) | 拒绝(容器内 tar 做不到) |
+| commit(仅推到仓库的路径) | `message`、`author`、`changes`(换行分隔的 CMD/ENTRYPOINT/ENV/EXPOSE/LABEL/STOPSIGNAL/USER/VOLUME/WORKDIR)、`pause` | docker-py 的同名参数;暂停由 manager 做,驱动总传 `pause=False` | 写进镜像 config 与 history(`commit.apply_changes`),非法指令在驱动里先拒 |
+
+- **RPC 兼容**:新参数只在用到时才放进 RPC 消息,老 compute 节点照常接受旧形状的调用(`rpcapi` 里 `extra=...`)。
+- 走 Glance 的 commit 路径带任何选项都拒绝(那条路只上传快照)。
+- `pause=false` 时 manager 不暂停,并显式告诉驱动,否则 docker 自己的默认会再暂停一次。
+- `exec -i`(有标准输入无终端)**不在这一版**:docker 运行时下 zun 没有可流式交互的 exec 会话,这是结构性的。
+- 迁移 `f2a3b4c5d6e7`(volume_mapping 三列);VolumeMapping 对象 1.8。`environment` 改 `DictOfNullableStringsField` 不改指纹,容器对象版本不变。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
