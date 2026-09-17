@@ -874,6 +874,14 @@ DaaS 网关按名拒绝了一串 docker 选项,理由都是"zun 没有字段"。
 - `pause=false` 时 manager 不暂停,并显式告诉驱动,否则 docker 自己的默认会再暂停一次。
 - `exec -i`(有标准输入无终端)**不在这一版**:docker 运行时下 zun 没有可流式交互的 exec 会话,这是结构性的。
 - 迁移 `f2a3b4c5d6e7`(volume_mapping 三列);VolumeMapping 对象 1.8。`environment` 改 `DictOfNullableStringsField` 不改指纹,容器对象版本不变。
+- ⚠️ **上线要滚四个组件**:db-sync 之后 `zun-api`、`zun-compute`、**`zun-wsproxy`、`zun-cni-daemon`**——后两个也加载 Container 对象,
+  旧代码读到值为 null 的环境变量就抛 `Field 'environment[X]' cannot be None`。2026-09-17 生产只滚了前两个:
+  `docker run -e NAME` 退出 0 但 attach 输出全丢(wsproxy 加载失败),一台节点的 cni-daemon 列容器也报了 6 次。
+- **生产验证(DaaS 第 26 轮)**:`-e NAME`/`--unsetenv`/`--unsetenv-all` 容器里变量确实不在;`--stop-signal`、`stop/restart --signal`
+  由容器里的 trap 收到(USR1/INT/USR2/TERM);`exec -d` 3 秒返回、命令 6 秒后落盘;`cp -a` 属主 1000:1000、不带 -a 是 0:0,
+  podman 默认 1000、`-a=false` 0;commit 的 CMD/ENV/USER/LABEL/author 进了 Harbor 记录的 config,message 进了 history,
+  跑出来的镜像输出改过的 CMD;`--change RUN` 被拒;secret `uid=1000,gid=1000,mode=0400` 容器里是 `400 1000:1000`,
+  默认 `444 0:0`;kube `defaultMode: 0400`/items `mode: 0444`/无 mode 分别是 400/444/644。
 
 ## 五、共享文件系统的信任边界
 
