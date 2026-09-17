@@ -181,6 +181,16 @@ class Container(Base):
     # network -- and so its DNS records -- cannot be reached.
     dns = Column(JSONEncodedList, nullable=True)
     dns_search = Column(JSONEncodedList, nullable=True)
+    # API 1.53: create-time options docker has (migration e1f2a3b4c5d6).
+    dns_options = Column(JSONEncodedList, nullable=True)
+    extra_hosts = Column(JSONEncodedList, nullable=True)
+    ulimits = Column(JSONEncodedList, nullable=True)
+    shm_size = Column(Integer, nullable=True)            # MiB
+    read_only = Column(Boolean, nullable=True)           # the rootfs
+    init = Column(Boolean, nullable=True)
+    group_add = Column(JSONEncodedList, nullable=True)
+    oom_score_adj = Column(Integer, nullable=True)
+    tmpfs = Column(JSONEncodedDict, nullable=True)       # path -> options
     blkio_weight = Column(Integer, nullable=True)      # 10..1000 relative
     device_read_bps = Column(BigInteger, nullable=True)   # bytes/s on rootfs dev
     device_write_bps = Column(BigInteger, nullable=True)

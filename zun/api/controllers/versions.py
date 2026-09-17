@@ -96,6 +96,11 @@ REST_API_VERSION_HISTORY = """REST API Version History:
     * 1.52 - Add read_only to a mount: the attachment is bound read-only.
              Without it a file handed in as a secret could be rewritten
              by the container, and grown until the node's disk was full.
+    * 1.53 - Add create-time options docker has: extra_hosts, dns_options,
+             ulimits, shm_size (MiB), read_only (the rootfs), init,
+             group_add, oom_score_adj, tmpfs, and healthcheck start_period
+             and disable. A driver that cannot apply one refuses the
+             create rather than dropping it.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -108,7 +113,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.52'
+CURRENT_MAX_VER = '1.53'
 
 
 class Version(object):

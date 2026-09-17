@@ -53,6 +53,16 @@ _legacy_container_properties = {
     'user': parameter_types.user,
     'exposed_ports': parameter_types.exposed_ports,
     'registry': parameter_types.container_registry,
+    # 1.53
+    'extra_hosts': parameter_types.extra_hosts,
+    'dns_options': parameter_types.dns_options,
+    'ulimits': parameter_types.ulimits,
+    'shm_size': parameter_types.shm_size,
+    'read_only': parameter_types.boolean,
+    'init': parameter_types.boolean,
+    'group_add': parameter_types.group_add,
+    'oom_score_adj': parameter_types.oom_score_adj,
+    'tmpfs': parameter_types.tmpfs,
 }
 
 legacy_container_create = {

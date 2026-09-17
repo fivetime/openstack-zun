@@ -107,6 +107,15 @@ class ContainerBase(base.ZunPersistentObject, base.ZunObject):
         'user': fields.StringField(nullable=True),
         'dns': fields.ListOfStringsField(nullable=True),
         'dns_search': fields.ListOfStringsField(nullable=True),
+        'dns_options': fields.ListOfStringsField(nullable=True),
+        'extra_hosts': fields.ListOfStringsField(nullable=True),
+        'ulimits': z_fields.JsonField(nullable=True),
+        'shm_size': fields.IntegerField(nullable=True),
+        'read_only': fields.BooleanField(nullable=True),
+        'init': fields.BooleanField(nullable=True),
+        'group_add': fields.ListOfStringsField(nullable=True),
+        'oom_score_adj': fields.IntegerField(nullable=True),
+        'tmpfs': z_fields.JsonField(nullable=True),
         'blkio_weight': fields.IntegerField(nullable=True),
         'device_read_bps': fields.IntegerField(nullable=True),
         'device_write_bps': fields.IntegerField(nullable=True),
@@ -467,7 +476,9 @@ class Container(ContainerBase):
     #               dependency to be ready reads
     # Version 1.51: Add 'user' -- which user the container's process runs
     #               as, which was being asked for and answered with root
-    VERSION = '1.51'
+    # Version 1.52: Add dns_options, extra_hosts, ulimits, shm_size,
+    #               read_only, init, group_add, oom_score_adj, tmpfs
+    VERSION = '1.52'
 
     container_type = consts.TYPE_CONTAINER
 
@@ -484,7 +495,8 @@ class Capsule(ContainerBase):
     # Version 1.7: Inherits logs_url and logs_token from ContainerBase
     # Version 1.8: Inherits health from ContainerBase
     # Version 1.9: Inherits user from ContainerBase
-    VERSION = '1.9'
+    # Version 1.10: Inherits the API 1.53 create options from ContainerBase
+    VERSION = '1.10'
 
     container_type = consts.TYPE_CAPSULE
 
@@ -533,7 +545,8 @@ class CapsuleContainer(ContainerBase):
     # Version 1.7: Inherits logs_url and logs_token from ContainerBase
     # Version 1.8: Inherits health from ContainerBase
     # Version 1.9: Inherits user from ContainerBase
-    VERSION = '1.9'
+    # Version 1.10: Inherits the API 1.53 create options from ContainerBase
+    VERSION = '1.10'
 
     container_type = consts.TYPE_CAPSULE_CONTAINER
 
@@ -567,7 +580,8 @@ class CapsuleInitContainer(ContainerBase):
     # Version 1.7: Inherits logs_url and logs_token from ContainerBase
     # Version 1.8: Inherits health from ContainerBase
     # Version 1.9: Inherits user from ContainerBase
-    VERSION = '1.9'
+    # Version 1.10: Inherits the API 1.53 create options from ContainerBase
+    VERSION = '1.10'
 
     container_type = consts.TYPE_CAPSULE_INIT_CONTAINER
 

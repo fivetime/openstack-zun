@@ -413,8 +413,30 @@ class ContainersController(base.Controller):
         healthcheck = container_dict.pop('healthcheck', {})
         if healthcheck:
             api_utils.version_check('healthcheck', '1.22')
+            if healthcheck.get('disable') and healthcheck.get('cmd'):
+                # docker refuses the pair too: "no healthcheck" and a
+                # command to check with cannot both be meant.
+                raise exception.InvalidValue(_(
+                    'A healthcheck cannot both be disabled and given a '
+                    'command'))
             healthcheck['test'] = healthcheck.pop('cmd', '')
             container_dict['healthcheck'] = healthcheck
+
+        # API 1.53 switches. Validation accepts docker's spellings of a
+        # boolean ("true", "False"); stored as booleans.
+        for switch in ('read_only', 'init'):
+            value = container_dict.pop(switch, None)
+            if value is None:
+                continue
+            try:
+                container_dict[switch] = strutils.bool_from_string(
+                    value, strict=True)
+            except ValueError:
+                bools = ', '.join(strutils.TRUE_STRINGS +
+                                  strutils.FALSE_STRINGS)
+                raise exception.InvalidValue(
+                    _('Valid %(name)s values are: %(bools)s')
+                    % {'name': switch, 'bools': bools})
 
         mounts = container_dict.pop('mounts', [])
         if mounts:

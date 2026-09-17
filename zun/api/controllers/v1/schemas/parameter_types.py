@@ -224,28 +224,136 @@ availability_zone = {
     'maxLength': 255,
 }
 
+# ⚠️ This used to describe its members under `items`, which JSON Schema
+# applies to arrays only: for an object nothing was checked at all. The
+# members are now under `properties`. Other keys are still let through --
+# the capsule path keeps its probes and security context in the same
+# column (k8s_probes, k8s_security_context), and a stored spec with them
+# must still be accepted when it comes back through here.
 healthcheck = {
     'type': ['object', 'null'],
+    'properties': {
+        'cmd': {
+            'type': ['string'],
+            'minLength': 1,
+            'maxLength': 255
+        },
+        # Seconds, like interval and timeout.
+        'interval': {
+            'type': ['integer', 'null'],
+            'minimum': 0,
+        },
+        'retries': {
+            'type': ['integer', 'null'],
+            'minimum': 0,
+        },
+        'timeout': {
+            'type': ['integer', 'null'],
+            'minimum': 0,
+        },
+        # 1.53: seconds during which a failing check is not counted,
+        # docker's --health-start-period.
+        'start_period': {
+            'type': ['integer', 'null'],
+            'minimum': 0,
+        },
+        # 1.53: switch off the image's own HEALTHCHECK, docker's
+        # --no-healthcheck (Test ["NONE"]). Not together with cmd.
+        'disable': {
+            'type': ['boolean', 'null'],
+        },
+    },
+}
+
+# 1.53 -- create-time options docker has and this API had no field for.
+# Each was refused by name at the gateway in front of this service.
+
+# docker's --add-host, as it writes it: "name:address". The address may be
+# IPv6, which has colons of its own, so only the first colon separates.
+extra_hosts = {
+    'type': ['array', 'null'],
+    'items': {
+        'type': 'string',
+        'minLength': 3,
+        'maxLength': 300,
+        'pattern': '^[^\\s:]+:[^\\s]+$',
+    },
+    'maxItems': 64,
+}
+
+# docker's --dns-option: resolver options such as "ndots:2", "timeout:1",
+# "edns0", one per item.
+dns_options = {
+    'type': ['array', 'null'],
+    'items': {
+        'type': 'string',
+        'minLength': 1,
+        'maxLength': 64,
+        'pattern': '^[A-Za-z0-9_-]+(:[0-9]+)?$',
+    },
+    'maxItems': 16,
+}
+
+# docker's --ulimit: one entry per resource, both bounds required, -1 for
+# unlimited as docker takes it.
+ulimits = {
+    'type': ['array', 'null'],
     'items': {
         'type': 'object',
         'properties': {
-            'cmd': {
-                'type': ['string'],
-                'minLength': 1,
-                'maxLength': 255
+            'name': {
+                'type': 'string',
+                'enum': ['core', 'cpu', 'data', 'fsize', 'locks', 'memlock',
+                         'msgqueue', 'nice', 'nofile', 'nproc', 'rss',
+                         'rtprio', 'rttime', 'sigpending', 'stack'],
             },
-            'interval': {
-                'type': ['integer', 'null']
-            },
-            'retries': {
-                'type': ['integer', 'null']
-            },
-            'timeout': {
-                'type': ['integer', 'null']
-            }
+            'soft': {'type': 'integer', 'minimum': -1},
+            'hard': {'type': 'integer', 'minimum': -1},
         },
-        'additionalProperties': False
-    }
+        'required': ['name', 'soft', 'hard'],
+        'additionalProperties': False,
+    },
+    'maxItems': 16,
+}
+
+# The size of the container's /dev/shm in MiB, the unit `memory` is in.
+shm_size = {
+    'type': ['integer', 'null'],
+    'minimum': 1,
+    'maximum': 65536,
+}
+
+# docker's --group-add: supplementary groups, by name or number.
+group_add = {
+    'type': ['array', 'null'],
+    'items': {
+        'type': 'string',
+        'minLength': 1,
+        'maxLength': 64,
+        'pattern': '^[^\\s:]+$',
+    },
+    'maxItems': 32,
+}
+
+oom_score_adj = {
+    'type': ['integer', 'null'],
+    'minimum': -1000,
+    'maximum': 1000,
+}
+
+# docker's --tmpfs: an in-memory mount per path, with its mount options
+# ("rw,size=64m,mode=1777"), which may be empty.
+tmpfs = {
+    'type': ['object', 'null'],
+    'patternProperties': {
+        '^/[^\\s,]*$': {
+            'type': 'string',
+            'maxLength': 255,
+            'pattern': '^[A-Za-z0-9=,._-]*$',
+        },
+    },
+    'additionalProperties': False,
+    'maxProperties': 16,
 }
 
 exposed_ports = {

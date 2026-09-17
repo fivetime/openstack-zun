@@ -829,6 +829,34 @@ OpenStack-Helm-Deploy.md §14.2.10):5 个 kata-qemu capsule 分布三台,IP == p
 privsep 上下文 `vif_plug_ovs_privileged`,不配 helper_command 就回退 `sudo zun-rootwrap`,容器里没有,DEL 失败、
 capsule 删除卡住——部署侧配 helper_command。**测试床验证的是代码,不是镜像与 chart**。
 
+### 4.11 API 1.53:docker 的一批创建选项(2026-09-17)
+
+DaaS 网关按名拒绝了一串 docker 选项,理由都是"zun 没有字段"。这一版一次补上,全部是创建时字段,
+都可为空(空 = 运行时默认,与之前一样)。迁移 `e1f2a3b4c5d6`;对象 Container 1.52、三个 capsule 类 1.10。
+
+| 字段 | 形状 | DockerDriver | CriDriver |
+|---|---|---|---|
+| `extra_hosts` | `["name:addr", ...]`,≤64,地址可以是 IPv6 | `extra_hosts` | 拒绝(CRI 没有 hosts 条目) |
+| `dns_options` | `["ndots:2", "edns0"]`,≤16 | 有自定义 resolv.conf 时写进文件最后一行(覆盖我们的 `ndots:1`),否则 `dns_opt` | 沙箱 `dns_config.options` |
+| `ulimits` | `[{"name","soft","hard"}]`,名字限 15 种,-1 = 不限 | `docker.types.Ulimit` | 拒绝 |
+| `shm_size` | 整数 **MiB**(与 `memory` 同单位),1..65536 | `shm_size` 字节 | 拒绝 |
+| `read_only` | 布尔,**根文件系统**(挂载的只读在 1.52 的 `mounts[].read_only`) | `read_only` | `readonly_rootfs` |
+| `init` | 布尔 | `init`(false 也显式传) | true 拒绝,false 放行 |
+| `group_add` | `["audio", "1001"]`,≤32 | `group_add`,排在安全上下文加的组之后 | 只收数字 → `supplemental_groups`;名字拒绝(同 `user` 的组名) |
+| `oom_score_adj` | -1000..1000 | `oom_score_adj` | `resources.oom_score_adj` |
+| `tmpfs` | `{"/path": "rw,size=64m"}`,≤16,路径须以 `/` 开头 | `tmpfs` | 拒绝 |
+| `healthcheck.start_period` | 秒 | 纳秒传给 docker | 不适用(CriDriver 不执行命令式健康检查) |
+| `healthcheck.disable` | 布尔,不能与 `cmd` 同给 | `Test: ["NONE"]` | 天然成立(同上) |
+
+- **kata 下各自落在哪**:`extra_hosts`/`init`/`group_add`/`ulimits`/`read_only`/`tmpfs` 由 guest 里的
+  agent 照做,容器看到的就是它要的;`shm_size` 是 guest 里 `/dev/shm` 的大小,吃的是 VM 的内存;
+  `oom_score_adj` 写给 guest 里的进程,宿主看到的是 shim,宿主 OOM 杀谁仍由 VM 的内存上限决定。
+- CriDriver 的拒绝发生在建沙箱**之前**(kata 下建了沙箱就是一台 VM)。
+- 两个驱动都按**类型**判断字段是否被要求:不带这个字段的对象(测试桩、老的 capsule 成员)什么都不要。
+- 顺带修了 `healthcheck` 的 schema:原先成员写在 `items` 下,而 `items` 只对数组生效,对象上什么都没校验。
+  现在在 `properties` 下;其他键仍放行(capsule 路径把探针与安全上下文存在同一列)。
+- 同 1.49 以来的惯例,新字段不按请求版本门控;1.53 用来让调用方判断服务端有没有这批字段。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

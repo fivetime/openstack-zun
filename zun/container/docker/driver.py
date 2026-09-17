@@ -21,11 +21,13 @@ import shutil
 import types
 
 from docker import errors
+from docker import types as docker_types
 from oslo_concurrency import lockutils
 from oslo_log import log as logging
 from oslo_utils import fileutils
 from oslo_serialization import jsonutils
 from oslo_utils import timeutils
+from oslo_utils import units
 from oslo_utils import uuidutils
 import psutil
 import tenacity
@@ -179,10 +181,36 @@ def _network_lock(neutron_net_id):
     return '%snetwork-%s' % (consts.NAME_PREFIX, neutron_net_id)
 
 
-
 def _read_only(volmap):
     """Whether an attachment was asked for read-only; absent means no."""
     return bool(getattr(volmap, 'read_only', False))
+
+
+def _healthcheck(container):
+    """The container's healthcheck in docker-py's shape, or None.
+
+    Stored in seconds (interval, timeout, start_period), handed to docker
+    in nanoseconds. `disable` is docker's Test ["NONE"]: the image's own
+    HEALTHCHECK is switched off, and nothing replaces it.
+    """
+    spec = container.healthcheck or {}
+    if not spec:
+        return None
+    if spec.get('disable'):
+        return {'test': ['NONE']}
+    if not spec.get('test'):
+        # Only the capsule path's probes and security context live here.
+        return None
+    healthcheck = {
+        'test': spec.get('test', ''),
+        'interval': int(spec.get('interval') or 0) * 10 ** 9,
+        'retries': int(spec.get('retries') or 0),
+        'timeout': int(spec.get('timeout') or 0) * 10 ** 9,
+    }
+    if spec.get('start_period'):
+        healthcheck['start_period'] = int(spec['start_period']) * 10 ** 9
+    return healthcheck
+
 
 class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                    driver.CapsuleDriver):
@@ -438,16 +466,10 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                                       'ro': True}
                 host_config['binds'] = binds
                 kwargs['volumes'] = [b['bind'] for b in binds.values()]
-            if container.healthcheck:
-                healthcheck = {}
-                healthcheck['test'] = container.healthcheck.get('test', '')
-                interval = container.healthcheck.get('interval', 0)
-                healthcheck['interval'] = interval * 10 ** 9
-                healthcheck['retries'] = int(container.healthcheck.
-                                             get('retries', 0))
-                timeout = container.healthcheck.get('timeout', 0)
-                healthcheck['timeout'] = timeout * 10 ** 9
+            healthcheck = _healthcheck(container)
+            if healthcheck:
                 kwargs['healthcheck'] = healthcheck
+            self._apply_create_options(container, host_config)
 
             kwargs['host_config'] = docker.create_host_config(**host_config)
             response = docker.create_container(image_repo, **kwargs)
@@ -561,6 +583,69 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
         if security_opt:
             host_config['security_opt'] = security_opt
+
+    def _apply_create_options(self, container, host_config):
+        """The API 1.53 create options, onto docker's HostConfig.
+
+        Each is passed only when it was asked for, so an unset field keeps
+        docker's default rather than being overwritten with an empty one.
+
+        Under the kata runtime every container is its own VM, and the
+        options land in different places:
+
+          extra_hosts, init, group_add, ulimits, read_only, tmpfs
+              applied by the agent inside the guest, as docker would on the
+              host: the container sees exactly what it asked for.
+          shm_size
+              the size of the /dev/shm mount the guest makes; it is backed
+              by the guest's memory, so it cannot exceed what the VM has.
+          oom_score_adj
+              written for the process in the guest. The host sees the VM's
+              shim, not the process, so this does not change which host
+              process the host's OOM killer picks -- the VM's own memory
+              limit decides that.
+        """
+        def typed(field, kinds):
+            # Only a value of the field's own kind counts, so an object that
+            # does not carry the field asks for nothing.
+            value = getattr(container, field, None)
+            return value if isinstance(value, kinds) else None
+
+        extra_hosts = typed('extra_hosts', (list, tuple))
+        if extra_hosts:
+            host_config['extra_hosts'] = list(extra_hosts)
+        ulimits = typed('ulimits', (list, tuple))
+        if ulimits:
+            host_config['ulimits'] = [
+                docker_types.Ulimit(name=u['name'], soft=int(u['soft']),
+                                    hard=int(u['hard']))
+                for u in ulimits]
+        shm_size = typed('shm_size', int)
+        if shm_size:
+            host_config['shm_size'] = shm_size * units.Mi
+        if typed('read_only', bool):
+            host_config['read_only'] = True
+        init = typed('init', bool)
+        if init is not None:
+            host_config['init'] = init
+        group_add = typed('group_add', (list, tuple))
+        if group_add:
+            # After any the security context added (fsGroup, runAsGroup).
+            host_config['group_add'] = (
+                list(host_config.get('group_add') or []) +
+                [str(g) for g in group_add])
+        oom_score_adj = typed('oom_score_adj', int)
+        if oom_score_adj is not None and not isinstance(oom_score_adj, bool):
+            host_config['oom_score_adj'] = oom_score_adj
+        tmpfs = typed('tmpfs', dict)
+        if tmpfs:
+            host_config['tmpfs'] = dict(tmpfs)
+        # With a resolver of the container's own the resolv.conf is written
+        # here and bind-mounted, and docker leaves it alone -- so the
+        # options go into that file (_write_resolv_conf), not to docker.
+        dns_options = typed('dns_options', (list, tuple))
+        if dns_options and not typed('dns', (list, tuple)):
+            host_config['dns_opt'] = list(dns_options)
 
     def _apply_flavor_limits(self, container, host_config):
         """Translate the flavor limit fields into docker HostConfig.
@@ -866,6 +951,11 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         # Written out rather than left to the default, so the file says
         # which way round it is.
         lines.append('options ndots:1')
+        # The container's own options last: the resolver takes the last
+        # value given for an option, so an ndots asked for replaces ours.
+        dns_options = getattr(container, 'dns_options', None)
+        if isinstance(dns_options, (list, tuple)) and dns_options:
+            lines.append('options %s' % ' '.join(dns_options))
         with open(path, 'w') as handle:
             handle.write('\n'.join(lines) + '\n')
         os.chmod(path, 0o644)
@@ -2120,16 +2210,10 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 host_config['storage_opt'] = {'size': disk_size}
             # The time unit in docker of heath checking is us, and the unit
             # of interval and timeout is seconds.
-            if container.healthcheck:
-                healthcheck = {}
-                healthcheck['test'] = container.healthcheck.get('test', '')
-                interval = container.healthcheck.get('interval', 0)
-                healthcheck['interval'] = interval * 10 ** 9
-                healthcheck['retries'] = int(container.healthcheck.
-                                             get('retries', 0))
-                timeout = container.healthcheck.get('timeout', 0)
-                healthcheck['timeout'] = timeout * 10 ** 9
+            healthcheck = _healthcheck(container)
+            if healthcheck:
                 kwargs['healthcheck'] = healthcheck
+            self._apply_create_options(container, host_config)
 
             kwargs['host_config'] = docker.create_host_config(**host_config)
             if image['tag']:

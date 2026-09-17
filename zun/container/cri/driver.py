@@ -281,6 +281,67 @@ def _apply_user(container, kwargs):
     kwargs['run_as_group'] = api_pb2.Int64Value(value=int(group))
 
 
+#: API 1.53 create options the runtime interface has no field for, with
+#: why. Refused at create rather than dropped: a container that asked for
+#: an /etc/hosts entry, a limit or an init and quietly ran without it has
+#: nothing to tell it so.
+_NO_CRI_FIELD = (
+    ('extra_hosts', 'the runtime interface has no hosts entries; the '
+                    'kubelet writes /etc/hosts itself'),
+    ('ulimits', 'the runtime interface has no resource limits of this '
+                'kind'),
+    ('shm_size', 'the runtime interface has no /dev/shm size'),
+    ('init', 'the runtime interface has no init process switch'),
+    ('tmpfs', 'the runtime interface has no in-memory mount type'),
+)
+
+
+def _asked(container, field):
+    """A create option's value, or None when it was not asked for.
+
+    Typed rather than truthy: only a value of the field's own kind counts,
+    so an object that does not carry the field at all (a stand-in, a
+    capsule member built before it existed) asks for nothing.
+    """
+    value = getattr(container, field, None)
+    if isinstance(value, bool):
+        return value if value else None
+    if isinstance(value, (list, tuple, dict)):
+        return value or None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _refuse_what_cri_cannot_carry(container):
+    """Refuse the create options this driver has nowhere to put."""
+    for field, why in _NO_CRI_FIELD:
+        if _asked(container, field):
+            raise exception.Invalid(_(
+                '%(field)s is not supported on this host: %(why)s.')
+                % {'field': field, 'why': why})
+    _supplemental_groups(container)
+
+
+def _supplemental_groups(container):
+    """`group_add` as the numbers the runtime interface takes.
+
+    ⚠️ A group given by name is refused, for the reason a named group in
+    `user` is (_apply_user): there is no field for a name, and a container
+    that believes it joined a group and did not writes files nobody else
+    in that group can read.
+    """
+    groups = []
+    for group in _asked(container, 'group_add') or []:
+        if not str(group).isdigit():
+            raise exception.Invalid(_(
+                'A supplementary group has to be given by number here, not '
+                'by name ("%s"): the runtime interface has no field for a '
+                'group name.') % group)
+        groups.append(int(group))
+    return groups
+
+
 def _linux_security_context(container):
     """Build the CRI security context for one container.
 
@@ -293,6 +354,13 @@ def _linux_security_context(container):
     # The container's own field first; a capsule's securityContext below
     # is the more specific request of the two and overrides it.
     _apply_user(container, kwargs)
+    # API 1.53 fields, before the capsule's securityContext for the same
+    # reason as the user.
+    if _asked(container, 'read_only'):
+        kwargs['readonly_rootfs'] = True
+    groups = _supplemental_groups(container)
+    if groups:
+        kwargs['supplemental_groups'] = groups
 
     if sc.get('runAsUser') is not None:
         kwargs['run_as_user'] = api_pb2.Int64Value(value=int(sc['runAsUser']))
@@ -305,7 +373,9 @@ def _linux_security_context(container):
         # the volume mounts, carries the right ownership, and still cannot be
         # written -- from inside the pod that is indistinguishable from a
         # broken volume.
-        kwargs['supplemental_groups'] = [int(sc['fsGroup'])]
+        kwargs['supplemental_groups'] = (
+            list(kwargs.get('supplemental_groups') or []) +
+            [int(sc['fsGroup'])])
     if sc.get('readOnlyRootFilesystem'):
         kwargs['readonly_rootfs'] = True
     # allowPrivilegeEscalation: false is no_new_privs: true. Named the other way
@@ -575,7 +645,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         labels = dict(labels or {})
         labels.setdefault(self.OWNER_LABEL, capsule.uuid)
         sandbox_config = self._get_sandbox_config(
-            capsule, servers, _dns_searches(capsule), labels=labels)
+            capsule, servers, _dns_searches(capsule), labels=labels,
+            dns_options=list(_asked(capsule, 'dns_options') or []))
         # Before the sandbox exists, the way kubelet orders it: runsc reads
         # the cgroup it boots into to size its sentry, so a ceiling written
         # after the boot enforces without informing.
@@ -654,7 +725,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 % {'value': value, 'path': path, 'err': e})
 
     def _get_sandbox_config(self, capsule, dns_servers=None,
-                            dns_searches=None, labels=None):
+                            dns_searches=None, labels=None,
+                            dns_options=None):
         config = api_pb2.PodSandboxConfig(
             metadata=api_pb2.PodSandboxMetadata(
                 name=capsule.uuid, namespace="default", uid=capsule.uuid
@@ -705,6 +777,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # leaving it out breaks them in a way that looks like the service
             # is missing rather than like a resolver setting.
             config.dns_config.searches.extend(dns_searches)
+        if dns_options:
+            config.dns_config.options.extend(dns_options)
         return config
 
     # Where cgroup v2 lives on every systemd host. A module constant so a
@@ -927,6 +1001,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             resources=cri_resources.linux_resources(
                 container.cpu, container.memory, container.swap),
         )
+        oom_score_adj = _asked(container, 'oom_score_adj')
+        if oom_score_adj is not None:
+            linux_config.resources.oom_score_adj = int(oom_score_adj)
 
         # The attempt number is what distinguishes one incarnation of a
         # container from the next, both in the runtime's own naming and in what
@@ -2299,6 +2376,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         does start what it creates -- a capsule has no half-built state to be
         in -- so this cannot simply reuse it and must undo that one step.
         """
+        # Before anything is made: a refusal after the sandbox exists would
+        # leave a VM behind under kata.
+        _refuse_what_cri_cannot_carry(container)
         self._create_pod_sandbox(context, container, requested_networks,
                                  labels={self.OWNER_LABEL: container.uuid})
         # The sandbox id lands in container_id; _create_container reads it as
