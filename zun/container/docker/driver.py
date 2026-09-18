@@ -249,6 +249,28 @@ def _healthcheck(container):
     return healthcheck
 
 
+def _merge_image_command(docker, image_repo, container):
+    """Fill in the image's ENTRYPOINT and CMD the way docker does.
+
+    The image's CMD is used only when the request names no entrypoint
+    (moby's daemon/commit.go, merge()): an entrypoint given on its own
+    runs with no arguments, which is also what Kubernetes means by a
+    `command:` without `args:`. Filling both whenever either was missing
+    handed such an entrypoint the image's CMD as its arguments --
+    `docker run --entrypoint echo nginx` printed "nginx -g daemon off;".
+
+    What is filled is what the container records as its command and
+    entrypoint, and is passed to docker as given.
+    """
+    if container.entrypoint:
+        return
+    image_dict = docker.inspect_image(image_repo)
+    config = image_dict.get('Config') or {}
+    container.entrypoint = config.get('Entrypoint')
+    if not container.command:
+        container.command = config.get('Cmd')
+
+
 class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                    driver.CapsuleDriver):
     """Implementation of container drivers for Docker."""
@@ -420,13 +442,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             volmaps = requested_volumes.get(container.uuid, [])
             binds = self._get_binds(context, volmaps)
 
-            entrypoint = container.entrypoint
-            command = container.command
-            if not entrypoint or not command:
-                image_dict = docker.inspect_image(image_repo)
-                container.entrypoint = entrypoint or \
-                    image_dict['Config']['Entrypoint']
-                container.command = command or image_dict['Config']['Cmd']
+            _merge_image_command(docker, image_repo, container)
             kwargs = {
                 'name': self.get_container_name(container),
                 'command': container.command,

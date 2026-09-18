@@ -883,6 +883,19 @@ DaaS 网关按名拒绝了一串 docker 选项,理由都是"zun 没有字段"。
   跑出来的镜像输出改过的 CMD;`--change RUN` 被拒;secret `uid=1000,gid=1000,mode=0400` 容器里是 `400 1000:1000`,
   默认 `444 0:0`;kube `defaultMode: 0400`/items `mode: 0444`/无 mode 分别是 400/444/644。
 
+### 4.13 只给 entrypoint 时不再补镜像的 CMD(2026-09-18)
+
+DockerDriver 建容器前,只要 entrypoint 或 command 有一个没给,就把两个都从镜像补上。docker 自己的规则
+(moby `daemon/commit.go` 的 `merge()`)是:**请求给了 entrypoint,就不用镜像的 CMD**。于是只给 entrypoint
+的容器被塞了镜像 CMD 当参数——生产实测 `docker run --entrypoint echo nginx:alpine` 打印
+`nginx -g daemon off;`,真 docker 打印空行;k8s 的 `command:` 不带 `args:`(经 DaaS `kube play`)同样中招,
+而 k8s 的语义与 docker 此处一致(给了 command 就忽略镜像 CMD)。
+
+改为 `_merge_image_command()`:没给 entrypoint 才读镜像,补 entrypoint,并在没给 command 时补 CMD;
+给了 entrypoint 就原样下发,不读镜像。不改 API、不改对象、不用迁移,只需重建 zun-compute。
+测试 `zun/tests/unit/container/docker/test_image_command.py`(四种组合+镜像两者皆无)。
+走 Glance 的建容器路径本来就不补,不受影响。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
