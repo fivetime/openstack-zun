@@ -281,3 +281,43 @@ class TestPushingWithTheCredentialThatCanWriteThere(base.TestCase):
                 mock.Mock(), 'harbor.example.com/team/app', container)
 
         self.assertIsNone(chosen)
+
+
+class TestMessagesWithPercentSigns(base.TestCase):
+    """A message handed in written is text, not a format string."""
+
+    DOCKER_404 = ('404 Client Error for http+docker://localhost/v1.44/'
+                  'containers/abc/archive?path=%2Fno%2Fsuch%2Fdir%2F: '
+                  'Not Found ("Could not find the file /no/such/dir/")')
+
+    def test_a_docker_error_with_an_encoded_path_stays_a_400(self):
+        """It raised TypeError, and the 404 reached the client as 500."""
+        e = exception.Invalid(self.DOCKER_404)
+
+        self.assertEqual(400, e.code)
+        self.assertEqual(self.DOCKER_404, str(e))
+
+    def test_other_percent_signs_are_kept_as_written(self):
+        for text in ('disk is 100% full', '50%d', 'a %s b', 'x %(y)s'):
+            self.assertEqual(text, str(exception.Conflict(text)), text)
+
+    def test_the_class_template_is_still_formatted(self):
+        e = exception.ContainerNotFound(container='web')
+
+        self.assertIn('web', str(e))
+        self.assertEqual(404, e.code)
+
+    def test_it_survives_the_trip_back_over_rpc(self):
+        """oslo.messaging rebuilds it from its text and its kwargs."""
+        sent = exception.Invalid(self.DOCKER_404)
+        rebuilt = exception.Invalid(str(sent), **sent.kwargs)
+
+        self.assertEqual(self.DOCKER_404, str(rebuilt))
+        self.assertEqual(400, rebuilt.code)
+
+    def test_the_unexpected_error_wrapper_keeps_the_text(self):
+        """What translate_exception makes of a non-Zun exception."""
+        wrapped = exception.ZunException('Unexpected error: %s'
+                                         % 'path=%2Fx%2F')
+
+        self.assertEqual('Unexpected error: path=%2Fx%2F', str(wrapped))

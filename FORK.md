@@ -896,6 +896,16 @@ DockerDriver 建容器前,只要 entrypoint 或 command 有一个没给,就把�
 测试 `zun/tests/unit/container/docker/test_image_command.py`(四种组合+镜像两者皆无)。
 走 Glance 的建容器路径本来就不补,不受影响。
 
+### 4.14 带 `%` 的错误信息不再变成 500(2026-09-18)
+
+`ZunException` 总是拿消息做 `message % kwargs`(kwargs 至少有 `code`),且只兜 `KeyError`。调用方传进来的
+现成消息一旦含字面 `%`——docker 错误里 URL 编码的路径 `%2Fno%2Fsuch` 就是——格式化抛 `TypeError`,外层
+`translate_exception` 再包成 500 "Unexpected error: must be real number, not dict"。生产表现:`docker cp`
+从容器里不存在的路径往外拷,驱动已把 docker 404 转成 `Invalid`(400),租户却看到 Internal Server Error。
+改为:只有带了 `code` 以外的格式化参数才格式化(类模板照旧),兜底加 `TypeError`/`ValueError`。
+经 RPC 反序列化(oslo.messaging 用原文+kwargs 重建)同样保持原文。测试
+`zun/tests/unit/common/test_exception.py::TestMessagesWithPercentSigns`,旧代码上 4 条失败、报的正是生产那句。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

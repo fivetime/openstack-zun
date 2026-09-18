@@ -216,19 +216,25 @@ class ZunException(Exception):
         if message:
             self.message = message
 
-        try:
-            self.message = self.message % kwargs
-        except KeyError:
-            # kwargs doesn't match a variable in the message
-            # log the issue and the kwargs
-            LOG.exception('Exception in string format operation, '
-                          'kwargs: %s', kwargs)
+        # Formatted only when there is something to put in. A message that
+        # arrives already written -- often with a docker error or a URL in
+        # it -- is text, not a template: "%2Fno%2Fsuch" in a path made the
+        # formatting raise TypeError, and a 404 turned into a 500.
+        if any(key != 'code' for key in kwargs):
             try:
-                ferr = CONF.fatal_exception_format_errors
-            except cfg.NoSuchOptError:
-                ferr = CONF.oslo_versionedobjects.fatal_exception_format_errors
-            if ferr:
-                raise
+                self.message = self.message % kwargs
+            except (KeyError, TypeError, ValueError):
+                # kwargs doesn't match a variable in the message
+                # log the issue and the kwargs
+                LOG.exception('Exception in string format operation, '
+                              'kwargs: %s', kwargs)
+                try:
+                    ferr = CONF.fatal_exception_format_errors
+                except cfg.NoSuchOptError:
+                    ferr = (CONF.oslo_versionedobjects
+                            .fatal_exception_format_errors)
+                if ferr:
+                    raise
 
         super(ZunException, self).__init__(self.message)
 
