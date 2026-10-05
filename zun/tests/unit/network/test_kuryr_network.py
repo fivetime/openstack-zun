@@ -125,7 +125,7 @@ class FakeNeutronClient(object):
                 port_req_body = {'port': {'device_id': ''}}
                 self.update_port(port_id, port_req_body)
 
-    def delete_port(self, port_id):
+    def delete_port(self, port_id, admin=False):
         for port in self.ports:
             if port['id'] == port_id:
                 self.ports.remove(port)
