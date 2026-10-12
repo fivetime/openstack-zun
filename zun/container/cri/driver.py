@@ -2017,7 +2017,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 if self._probe_failed_enough(startup, state, 'startup'):
                     LOG.info("Startup probe for container %s never passed; "
                              "restarting it", container.container_id)
-                    if self._restart_container(context, capsule, container):
+                    if self._restart_for_probe(context, capsule, container):
                         # Counters cleared so the new container is judged on
                         # its own results; the restart tally is kept by the
                         # restart itself.
@@ -2049,7 +2049,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             elif self._probe_failed_enough(liveness, state, 'liveness'):
                 LOG.info("Liveness probe for container %s failed; restarting "
                          "it", container.container_id)
-                if self._restart_container(context, capsule, container):
+                if self._restart_for_probe(context, capsule, container):
                     # Counters cleared so the new container is judged on its
                     # own results; the restart tally is what tells anyone above
                     # that this keeps happening.
@@ -2364,6 +2364,37 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             member.save(context)
         capsule.status = consts.RUNNING
         capsule.save(context)
+
+    def _restart_for_probe(self, context, capsule, container):
+        """Restart a container whose probe failed, unless its owner acts.
+
+        The probe sweep holds what it read at the start of the sweep. By
+        the time a probe has failed, the capsule may be being deleted,
+        or the container stopped, by a request whose operation runs in a
+        thread of its own. Restarting then would create a container in a
+        sandbox on its way out. So: under the capsule's lock, which a
+        delete holds throughout, and on a fresh read.
+        """
+        with lockutils.lock(capsule.uuid,
+                            lock_file_prefix=consts.NAME_PREFIX):
+            try:
+                fresh_capsule = objects.Container.get_container_any_type(
+                    context, capsule.uuid)
+                fresh = objects.Container.get_container_any_type(
+                    context, container.uuid)
+            except exception.ContainerNotFound:
+                return False
+            for current in (fresh_capsule, fresh):
+                if (current.task_state is not None or
+                        current.status != consts.RUNNING):
+                    LOG.info('Not restarting container %(id)s for its '
+                             'probe: %(uuid)s is %(status)s/%(task)s now',
+                             {'id': container.container_id,
+                              'uuid': current.uuid,
+                              'status': current.status,
+                              'task': current.task_state})
+                    return False
+            return self._restart_container(context, capsule, container)
 
     def _restart_container(self, context, capsule, container):
         """Replace a container in place, keeping its sandbox.
