@@ -2110,6 +2110,58 @@ class Manager(periodic_task.PeriodicTasks):
                                         host=self.host)
         LOG.debug('reported %d containers as existing', len(containers))
 
+    #: When the next container.metrics round is due (time.monotonic()).
+    _metrics_due = None
+
+    def _metrics_round_due(self, interval):
+        """True when a metrics round is due; due times are a fixed grid.
+
+        Not "interval since the last round" as _due counts it: that drifts
+        later by up to a tick every round, and a consumer computing a rate
+        from consecutive samples wants them the interval apart. A grid that
+        has fallen a whole interval behind -- the periodic thread was busy,
+        the service was paused -- starts over from now rather than sending
+        a burst to catch up.
+        """
+        now = time.monotonic()
+        if self._metrics_due is None or now - self._metrics_due >= interval:
+            self._metrics_due = now
+        if now < self._metrics_due:
+            return False
+        self._metrics_due += interval
+        return True
+
+    @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
+    @context.set_context
+    def report_metrics(self, ctx):
+        """Every running container's CPU and memory, one message each.
+
+        For alarms and autoscaling, on a clock of its own
+        ([usage_report] metrics_interval, a minute by default): what
+        container.usage carries is batched per host for the API's cache,
+        and container.exists comes hourly for billing; neither can be
+        turned into a sample per container per minute.
+        """
+        interval = CONF.usage_report.metrics_interval
+        if not interval or not self._metrics_round_due(interval):
+            return
+        if not isinstance(self.driver, driver_module.ContainerDriver):
+            return
+        containers = [c for c in objects.Container.list_by_host(ctx, self.host)
+                      if c.status == consts.RUNNING]
+        if not containers:
+            return
+        try:
+            counters = self.driver.sample_counters(ctx, containers)
+        except Exception as exc:
+            LOG.warning('could not sample containers for metrics: %s', exc)
+            return
+        sent = sum(1 for c in containers
+                   if notifications.notify_metrics(
+                       ctx, c, counters.get(c.uuid), host=self.host))
+        LOG.debug('reported metrics for %d of %d running containers',
+                  sent, len(containers))
+
     @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
     @context.set_context
     def reclaim_unused_images(self, ctx):

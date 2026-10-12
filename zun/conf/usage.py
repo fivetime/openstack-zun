@@ -61,6 +61,18 @@ count rather than a multiple of it.
 
 The usage report is a separate thing on a separate clock -- it feeds a
 cache the API reads, is batched per host, and losing one costs nothing."""),
+    cfg.IntOpt('metrics_interval',
+               default=60, min=0,
+               help="""Seconds between container.metrics rounds; 0 is off.
+
+One message per running container, carrying its cumulative CPU time
+and its memory working set, for alarms and autoscaling: a consumer
+such as ceilometer makes a sample of each message, which it cannot do
+with the per-host container.usage batch. Kept on a fixed grid, so the
+interval between a container's samples stays what is set here (to
+within the compute manager's five-second tick): a rate computed from
+consecutive samples, gnocchi's rate:mean for instance, is per this
+interval."""),
     cfg.StrOpt('listener_pool',
                default='zun-api-usage',
                help="""The consumer group the API listens as.

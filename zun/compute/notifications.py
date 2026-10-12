@@ -25,6 +25,7 @@ be fetched with the uuid.
 """
 
 import contextlib
+import datetime
 
 from oslo_log import log as logging
 from oslo_utils import timeutils
@@ -172,6 +173,81 @@ def notify_exists(context, container, size_rw=None, window_start=None,
     except Exception as exc:
         LOG.warning('could not send container.exists for %s: %s',
                     container.uuid, exc)
+
+
+def _sampled_at(stamp):
+    """A runtime's reading time as ISO 8601 UTC, or None if it gave none.
+
+    docker gives RFC 3339 with nanoseconds, and the zero time when it has
+    no reading. Microseconds are all a consumer keeps.
+    """
+    if not stamp or stamp.startswith('0001-01-01'):
+        return None
+    try:
+        head, _, frac = stamp.rstrip('Z').partition('.')
+        frac = ''.join(ch for ch in frac if ch.isdigit())
+        moment = datetime.datetime.strptime(head, '%Y-%m-%dT%H:%M:%S')
+        moment = moment.replace(microsecond=int((frac + '000000')[:6]),
+                                tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    return moment.isoformat()
+
+
+def metrics_payload(container, sample):
+    """One container's container.metrics payload, or None without a reading.
+
+    The fields every container notification carries, plus the reading:
+    cumulative CPU time in nanoseconds (it starts over when the container
+    restarts), the memory working set in bytes -- usage less the inactive
+    page cache, as the kubelet and cAdvisor count it -- the memory limit
+    the runtime enforces, and when the reading was taken.
+    """
+    if not sample:
+        return None
+    cpu_ns = (sample.get('cpu') or {}).get('total_ns')
+    memory = sample.get('memory') or {}
+    usage = memory.get('usage')
+    if cpu_ns is None or usage is None:
+        return None
+    limit = memory.get('limit')
+    payload = _payload(container)
+    payload.update({
+        'cpu_time_ns': int(cpu_ns),
+        'memory_usage_bytes': max(int(usage) - int(memory.get('cache') or 0),
+                                  0),
+        'memory_limit_bytes': int(limit) if limit else None,
+        'timestamp': (_sampled_at(sample.get('timestamp')) or
+                      timeutils.utcnow().replace(
+                          tzinfo=datetime.timezone.utc).isoformat()),
+    })
+    return payload
+
+
+def notify_metrics(context, container, sample, host=None):
+    """One running container's CPU and memory reading. Autoscaling.
+
+    A message per container, like container.exists and unlike the
+    per-host container.usage, because a consumer turns each message into
+    a sample of one resource -- an alarm on one cluster's containers
+    needs each of them on its own. Sent every [usage_report]
+    metrics_interval seconds. Returns whether a message went out: a
+    container without a reading this round is skipped, not reported as
+    using nothing.
+    """
+    payload = metrics_payload(container, sample)
+    if payload is None:
+        return False
+    notifier = rpc.get_notifier(service=SERVICE, host=host or container.host)
+    if notifier is None:
+        return False
+    try:
+        notifier.info(context, 'container.metrics', payload)
+    except Exception as exc:
+        LOG.warning('could not send container.metrics for %s: %s',
+                    container.uuid, exc)
+        return False
+    return True
 
 
 def _usage_entry(container, sizes, counters):
