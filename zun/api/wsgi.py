@@ -15,6 +15,7 @@ import sys
 from oslo_log import log
 
 from zun.api import app
+from zun.api import usage_listener
 from zun.common import profiler
 from zun.common import service
 import zun.conf
@@ -35,4 +36,11 @@ def init_application():
     LOG.debug("Configuration:")
     CONF.log_opt_values(LOG, log.DEBUG)
 
-    return app.load_app()
+    application = app.load_app()
+    # zun-api starts this beside its WSGI workers; under a WSGI server
+    # (uWSGI with lazy-apps, as zun's chart runs it) every worker is
+    # loaded on its own and runs one. They all join the same consumer
+    # group, which hands each report to exactly one of them, so more
+    # listeners is more consumers, not more copies of a report.
+    usage_listener.start()
+    return application
