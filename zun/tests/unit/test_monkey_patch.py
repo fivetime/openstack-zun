@@ -77,3 +77,16 @@ class TestMonkeyPatch(base.BaseTestCase):
         # The API under a WSGI server, the CNI daemon and the tests never
         # call patch(); nothing patched them, so they are on threads.
         self.assertTrue(monkey_patch.concurrency_mode_threading())
+
+    def test_grpc_fork_support_is_off_by_default(self):
+        with mock.patch.dict('os.environ', {}, clear=True):
+            monkey_patch.patch()
+            import os
+            self.assertEqual('false', os.environ['GRPC_ENABLE_FORK_SUPPORT'])
+
+    def test_an_operators_grpc_fork_setting_wins(self):
+        env = {'GRPC_ENABLE_FORK_SUPPORT': 'true'}
+        with mock.patch.dict('os.environ', env, clear=True):
+            monkey_patch.patch()
+            import os
+            self.assertEqual('true', os.environ['GRPC_ENABLE_FORK_SUPPORT'])

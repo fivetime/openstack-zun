@@ -40,6 +40,19 @@ def patch():
     if _MODE is not None:
         return
 
+    # Before anything imports grpc (the CRI driver does). gRPC's core keeps
+    # pthread_atfork handlers that restart its pollers in a forked child,
+    # and every command zun runs goes through processutils, whose
+    # preexec_fn makes subprocess use fork() rather than vfork(): the
+    # child closed its descriptors before exec, the restarted poller's
+    # epoll fd went with them, and the child aborted ("Epoll1Poller ...
+    # epoll_wait error: Bad file descriptor", exit -6). Measured with
+    # busy channels: about one fork in a thousand, every run; none in
+    # nine thousand with fork support off. zun never uses a channel
+    # across a fork, so it needs none of it. An operator's own setting
+    # wins.
+    os.environ.setdefault('GRPC_ENABLE_FORK_SUPPORT', 'false')
+
     # NOTE: nothing imported above this point may need patching; the
     # oslo.service import is after eventlet.monkey_patch() on purpose.
     if _threading_requested():
