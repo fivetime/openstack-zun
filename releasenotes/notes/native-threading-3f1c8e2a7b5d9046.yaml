@@ -1,0 +1,27 @@
+---
+features:
+  - |
+    Zun services can run on native threads instead of eventlet. Set
+    ``OS_ZUN_DISABLE_EVENTLET_PATCHING=true`` in the environment of
+    zun-compute and zun-wsproxy to leave them unpatched: oslo.service
+    runs on its threading backend, oslo.messaging on its threading
+    executor, and zun-compute runs container operations on a pool of
+    ``[compute]thread_pool_size`` threads (default 64). Eventlet remains
+    the default.
+upgrade:
+  - |
+    On native threads the API has to run under a WSGI server
+    (``zun-api-wsgi``, for example under uWSGI with ``lazy-apps``):
+    the ``zun-api`` command serves through oslo.service's WSGI server,
+    which is eventlet's and refuses the threading backend. Each WSGI
+    worker now starts its own container usage listener; they share one
+    consumer group.
+  - |
+    The minimum cotyledon version is now 2.2.0.
+fixes:
+  - |
+    On Python 3.14, whose default multiprocessing start method on Linux
+    is forkserver, zun-wsproxy reset every websocket connection (attach,
+    interactive run, logs --follow) and zun-cni-daemon's workers died at
+    start, leaving capsules without networking. Both now fork their
+    children explicitly.
