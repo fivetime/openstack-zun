@@ -15,8 +15,6 @@ import datetime
 import os
 import time
 
-from eventlet import patcher
-from eventlet import tpool
 import grpc
 from grpc import _channel as grpc_channel
 from grpc import _common as grpc_common
@@ -59,6 +57,7 @@ from zun.criapi import snapshots_pb2_grpc
 from zun.criapi import tasks_pb2
 from zun.criapi import tasks_pb2_grpc
 from zun.image import driver as img_driver
+from zun import monkey_patch
 from zun.network import neutron
 from zun.network import os_vif_util
 from zun import objects
@@ -93,8 +92,14 @@ def _grpc_on_native_threads():
     behind this comment proved: forty concurrent callers, seven hundred
     calls, two seconds, against a deadlock at zero.
 
+    On native threads (OS_ZUN_DISABLE_EVENTLET_PATCHING) nothing was
+    patched and gRPC already holds the real ones: nothing to do.
+
     Returns the modules rebound, for the test that pins this down.
     """
+    if monkey_patch.concurrency_mode_threading():
+        return []
+    from eventlet import patcher
     native = patcher.original('threading')
     rebound = []
     for mod in (grpc_channel, grpc_utilities, grpc_common, cygrpc):
@@ -185,7 +190,15 @@ def _off_hub(stub):
     never given back is a smaller pool, and the pool is small. Only for
     stubs whose calls are all unary: a streaming call would come back as an
     iterator that blocks the hub on each step.
+
+    On native threads there is no hub to keep free: the caller's thread is
+    already a native one, and the deadline is all that is left to add.
+    tpool must not be used there at all -- without the monkey patch a
+    Proxy called from any native thread but the first never returns.
     """
+    if monkey_patch.concurrency_mode_threading():
+        return _Bounded(stub)
+    from eventlet import tpool
     return tpool.Proxy(_Bounded(stub))
 
 
@@ -524,8 +537,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     def __init__(self):
         super(CriDriver, self).__init__()
         channel = grpc.insecure_channel(CONF.cri_containerd_address)
-        # Every call on these stubs runs on a native thread. zun-compute is
-        # an eventlet process, and a gRPC call blocks in C: the hub does not
+        # Every call on these stubs runs on a native thread. Under eventlet
+        # that takes tpool (on native threads it already does, see
+        # _off_hub): a gRPC call blocks in C, and the hub does not
         # get the CPU back until the reply arrives, so nothing else in the
         # process runs -- no other request, no periodic task, no heartbeat.
         # Measured: one exec whose command left a child holding its stdout

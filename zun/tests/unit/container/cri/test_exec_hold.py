@@ -150,12 +150,18 @@ class HeldOutputTest(base.TestCase):
             mock.Mock(container_id='abc'), probe))
 
 
-class OffHubTest(base.TestCase):
-    """Every unary stub runs its calls on a native thread.
+class _Mode(object):
+    """Run the test as in a process in the given concurrency mode."""
 
-    The check is on the type: a stub that is not a Proxy blocks the hub on
-    every call, and no unit test would notice, since a mock never blocks.
-    """
+    threading = None
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(cri_driver.monkey_patch,
+                              'concurrency_mode_threading',
+                              return_value=self.threading)
+        p.start()
+        self.addCleanup(p.stop)
 
     def _driver(self):
         with mock.patch.object(cri_driver.grpc, 'insecure_channel'):
@@ -164,6 +170,16 @@ class OffHubTest(base.TestCase):
                 with mock.patch.object(cri_driver.CONF, 'image_driver_list',
                                        []):
                     return cri_driver.CriDriver()
+
+
+class OffHubTest(_Mode, base.TestCase):
+    """Under eventlet every unary stub runs its calls on a native thread.
+
+    The check is on the type: a stub that is not a Proxy blocks the hub on
+    every call, and no unit test would notice, since a mock never blocks.
+    """
+
+    threading = False
 
     def test_the_stubs_the_capsule_path_uses_run_off_the_hub(self):
         driver = self._driver()
@@ -186,7 +202,36 @@ class OffHubTest(base.TestCase):
         self.assertEqual('v', driver.runtime_stub.Version('req'))
 
 
-class NativeThreadingTest(base.TestCase):
+class NativeThreadsStubTest(_Mode, base.TestCase):
+    """On native threads the stubs are called directly, with deadlines.
+
+    A tpool.Proxy there would be worse than useless: without the monkey
+    patch, a call through one from any native thread but the first never
+    returns.
+    """
+
+    threading = True
+
+    def test_no_stub_goes_through_tpool(self):
+        driver = self._driver()
+
+        for name in ('runtime_stub', 'image_stub', 'task_stub',
+                     'snapshot_stub'):
+            stub = getattr(driver, name)
+            self.assertNotIsInstance(stub, tpool.Proxy, name)
+            self.assertIsInstance(stub, cri_driver._Bounded, name)
+
+    def test_a_call_still_gets_a_deadline(self):
+        driver = self._driver()
+        version = mock.Mock(return_value='v')
+        driver.runtime_stub._stub.Version = version
+
+        self.assertEqual('v', driver.runtime_stub.Version('req'))
+        version.assert_called_once_with(
+            'req', timeout=cri_driver.CONF.cri_read_timeout)
+
+
+class NativeThreadingTest(_Mode, base.TestCase):
     """gRPC holds real locks, whatever eventlet did to the threading module.
 
     Without this, calls through tpool deadlock the moment two workers
@@ -195,7 +240,10 @@ class NativeThreadingTest(base.TestCase):
     globals gRPC reads at call time.
     """
 
+    threading = False
+
     def test_every_grpc_module_reads_the_native_threading(self):
+        cri_driver._grpc_on_native_threads()
         native = patcher.original('threading')
 
         for mod in (grpc_channel, grpc_utilities, cygrpc):
@@ -205,4 +253,12 @@ class NativeThreadingTest(base.TestCase):
         # The lock that deadlocked lives in the Cython channel, so the
         # extension module has to be among those rebound, not only the
         # Python ones.
-        self.assertIn(cygrpc, cri_driver._GRPC_NATIVE)
+        self.assertIn(cygrpc, cri_driver._grpc_on_native_threads())
+
+
+class NoRebindingOnNativeThreadsTest(_Mode, base.TestCase):
+
+    threading = True
+
+    def test_nothing_is_rebound(self):
+        self.assertEqual([], cri_driver._grpc_on_native_threads())

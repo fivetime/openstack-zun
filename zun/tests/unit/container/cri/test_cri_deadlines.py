@@ -99,5 +99,7 @@ class DriverStubsAreBoundedTest(base.TestCase):
 
         for name in ('runtime_stub', 'image_stub', 'task_stub',
                      'snapshot_stub'):
-            self.assertIsInstance(getattr(driver, name)._obj,
+            stub = getattr(driver, name)
+            # Under eventlet the bounded stub sits inside a tpool.Proxy
+            self.assertIsInstance(getattr(stub, '_obj', stub),
                                   cri_driver._Bounded, name)
