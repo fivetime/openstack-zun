@@ -218,13 +218,6 @@ class ZunProxyRequestHandlerBase(object):
         # The zun expected behavior is to have token
         # passed to the method GET of the request
         parse = urlparse.urlparse(self.path)
-        if parse.scheme not in ('http', 'https'):
-            # From a bug in urlparse in Python < 2.7.4 we cannot support
-            # special schemes (cf: https://bugs.python.org/issue9374)
-            if sys.version_info < (2, 7, 4):
-                raise exception.ZunException(
-                    _("We do not support scheme '%s' under Python < 2.7.4, "
-                      "please use http or https") % parse.scheme)
 
         query = parse.query
         token = urlparse.parse_qs(query).get("token", [""]).pop()
