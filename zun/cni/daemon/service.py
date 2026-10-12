@@ -299,9 +299,16 @@ class CNIDaemonWatcherService(cotyledon.Service):
 
 class CNIDaemonServiceManager(cotyledon.ServiceManager):
     def __init__(self):
-        super(CNIDaemonServiceManager, self).__init__()
+        # Forked workers, explicitly: Python 3.14 made forkserver the
+        # default start method on Linux (gh-84559), and a worker started in
+        # a fresh interpreter has none of what main() set up -- above all
+        # the parsed configuration. Both workers then died on their first
+        # option ([keystone_auth] auth_url unset), were not restarted, and
+        # nothing listened on the daemon's port: no capsule got a network.
+        ctx = multiprocessing.get_context('fork')
+        super(CNIDaemonServiceManager, self).__init__(mp_context=ctx)
         # TODO(dulek): Use cotyledon.oslo_config_glue to support conf reload.
-        self.manager = multiprocessing.Manager()
+        self.manager = ctx.Manager()
         registry = self.manager.dict()  # For Watcher->Server communication.
         self.add(CNIDaemonWatcherService, workers=1, args=(registry,))
         self.add(CNIDaemonServerService, workers=1, args=(registry,))
