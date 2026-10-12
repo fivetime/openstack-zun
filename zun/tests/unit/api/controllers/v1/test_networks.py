@@ -41,4 +41,7 @@ class TestNetworkController(api_base.FunctionalTest):
         mock_network_list.return_value = [test_object]
         response = self.delete('/v1/networks/%s' % test_object.get('uuid'))
         self.assertEqual(204, response.status_int)
+        # No body at all on a 204: a gateway in front (Envoy) turns one
+        # with a body into a 502, though the delete went through.
+        self.assertEqual(b'', response.body)
         self.assertTrue(mock_network_delete.called)

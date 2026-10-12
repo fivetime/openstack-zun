@@ -246,6 +246,9 @@ class TestRegistryController(api_base.FunctionalTest):
         registry_uuid = response.json['registry']['uuid']
         response = self.delete('/v1/registries/%s/' % registry_uuid)
         self.assertEqual(204, response.status_int)
+        # No body at all on a 204: a gateway in front (Envoy) turns one
+        # with a body into a 502, though the delete went through.
+        self.assertEqual(b'', response.body)
         response = self.get('/v1/registries/%s/' % registry_uuid,
                             expect_errors=True)
         self.assertEqual(404, response.status_int)

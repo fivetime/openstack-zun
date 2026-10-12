@@ -22,6 +22,7 @@ app = {
         hooks.ContextHook(),
         hooks.NoExceptionTracebackHook(),
         hooks.RPCHook(),
+        hooks.NoContentHook(),
     ],
     'debug': False,
 }

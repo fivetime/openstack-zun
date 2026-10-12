@@ -117,3 +117,19 @@ class NoExceptionTracebackHook(hooks.PecanHook):
             # Replace the whole json. Cannot change original one beacause it's
             # generated on the fly.
             state.response.json = json_body
+
+
+class NoContentHook(hooks.PecanHook):
+    """No body on a 204 or a 304, whatever the controller returned.
+
+    The delete handlers are exposed as JSON, set 204 and return None, which
+    pecan renders as the four bytes "null". HTTP forbids a body there.
+    eventlet's WSGI server used to drop it silently; uWSGI sends it, and an
+    Envoy gateway in front treats it as a protocol error and answers 502 --
+    so the client is told the delete failed although it went through. Strip
+    it here, for every handler, rather than rely on each one getting it right.
+    """
+
+    def after(self, state):
+        if state.response.status_int in (204, 304):
+            state.response.body = b''

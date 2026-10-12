@@ -23,7 +23,7 @@ import pecan.testing
 from urllib import parse as urlparse
 
 
-from zun.api import hooks
+from zun.api import config as api_config
 import zun.conf
 from zun.tests.unit.db import base
 
@@ -65,11 +65,9 @@ class FunctionalTest(base.DbTestCase):
                 'root': 'zun.api.controllers.root.RootController',
                 'modules': ['zun.api'],
                 'template_path': '%s/api/templates' % root_dir,
-                'hooks': [
-                    hooks.ContextHook(),
-                    hooks.RPCHook(),
-                    hooks.NoExceptionTracebackHook(),
-                ],
+                # The application's own hooks, not a copy kept here: a hook
+                # added there and missing here goes untested.
+                'hooks': list(api_config.app['hooks']),
             },
         }
 

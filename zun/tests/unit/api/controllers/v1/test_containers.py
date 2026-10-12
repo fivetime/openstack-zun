@@ -1467,6 +1467,9 @@ class TestContainerController(api_base.FunctionalTest):
         response = self.delete('/v1/containers/%s/' % container_uuid)
 
         self.assertEqual(204, response.status_int)
+        # No body at all on a 204: a gateway in front (Envoy) turns one
+        # with a body into a 502, though the delete went through.
+        self.assertEqual(b'', response.body)
         mock_container_delete.assert_called_once_with(
             mock.ANY, test_container_obj, False)
         context = mock_container_delete.call_args[0][0]

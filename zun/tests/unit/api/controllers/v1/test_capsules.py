@@ -519,6 +519,9 @@ class TestCapsuleController(api_base.FunctionalTest):
 
         self.assertTrue(mock_capsule_delete.called)
         self.assertEqual(204, response.status_int)
+        # No body at all on a 204: a gateway in front (Envoy) turns one
+        # with a body into a 502, though the delete went through.
+        self.assertEqual(b'', response.body)
         context = mock_capsule_save.call_args[0][0]
         self.assertIs(False, context.all_projects)
 
