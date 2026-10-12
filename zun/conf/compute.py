@@ -195,6 +195,18 @@ service_opts = [
         'topic',
         default='zun-compute',
         help='The queue to add compute tasks to.'),
+    cfg.IntOpt(
+        'thread_pool_size',
+        default=64,
+        min=1,
+        help="""
+How many container operations (create, start, stop, delete, image pull
+and the like) zun-compute runs at once when it runs on native threads
+(OS_ZUN_DISABLE_EVENTLET_PATCHING=true). Each one holds a thread for as
+long as it takes, an image pull included; operations beyond this many
+wait their turn in the order they arrived. Under eventlet every
+operation gets a green thread of its own and this option is not used.
+"""),
 ]
 
 db_opts = [

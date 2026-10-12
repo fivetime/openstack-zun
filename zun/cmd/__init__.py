@@ -13,8 +13,9 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-# NOTE(hieulq): we monkey patch all eventlet services for easier tracking/debug
+# Eventlet or native threads: decided here, before any other zun import,
+# by OS_ZUN_DISABLE_EVENTLET_PATCHING (see zun.monkey_patch).
 
-import eventlet
+from zun import monkey_patch
 
-eventlet.monkey_patch()
+monkey_patch.patch()

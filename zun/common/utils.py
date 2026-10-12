@@ -24,7 +24,9 @@ import functools
 import inspect
 import math
 import mimetypes
+import threading
 
+import futurist
 from neutron_lib import constants as n_const
 from oslo_concurrency import lockutils
 from oslo_concurrency import processutils
@@ -42,6 +44,7 @@ from zun.common import exception
 from zun.common.i18n import _
 from zun.common import privileged
 import zun.conf
+from zun import monkey_patch
 from zun.network import neutron
 from zun import objects
 
@@ -199,8 +202,32 @@ def parse_image_name(image, driver=None, registry=None):
     return image_repo, image_tag
 
 
+_executor = None
+_executor_lock = threading.Lock()
+
+
+def _get_executor():
+    """The process's pool for spawn_n, made on first use.
+
+    On first use and not at import: zun-compute's service runs in a
+    process forked from the launcher, and a pool's threads do not survive
+    a fork.
+    """
+    global _executor
+    if _executor is None:
+        with _executor_lock:
+            if _executor is None:
+                _executor = futurist.ThreadPoolExecutor(
+                    max_workers=CONF.compute.thread_pool_size)
+    return _executor
+
+
 def spawn_n(func, *args, **kwargs):
-    """Passthrough method for eventlet.spawn_n.
+    """Run func in the background and do not wait for it.
+
+    Under eventlet that is a green thread of its own; on native threads
+    it is a thread of a pool of [compute]thread_pool_size, and once all
+    of them are busy the call waits in the pool's queue for one.
 
     This utility exists so that it can be stubbed for testing without
     interfering with the service spawns.
@@ -210,6 +237,7 @@ def spawn_n(func, *args, **kwargs):
     context when using this method to spawn a new thread.
     """
     _context = common_context.get_current()
+    threaded = monkey_patch.concurrency_mode_threading()
 
     @functools.wraps(func)
     def context_wrapper(*args, **kwargs):
@@ -217,9 +245,21 @@ def spawn_n(func, *args, **kwargs):
         # available for the logger to pull from threadlocal storage.
         if _context is not None:
             _context.update_store()
-        func(*args, **kwargs)
+        if not threaded:
+            func(*args, **kwargs)
+            return
+        try:
+            func(*args, **kwargs)
+        except Exception:
+            # eventlet's hub prints what a green thread raises; a pool
+            # keeps it in a future nobody reads, so say it here.
+            LOG.exception('Unhandled error in background task %s',
+                          getattr(func, '__qualname__', func))
 
-    eventlet.spawn_n(context_wrapper, *args, **kwargs)
+    if threaded:
+        _get_executor().submit(context_wrapper, *args, **kwargs)
+    else:
+        eventlet.spawn_n(context_wrapper, *args, **kwargs)
 
 
 def translate_exception(function):

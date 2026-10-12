@@ -23,6 +23,7 @@ from zun.common import context
 from zun.common import profiler
 from zun.common import rpc
 import zun.conf
+from zun import monkey_patch
 from zun.objects import base as objects_base
 from zun.servicegroup import zun_service_periodic as servicegroup
 
@@ -51,8 +52,10 @@ class Service(service.Service):
         # TODO(asalkeld) add support for version='x.y'
         target = messaging.Target(topic=topic, server=server)
         self.endpoints = endpoints
+        executor = ('threading' if monkey_patch.concurrency_mode_threading()
+                    else 'eventlet')
         self._server = messaging.get_rpc_server(transport, target, endpoints,
-                                                executor='eventlet',
+                                                executor=executor,
                                                 serializer=serializer,
                                                 access_policy=access_policy)
         self.binary = binary

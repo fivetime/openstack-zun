@@ -12,7 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import threading
 from unittest import mock
+
+from oslo_context import context as common_context
 
 from zun.common import exception
 from zun.common import utils
@@ -249,3 +252,66 @@ class TestUtils(base.TestCase):
         self.assertTrue(mock_finish.called)
         args, kwargs = mock_finish.call_args
         self.assertIsInstance(kwargs['exc_val'], exception.ZunException)
+
+
+class TestSpawnN(base.TestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(self._drop_executor)
+        p = mock.patch.object(utils.monkey_patch,
+                              'concurrency_mode_threading', return_value=True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    @staticmethod
+    def _drop_executor():
+        if utils._executor is not None:
+            utils._executor.shutdown(wait=True)
+            utils._executor = None
+
+    def _run(self, func, *args, **kwargs):
+        utils.spawn_n(func, *args, **kwargs)
+        # Shutting the pool down waits for what it was given.
+        self._drop_executor()
+
+    def test_threading_runs_on_another_thread(self):
+        seen = []
+        self._run(lambda a, b=None: seen.append(
+            (threading.get_ident(), a, b)), 1, b=2)
+        self.assertEqual(1, len(seen))
+        self.assertNotEqual(threading.get_ident(), seen[0][0])
+        self.assertEqual((1, 2), seen[0][1:])
+
+    def test_threading_carries_the_request_context(self):
+        seen = []
+        self.context.update_store()
+        self._run(lambda: seen.append(common_context.get_current()))
+        self.assertEqual([self.context], seen)
+
+    def test_threading_logs_what_the_task_raises(self):
+        def boom():
+            raise ValueError('lost unless logged')
+
+        with mock.patch.object(utils.LOG, 'exception') as log:
+            self._run(boom)
+        log.assert_called_once()
+        self.assertIn('boom', str(log.call_args))
+
+    def test_threading_pool_size_is_the_option(self):
+        CONF.set_override('thread_pool_size', 3, group='compute')
+        utils.spawn_n(lambda: None)
+        self.assertEqual(3, utils._executor._max_workers)
+
+    def test_threading_pool_is_made_once(self):
+        utils.spawn_n(lambda: None)
+        first = utils._executor
+        utils.spawn_n(lambda: None)
+        self.assertIs(first, utils._executor)
+
+    @mock.patch('eventlet.spawn_n')
+    def test_eventlet_uses_a_green_thread(self, green_spawn):
+        utils.monkey_patch.concurrency_mode_threading.return_value = False
+        utils.spawn_n(lambda: None)
+        green_spawn.assert_called_once()
+        self.assertIsNone(utils._executor)
