@@ -235,6 +235,23 @@ class ProviderTree(object):
         self.lock = lockutils.internal_lock(_LOCK_NAME)
         self.roots = []
 
+    def __getstate__(self):
+        """Define how pickle and therefore deepcopy works.
+
+        On native threads the lock wraps a _thread.lock, which cannot be
+        pickled (under eventlet it was a green one, which could), and the
+        report client and the container driver both deep-copy the tree.
+        Leave it out here; __setstate__ gives the copy the same named lock.
+        Same as nova's ProviderTree.
+        """
+        state = self.__dict__.copy()
+        del state['lock']
+        return state
+
+    def __setstate__(self, state):
+        state['lock'] = lockutils.internal_lock(_LOCK_NAME)
+        self.__dict__.update(state)
+
     def get_provider_uuids(self, name_or_uuid=None):
         """Return a list, in top-down traversable order, of the UUIDs of all
         providers (in a (sub)tree).

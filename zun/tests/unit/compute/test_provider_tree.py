@@ -9,6 +9,8 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+import copy
+
 from oslo_utils.fixture import uuidsentinel as uuids
 
 from zun.common import context
@@ -690,3 +692,24 @@ class TestProviderTree(base.TestCase):
         # Remove the last aggregate, and an unrelated one
         pt.remove_aggregates(cn.uuid, uuids.agg4, uuids.agg1)
         self.assertEqual(set([]), pt.data(cn.uuid).aggregates)
+
+    def test_deepcopy(self):
+        # The report client and the container driver deep-copy the tree.
+        # On native threads (as tox runs) its lock is a real one, which
+        # cannot be copied: every placement update failed with "cannot
+        # pickle '_thread.lock' object".
+        pt = provider_tree.ProviderTree()
+        pt.new_root('cn1', uuids.cn1)
+        pt.new_child('numa1', uuids.cn1, uuid=uuids.numa1)
+        pt.update_inventory(uuids.cn1, {'VCPU': {'total': 8}})
+
+        copied = copy.deepcopy(pt)
+
+        self.assertEqual(pt.get_provider_uuids(), copied.get_provider_uuids())
+        self.assertEqual({'VCPU': {'total': 8}},
+                         copied.data(uuids.cn1).inventory)
+        # A copy, not the same providers...
+        copied.update_inventory(uuids.cn1, {'VCPU': {'total': 4}})
+        self.assertEqual({'VCPU': {'total': 8}}, pt.data(uuids.cn1).inventory)
+        # ...but the same named lock, as every ProviderTree has.
+        self.assertIs(pt.lock, copied.lock)
