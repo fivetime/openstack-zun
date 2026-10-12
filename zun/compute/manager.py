@@ -16,6 +16,7 @@ import contextlib
 import itertools
 import math
 import os
+import threading
 import time
 
 from oslo_log import log as logging
@@ -162,6 +163,7 @@ class Manager(periodic_task.PeriodicTasks):
         self.capsule_driver = driver_module.load_capsule_driver()
         self.host = CONF.host
         self._resource_tracker = None
+        self._resource_tracker_lock = threading.Lock()
         self.reportclient = report.SchedulerReportClient()
 
     def _get_driver(self, container):
@@ -1660,10 +1662,18 @@ class Manager(periodic_task.PeriodicTasks):
         raise exception.NoValidHost(reason=msg)
 
     def _get_resource_tracker(self):
+        # Locked: at start-up the inventory periodic task, the operations
+        # init_containers resumes and the first RPC calls all get here at
+        # once, and on native threads building the tracker is no longer
+        # atomic. Two trackers would leave the one kept without the
+        # compute node the other one found.
         if not self._resource_tracker:
-            rt = compute_node_tracker.ComputeNodeTracker(
-                self.host, self.driver, self.capsule_driver, self.reportclient)
-            self._resource_tracker = rt
+            with self._resource_tracker_lock:
+                if not self._resource_tracker:
+                    self._resource_tracker = (
+                        compute_node_tracker.ComputeNodeTracker(
+                            self.host, self.driver, self.capsule_driver,
+                            self.reportclient))
         return self._resource_tracker
 
     @periodic_task.periodic_task(run_immediately=True)

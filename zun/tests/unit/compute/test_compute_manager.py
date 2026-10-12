@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import threading
+import time
 from unittest import mock
 
 from io import StringIO
@@ -1582,3 +1584,33 @@ class TestManager(base.TestCase):
         network = ZunNetwork(self.context, **utils.get_test_network())
         self.compute_manager.network_delete(self.context, network)
         mock_delete.assert_any_call(self.context, network)
+
+
+class TestResourceTrackerOnce(base.TestCase):
+
+    @mock.patch.object(manager.compute_node_tracker, 'ComputeNodeTracker')
+    def test_concurrent_first_callers_share_one_tracker(self, tracker_cls):
+        # Building it is not atomic on native threads; it must still be
+        # built once.
+        gate = threading.Barrier(8)
+
+        def slow_build(*args):
+            time.sleep(0.05)
+            return mock.Mock()
+        tracker_cls.side_effect = slow_build
+        mgr = manager.Manager.__new__(manager.Manager)
+        mgr._resource_tracker = None
+        mgr._resource_tracker_lock = threading.Lock()
+        mgr.host = mgr.driver = mgr.capsule_driver = mgr.reportclient = None
+        got = []
+
+        def get():
+            gate.wait(5)
+            got.append(mgr._get_resource_tracker())
+        threads = [threading.Thread(target=get) for _ in range(8)]
+        [t.start() for t in threads]
+        [t.join(10) for t in threads]
+
+        self.assertEqual(1, tracker_cls.call_count)
+        self.assertEqual(8, len(got))
+        self.assertTrue(all(t is got[0] for t in got))
