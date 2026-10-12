@@ -96,3 +96,28 @@ class TestFollowLogsSession(base.TestCase):
                           self._follow, container, 'the-logs-token')
 
         mock_client.return_value.ws.close.assert_called_once_with()
+
+
+class TestHubPerConnection(base.TestCase):
+    """Each connection's child gets an eventlet hub of its own -- under
+    eventlet only; on native threads there is no hub to reopen.
+    """
+
+    def _connect(self, threading):
+        handler = mock.Mock(path='/?token=t&uuid=u')
+        handler._find_container.side_effect = RuntimeError('stop here')
+        with mock.patch.object(websocketproxy.monkey_patch,
+                               'concurrency_mode_threading',
+                               return_value=threading), \
+                mock.patch('eventlet.hubs.use_hub') as use_hub:
+            self.assertRaises(
+                RuntimeError,
+                websocketproxy.ZunProxyRequestHandlerBase.new_websocket_client,
+                handler)
+        return use_hub
+
+    def test_eventlet_reopens_the_hub(self):
+        self._connect(threading=False).assert_called_once_with()
+
+    def test_native_threads_leave_eventlet_alone(self):
+        self._connect(threading=True).assert_not_called()

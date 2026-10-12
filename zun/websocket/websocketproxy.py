@@ -32,6 +32,7 @@ from zun.common import context
 from zun.common import exception
 from zun.common.i18n import _
 import zun.conf
+from zun import monkey_patch
 from zun import objects
 from zun.websocket.websocketclient import WebSocketClient
 
@@ -210,10 +211,11 @@ class ZunProxyRequestHandlerBase(object):
 
     def new_websocket_client(self):
         """Called after a new WebSocket connection has been established."""
-        # Reopen the eventlet hub to make sure we don't share an epoll
-        # fd with parent and/or siblings, which would be bad
-        from eventlet import hubs
-        hubs.use_hub()
+        if not monkey_patch.concurrency_mode_threading():
+            # Reopen the eventlet hub to make sure we don't share an epoll
+            # fd with parent and/or siblings, which would be bad
+            from eventlet import hubs
+            hubs.use_hub()
 
         # The zun expected behavior is to have token
         # passed to the method GET of the request
