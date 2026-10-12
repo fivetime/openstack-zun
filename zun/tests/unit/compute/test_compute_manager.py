@@ -146,6 +146,45 @@ class TestManager(base.TestCase):
 
         api.delete_port.assert_called_once_with('port-of-gone-1')
 
+    def _init_containers(self, *containers):
+        calls = mock.Mock()
+        mgr = self.compute_manager
+        local = [mock.Mock(uuid=c.uuid, status=consts.RUNNING)
+                 for c in containers]
+        with mock.patch.object(manager.objects.Container, 'list_by_host',
+                               return_value=list(containers)), \
+                mock.patch.object(mgr.driver, 'list',
+                                  return_value=(local, [])), \
+                mock.patch.object(mgr, '_remount_volume',
+                                  calls.remount), \
+                mock.patch.object(mgr, 'restore_running_container',
+                                  calls.restore), \
+                mock.patch.object(mgr, 'container_delete', calls.delete), \
+                mock.patch.object(mgr, 'container_start', calls.start), \
+                mock.patch.object(manager.CONF.compute,
+                                  'resume_container_state', True):
+            mgr.init_containers(self.context)
+        return [c[0] for c in calls.mock_calls]
+
+    def test_init_containers_mounts_before_resuming(self):
+        # The resumed start runs in a thread of its own and must find the
+        # volumes mounted; no restore races it for the same container.
+        container = Container(self.context, **utils.get_test_container())
+        container.task_state = consts.CONTAINER_STARTING
+        self.assertEqual(['remount', 'start'],
+                         self._init_containers(container))
+
+    def test_init_containers_leaves_a_deleted_containers_volumes(self):
+        container = Container(self.context, **utils.get_test_container())
+        container.task_state = consts.CONTAINER_DELETING
+        self.assertEqual(['delete'], self._init_containers(container))
+
+    def test_init_containers_restores_an_idle_container(self):
+        container = Container(self.context, **utils.get_test_container())
+        container.task_state = None
+        self.assertEqual(['remount', 'restore'],
+                         self._init_containers(container))
+
     @mock.patch.object(Container, 'save')
     def test_init_container_sets_creating_error(self, mock_save):
         container = Container(self.context, **utils.get_test_container())

@@ -205,16 +205,32 @@ class Manager(periodic_task.PeriodicTasks):
                               for container in local_containers}
         for container in containers:
             current_status = uuid_to_status_map[container.uuid]
-            self._init_container(context, container)
-            if CONF.compute.remount_container_volume:
+            # Volumes first: an operation _init_container resumes runs in
+            # a thread of its own, on this same object, and a start must
+            # find them mounted. Not for a container on its way out,
+            # whose delete would be detaching them meanwhile.
+            if (CONF.compute.remount_container_volume and
+                    not self._being_deleted(container)):
                 self._remount_volume(context, container)
-            if CONF.compute.resume_container_state:
+            resumed = self._init_container(context, container)
+            # The resumed operation decides the state it ends in; a
+            # restore beside it would race it for the same container.
+            if CONF.compute.resume_container_state and not resumed:
                 self.restore_running_container(context,
                                                container,
                                                current_status)
 
+    @staticmethod
+    def _being_deleted(container):
+        return (container.status == consts.DELETING or
+                container.task_state == consts.CONTAINER_DELETING)
+
     def _init_container(self, context, container):
-        """Initialize this container during zun-compute init."""
+        """Initialize this container during zun-compute init.
+
+        Returns True when an interrupted operation was resumed (in the
+        background), False when there was nothing to resume.
+        """
 
         if (container.status == consts.CREATING or
             container.task_state in [consts.CONTAINER_CREATING,
@@ -229,16 +245,15 @@ class Manager(periodic_task.PeriodicTasks):
             container.status = consts.ERROR
             container.status_reason = _("Container failed to create correctly")
             container.save()
-            return
+            return False
 
-        if (container.status == consts.DELETING or
-                container.task_state == consts.CONTAINER_DELETING):
+        if self._being_deleted(container):
             LOG.debug("Container %s in transitional state %s at start-up "
                       "retrying delete request",
                       container.uuid, container.task_state)
             container.task_state = None
             self.container_delete(context, container, force=True)
-            return
+            return True
 
         if container.task_state == consts.CONTAINER_REBOOTING:
             LOG.debug("Container %s in transitional state %s at start-up "
@@ -247,7 +262,7 @@ class Manager(periodic_task.PeriodicTasks):
             container.task_state = None
             self.container_reboot(context, container,
                                   CONF.docker.default_timeout)
-            return
+            return True
 
         if container.task_state == consts.CONTAINER_STOPPING:
             LOG.debug("Container %s in transitional state %s at start-up "
@@ -256,7 +271,7 @@ class Manager(periodic_task.PeriodicTasks):
             container.task_state = None
             self.container_stop(context, container,
                                 CONF.docker.default_timeout)
-            return
+            return True
 
         if container.task_state == consts.CONTAINER_STARTING:
             LOG.debug("Container %s in transitional state %s at start-up "
@@ -264,22 +279,23 @@ class Manager(periodic_task.PeriodicTasks):
                       container.uuid, container.task_state)
             container.task_state = None
             self.container_start(context, container)
-            return
+            return True
 
         if container.task_state == consts.CONTAINER_PAUSING:
             container.task_state = None
             self.container_pause(context, container)
-            return
+            return True
 
         if container.task_state == consts.CONTAINER_UNPAUSING:
             container.task_state = None
             self.container_unpause(context, container)
-            return
+            return True
 
         if container.task_state == consts.CONTAINER_KILLING:
             container.task_state = None
             self.container_kill(context, container)
-            return
+            return True
+        return False
 
     def _remount_volume(self, context, container):
         driver = self._get_driver(container)
