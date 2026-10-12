@@ -1304,6 +1304,10 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         try:
             if (container.auto_heal and
                     container.status in rebuild_status):
+                # A copy: the context is the periodic task's own, shared
+                # with every container it heals after this one, and the
+                # rebuild goes on with it in a thread of its own.
+                context = context.elevated()
                 context.project_id = container.project_id
                 objects.ContainerAction.action_start(
                     context, container.uuid, container_actions.REBUILD,

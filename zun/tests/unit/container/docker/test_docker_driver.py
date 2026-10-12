@@ -575,10 +575,18 @@ class TestDockerDriver(base.DriverTestCase):
         mock_container = obj_utils.get_test_container(
             self.context, status='Running',
             auto_heal=True, task_state=None)
+        mock_container.project_id = 'the-containers-project'
+        self.context.project_id = 'periodic-task'
         self.driver.heal_with_rebuilding_container(
             self.context, mock_container, mock_compute_manager)
         mock_compute_manager.container_rebuild.assert_called_once_with(
-            self.context, mock_container)
+            mock.ANY, mock_container)
+        used = mock_compute_manager.container_rebuild.call_args.args[0]
+        self.assertEqual('the-containers-project', used.project_id)
+        # The periodic task's own context, shared with the containers it
+        # heals next and with the rebuild's thread, is left as it was.
+        self.assertIsNot(self.context, used)
+        self.assertEqual('periodic-task', self.context.project_id)
 
     @mock.patch('zun.compute.api.API.container_rebuild')
     def test_heal_with_rebuilding_exception(self, mock_container_rebuild):
