@@ -22,6 +22,8 @@ instead of accepting `disk` and silently dropping it.
 """
 
 import json
+import threading
+import time
 from unittest import mock
 
 import grpc
@@ -55,6 +57,32 @@ class TestNodeSupportsDiskQuota(base.TestCase):
         d = _Driver(_status({'kata-qemu': {'snapshotter': 'erofs'}}))
 
         self.assertTrue(d.node_support_disk_quota())
+
+    def test_callers_during_the_first_read_wait_for_it(self):
+        """Not '' -- "no quota" -- while the first caller still asks.
+
+        On native threads creates arrive together; one that read the
+        placeholder would be refused a disk the node can give it.
+        """
+        status = _status({'kata-qemu': {'snapshotter': 'erofs'}})
+        d = _Driver(status)
+
+        def slow_status(request):
+            time.sleep(0.2)
+            return status
+        d.runtime_stub.Status.side_effect = slow_status
+        gate = threading.Barrier(6)
+        answers = []
+
+        def ask():
+            gate.wait(5)
+            answers.append(d.node_support_disk_quota())
+        threads = [threading.Thread(target=ask) for _ in range(6)]
+        [t.start() for t in threads]
+        [t.join(10) for t in threads]
+
+        self.assertEqual([True] * 6, answers)
+        d.runtime_stub.Status.assert_called_once()
 
     def test_overlayfs_does_not(self):
         d = _Driver(_status({'kata-qemu': {'snapshotter': 'overlayfs'}}))

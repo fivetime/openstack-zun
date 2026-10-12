@@ -12,7 +12,9 @@
 # limitations under the License.
 
 import datetime
+import functools
 import os
+import threading
 import time
 
 import grpc
@@ -200,6 +202,21 @@ def _off_hub(stub):
         return _Bounded(stub)
     from eventlet import tpool
     return tpool.Proxy(_Bounded(stub))
+
+
+# Held while a node fact read on first use is being found out. Until it is
+# known, its cache holds '' -- which reads as "this node cannot" -- so a
+# second caller must wait for the first rather than read that. Re-entrant:
+# finding out one fact asks for another.
+_FIRST_USE = threading.RLock()
+
+
+def _found_out_once(method):
+    @functools.wraps(method)
+    def locked(self):
+        with _FIRST_USE:
+            return method(self)
+    return locked
 
 
 def _output_still_held(rpc_error):
@@ -1395,6 +1412,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                       if getattr(container, field, None)]
         return asked
 
+    @_found_out_once
     def _can_limit_host_io(self):
         """Whether this node can hold a sandbox to a block IO limit.
 
@@ -1408,6 +1426,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             self._host_io_ok = cached
         return cached
 
+    @_found_out_once
     def _io_device(self):
         """The whole disk behind the runtime's root, as MAJ:MIN.
 
@@ -1445,6 +1464,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         """
         return self._runtime_snapshotter() in QUOTA_SNAPSHOTTERS
 
+    @_found_out_once
     def _runtime_snapshotter(self):
         """The snapshotter containerd prepares this node's rootfs with.
 
