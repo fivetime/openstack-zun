@@ -305,8 +305,9 @@ class KuryrNetwork(network.Network):
             port_req_body = {'port': {'device_id': '', 'device_owner': ''}}
             port_req_body['port'][consts.BINDING_HOST_ID] = None
             port_req_body['port']['mac_address'] = port.get('mac_address')
-            port_req_body['port'][consts.BINDING_PROFILE] = \
-                port.get(consts.BINDING_PROFILE, {})
+            # binding:profile is not sent back as it was: neutron's default
+            # policy lets only the service role set it, and the request
+            # carrying it was refused whole.
 
             try:
                 # Requires admin creds to set port bindings

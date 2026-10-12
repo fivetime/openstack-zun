@@ -63,3 +63,31 @@ class ServiceOwnedPortTest(base.TestCase):
 
         self.tenant.delete_port.assert_called_once_with('p-2')
         self.admin.delete_port.assert_not_called()
+
+
+class UnbindNeedsNoServiceRoleTest(ServiceOwnedPortTest):
+    """Unbinding a kept port works with admin, which is what zun has.
+
+    neutron's default policy lets only the service role set binding:profile.
+    zun sent it on every unbind, unchanged, and the whole update was refused:
+    device_id and device_owner stayed set on the port a rebuild kept.
+    """
+
+    def _unbind(self, profile):
+        self.admin.show_port.return_value = {
+            'port': {'id': 'p-1', 'binding:profile': profile}}
+        with mock.patch.object(self.api, 'get_neutron_port',
+                               return_value={'binding:profile': profile}):
+            self.api._unbind_port('p-1')
+        return self.admin.update_port.call_args.args[1]['port']
+
+    def test_no_profile_sent_when_there_is_nothing_to_remove(self):
+        body = self._unbind({'some': 'thing'})
+        self.assertNotIn('binding:profile', body)
+        self.assertEqual('', body['device_id'])
+        self.assertEqual('', body['device_owner'])
+
+    def test_a_pci_binding_is_still_removed(self):
+        body = self._unbind({'pci_slot': '0000:01:00.1',
+                             'pci_vendor_info': '8086:1520', 'keep': 1})
+        self.assertEqual({'keep': 1}, body['binding:profile'])

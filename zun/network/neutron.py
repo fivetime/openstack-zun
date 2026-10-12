@@ -210,10 +210,16 @@ class NeutronAPI(object):
         # NOTE: We're doing this to remove the binding information
         # for the physical device but don't want to overwrite the other
         # information in the binding profile.
-        for profile_key in ('pci_vendor_info', 'pci_slot'):
-            if profile_key in port_profile:
+        # Sent only when there is something to remove: neutron's default
+        # policy lets only the service role touch binding:profile (not
+        # admin), and a request carrying it unchanged was refused whole,
+        # leaving device_id and device_owner set on every port unbound.
+        stale = [k for k in ('pci_vendor_info', 'pci_slot')
+                 if k in port_profile]
+        if stale:
+            for profile_key in stale:
                 del port_profile[profile_key]
-        port_req_body['port'][consts.BINDING_PROFILE] = port_profile
+            port_req_body['port'][consts.BINDING_PROFILE] = port_profile
 
         try:
             # Requires admin creds to set port bindings
