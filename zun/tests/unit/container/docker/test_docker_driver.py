@@ -12,6 +12,7 @@
 
 from collections import defaultdict
 import os
+import socket
 from unittest import mock
 
 import fixtures
@@ -759,14 +760,27 @@ class TestDockerDriver(base.DriverTestCase):
         self.mock_docker.exec_create.assert_called_once_with(
             mock_container.container_id, 'ls', stdin=False, tty=False)
 
-    def test_execute_run(self):
-        self.mock_docker.exec_start = mock.Mock(return_value='test')
+    @mock.patch('zun.container.docker.utils.read_exec_output')
+    def test_execute_run(self, mock_read):
+        mock_read.return_value = b'test'
+        self.mock_docker.exec_start = mock.Mock(return_value='sock')
         self.mock_docker.exec_inspect = mock.Mock(
             return_value={'ExitCode': 0})
-        self.driver.execute_run('test', 'ls')
-        self.mock_docker.exec_start.assert_called_once_with('test', False,
-                                                            False, False)
+        self.assertEqual((b'test', 0), self.driver.execute_run('test', 'ls'))
+        self.mock_docker.exec_start.assert_called_once_with(
+            'test', detach=False, tty=False, stream=False, socket=True)
+        mock_read.assert_called_once_with('sock',
+                                          CONF.docker.execute_timeout)
         self.mock_docker.exec_inspect.assert_called_once()
+
+    @mock.patch('zun.container.docker.utils.read_exec_output')
+    def test_execute_run_timeout(self, mock_read):
+        mock_read.side_effect = socket.timeout()
+        self.mock_docker.exec_start = mock.Mock(return_value='sock')
+        self.mock_docker.exec_inspect = mock.Mock()
+        self.assertRaises(exception.Conflict,
+                          self.driver.execute_run, 'test', 'sleep 60')
+        self.mock_docker.exec_inspect.assert_not_called()
 
     def test_kill_successful_signal_is_none(self):
         self.mock_docker.kill = mock.Mock()

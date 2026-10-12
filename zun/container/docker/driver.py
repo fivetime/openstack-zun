@@ -13,11 +13,11 @@
 
 import datetime
 import errno
-import eventlet
 import functools
 import os
 import time
 import shutil
+import socket
 import types
 
 from docker import errors
@@ -1771,10 +1771,12 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def execute_run(self, exec_id, command):
         with docker_utils.docker_client() as docker:
+            sock = docker.exec_start(exec_id, detach=False, tty=False,
+                                     stream=False, socket=True)
             try:
-                with eventlet.Timeout(CONF.docker.execute_timeout):
-                    output = docker.exec_start(exec_id, False, False, False)
-            except eventlet.Timeout:
+                output = docker_utils.read_exec_output(
+                    sock, CONF.docker.execute_timeout)
+            except socket.timeout:
                 raise exception.Conflict(_(
                     "Timeout on executing command: %s") % command)
             inspect_res = docker.exec_inspect(exec_id)

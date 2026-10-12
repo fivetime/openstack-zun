@@ -11,8 +11,11 @@
 # under the License.
 
 import contextlib
+import socket
+import struct
 import sys
 import tarfile
+import time
 
 import docker
 from docker import errors
@@ -27,6 +30,55 @@ import zun.conf
 
 
 CONF = zun.conf.CONF
+
+
+def read_exec_output(sock, timeout):
+    """All a non-tty exec writes, or socket.timeout after `timeout` seconds.
+
+    `sock` is what exec_start(socket=True) hands back. The result is what
+    exec_start would have returned without it: the payload of every frame
+    of the multiplexed stream, stdout and stderr in the order written.
+
+    docker-py cannot give up on its own: before each recv it polls the
+    socket with no timeout at all, so a command that keeps quiet holds
+    the caller for as long as the command lives. Under eventlet a
+    Timeout used to interrupt that; on native threads nothing can, so
+    the deadline is kept here, as a timeout on every recv of whatever
+    time is left.
+    """
+    # SocketIO over a unix or plain TCP socket; the socket itself for TLS
+    raw = getattr(sock, '_sock', sock)
+    deadline = time.monotonic() + timeout
+    received = []
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout('exec did not finish in %ss' % timeout)
+            raw.settimeout(remaining)
+            data = raw.recv(65536)
+            if not data:
+                break
+            received.append(data)
+    finally:
+        # Hang up for good: the response object still holds the socket,
+        # and a plain close() leaves it open while anything does.
+        try:
+            raw.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        raw.close()
+
+    stream = b''.join(received)
+    payload = []
+    offset = 0
+    while offset + 8 <= len(stream):
+        # Frame header: stream id, three bytes of padding, payload length
+        _stream_id, length = struct.unpack_from('>BxxxL', stream, offset)
+        offset += 8
+        payload.append(stream[offset:offset + length])
+        offset += length
+    return b''.join(payload)
 
 
 @contextlib.contextmanager
