@@ -764,6 +764,8 @@ class Manager(periodic_task.PeriodicTasks):
     def container_delete(self, context, container, force=False):
         @utils.synchronized(container.uuid)
         def do_container_delete():
+            if not self._caught_up(container):
+                return
             self._do_container_delete(context, container, force)
             # Sent from here rather than inside, because the delete runs in
             # a spawned thread and its caller has already returned: without
@@ -819,6 +821,8 @@ class Manager(periodic_task.PeriodicTasks):
     def add_security_group(self, context, container, security_group):
         @utils.synchronized(container.uuid)
         def do_add_security_group():
+            if not self._caught_up(container):
+                return
             self._add_security_group(context, container, security_group)
 
         utils.spawn_n(do_add_security_group)
@@ -837,6 +841,8 @@ class Manager(periodic_task.PeriodicTasks):
     def remove_security_group(self, context, container, security_group):
         @utils.synchronized(container.uuid)
         def do_remove_security_group():
+            if not self._caught_up(container):
+                return
             self._remove_security_group(context, container, security_group)
 
         utils.spawn_n(do_remove_security_group)
@@ -855,14 +861,44 @@ class Manager(periodic_task.PeriodicTasks):
                                              - set([security_group]))
             container.save(context)
 
+    #: States an operation is moving a container through; the record, not
+    #: the runtime, says where it stands until the operation is done.
+    _IN_TRANSITION = (consts.CREATING, consts.REBUILDING, consts.DELETING)
+
+    def _owned_by_an_operation(self, container):
+        return (container.task_state is not None or
+                container.status in self._IN_TRANSITION)
+
+    def _fresh_record(self, container):
+        """The container as the database holds it now, or None if gone."""
+        try:
+            return container.__class__.get_by_uuid(
+                context.get_admin_context(all_projects=True), container.uuid)
+        except exception.ContainerNotFound:
+            return None
+
     @translate_exception
     def container_show(self, context, container):
         LOG.debug('Showing container: %s', container.uuid)
+        # While an operation is under way the runtime is mid-change: a
+        # rebuild has removed the old container and not yet made the new
+        # one. Reading it then and writing the result back set the record
+        # to whatever the runtime said at that instant -- Running again
+        # right after the API had said Rebuilding (so a stop was let
+        # through), then Error on the 404 in between, with the 404 left in
+        # status_reason after the rebuild had succeeded. The operation owns
+        # the record until it is done; a show reports what it says.
+        if self._owned_by_an_operation(container):
+            return container
         try:
             # NOTE(hongbin): capsule shouldn't reach here
             container = self.driver.show(context, container)
             if container.obj_what_changed():
-                container.save(context)
+                # An operation may have begun while the runtime was asked.
+                current = self._fresh_record(container)
+                if current is not None and \
+                        not self._owned_by_an_operation(current):
+                    container.save(context)
             return container
         except exception.DockerError as e:
             LOG.error("Error occurred while calling Docker show API: %s",
@@ -886,6 +922,8 @@ class Manager(periodic_task.PeriodicTasks):
     def container_reboot(self, context, container, timeout):
         @utils.synchronized(container.uuid)
         def do_container_reboot():
+            if not self._caught_up(container):
+                return
             self._do_container_reboot(context, container, timeout)
 
         utils.spawn_n(do_container_reboot)
@@ -910,10 +948,44 @@ class Manager(periodic_task.PeriodicTasks):
     def container_stop(self, context, container, timeout, signal=None):
         @utils.synchronized(container.uuid)
         def do_container_stop():
+            if not self._caught_up(container):
+                return
             self._do_container_stop(context, container, timeout,
                                     signal=signal)
 
         utils.spawn_n(do_container_stop)
+
+    def _caught_up(self, container):
+        """Bring a queued operation's container up to date; False if gone.
+
+        Operations on one container queue for its lock, and each was handed
+        the record as it stood when the request came in. One that waited
+        behind another works on what that one left: a delete queued behind
+        a rebuild carried the id of the docker container the rebuild had
+        replaced, found it gone, took the 404 for "already deleted" and
+        dropped the record -- and the rebuilt container ran on with nothing
+        to say it existed. Re-read the record once the lock is held; if the
+        container went away meanwhile, there is nothing left to do.
+        """
+        current = self._fresh_record(container)
+        if current is None:
+            LOG.info('Container %s was deleted while this operation waited '
+                     'for it; nothing to do', container.uuid)
+            return False
+        # The status the API set on the way in (a delete does not save its
+        # Deleting) is the intent this operation carries out; keep it.
+        keep_status = (container.obj_attr_is_set('status') and
+                       container.status in (consts.DELETING,
+                                            consts.REBUILDING))
+        for field in container.fields:
+            if field == 'status' and keep_status:
+                continue
+            if not current.obj_attr_is_set(field):
+                continue
+            if (not container.obj_attr_is_set(field) or
+                    getattr(container, field) != getattr(current, field)):
+                setattr(container, field, getattr(current, field))
+        return True
 
     def _update_container_state(self, context, container, container_status):
         if container.status != container_status:
@@ -923,6 +995,8 @@ class Manager(periodic_task.PeriodicTasks):
     def container_rebuild(self, context, container, run):
         @utils.synchronized(container.uuid)
         def do_container_rebuild():
+            if not self._caught_up(container):
+                return
             self._do_container_rebuild(context, container, run)
 
         utils.spawn_n(do_container_rebuild)
@@ -1010,6 +1084,8 @@ class Manager(periodic_task.PeriodicTasks):
     def container_start(self, context, container):
         @utils.synchronized(container.uuid)
         def do_container_start():
+            if not self._caught_up(container):
+                return
             with utils.FinishAction(context, container_actions.START,
                                     container.uuid):
                 self._do_container_start(context, container)
@@ -1032,6 +1108,8 @@ class Manager(periodic_task.PeriodicTasks):
     def container_pause(self, context, container):
         @utils.synchronized(container.uuid)
         def do_container_pause():
+            if not self._caught_up(container):
+                return
             self._do_container_pause(context, container)
 
         utils.spawn_n(do_container_pause)
@@ -1052,6 +1130,8 @@ class Manager(periodic_task.PeriodicTasks):
     def container_unpause(self, context, container):
         @utils.synchronized(container.uuid)
         def do_container_unpause():
+            if not self._caught_up(container):
+                return
             self._do_container_unpause(context, container)
 
         utils.spawn_n(do_container_unpause)
@@ -1179,6 +1259,8 @@ class Manager(periodic_task.PeriodicTasks):
     def container_kill(self, context, container, signal):
         @utils.synchronized(container.uuid)
         def do_container_kill():
+            if not self._caught_up(container):
+                return
             self._do_container_kill(context, container, signal)
 
         utils.spawn_n(do_container_kill)
@@ -1467,6 +1549,8 @@ class Manager(periodic_task.PeriodicTasks):
 
         @utils.synchronized(container.uuid)
         def do_container_commit():
+            if not self._caught_up(container):
+                return
             self._do_container_commit(context, snapshot_image, container,
                                       repository, tag)
 
@@ -2228,6 +2312,8 @@ class Manager(periodic_task.PeriodicTasks):
     def network_detach(self, context, container, network):
         @utils.synchronized(container.uuid)
         def do_network_detach():
+            if not self._caught_up(container):
+                return
             self._do_network_detach(context, container, network)
 
         utils.spawn_n(do_network_detach)
@@ -2246,6 +2332,8 @@ class Manager(periodic_task.PeriodicTasks):
     def network_attach(self, context, container, requested_network):
         @utils.synchronized(container.uuid)
         def do_network_attach():
+            if not self._caught_up(container):
+                return
             self._do_network_attach(context, container, requested_network)
 
         utils.spawn_n(do_network_attach)
@@ -2272,6 +2360,8 @@ class Manager(periodic_task.PeriodicTasks):
     def resize_container(self, context, container, patch):
         @utils.synchronized(container.uuid)
         def do_container_resize():
+            if not self._caught_up(container):
+                return
             self.container_update(context, container, patch)
 
         utils.spawn_n(do_container_resize)

@@ -876,6 +876,10 @@ class TestManager(base.TestCase):
     @mock.patch.object(fake_driver, 'show')
     def test_container_show(self, mock_show):
         container = Container(self.context, **utils.get_test_container())
+        # As read from the database, and a driver's show hands back the
+        # container it was given.
+        container.obj_reset_changes()
+        mock_show.side_effect = lambda ctx, c: c
         self.compute_manager.container_show(self.context, container)
         mock_show.assert_called_once_with(self.context, container)
 
