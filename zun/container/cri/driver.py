@@ -948,7 +948,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     def _write_cni_metadata(self, context, capsule, requested_networks):
         neutron_api = neutron.NeutronAPI(context)
         security_group_ids = utils.get_security_group_ids(
-            context, capsule.security_groups)
+            context, capsule.security_groups, project_id=capsule.project_id)
         # TODO(hongbin): handle multiple nics
         requested_network = requested_networks[0]
         network_id = requested_network['network']
@@ -2782,7 +2782,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             raise exception.ZunException(_(
                 'Container %s has no port to carry a security group')
                 % container.uuid)
-        group_ids = utils.get_security_group_ids(context, [security_group])
+        group_ids = utils.get_security_group_ids(
+            context, [security_group], project_id=container.project_id)
         neutron_api = neutron.NeutronAPI(context)
         for port_id in wanted:
             port = neutron_api.get_neutron_port(port_id)

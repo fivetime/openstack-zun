@@ -480,7 +480,8 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             # will be processed after create.
             requested_network = requested_networks.pop()
             security_group_ids = utils.get_security_group_ids(
-                context, container.security_groups)
+                context, container.security_groups,
+                project_id=container.project_id)
             network_driver.process_networking_config(
                 container, requested_network, host_config, kwargs, docker,
                 security_group_ids=security_group_ids)
@@ -1036,7 +1037,8 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
     def _setup_network_for_container(self, context, container,
                                      requested_networks, network_driver):
         security_group_ids = utils.get_security_group_ids(
-            context, container.security_groups)
+            context, container.security_groups,
+            project_id=container.project_id)
         addresses = {}
         if container.addresses:
             addresses = container.addresses
@@ -2185,7 +2187,8 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             security_group_ids = None
             if container.security_groups:
                 security_group_ids = utils.get_security_group_ids(
-                    context, container.security_groups)
+                    context, container.security_groups,
+                    project_id=container.project_id)
             network_driver = zun_network.driver(context, docker_api=docker)
             network = requested_network['network']
             if network in container.addresses:

@@ -379,7 +379,16 @@ def parse_floating_cpu(spec):
     return cpuset_ids
 
 
-def get_security_group_ids(context, security_groups, **kwargs):
+def get_security_group_ids(context, security_groups, project_id=None,
+                           **kwargs):
+    """The ids of the named (or id-given) groups of a container's project.
+
+    project_id is the project of the container the groups are for. It is
+    not always the caller's: an admin rebuilding a tenant's container used
+    to search the admin project and fail with "not found" for the tenant's
+    own groups. The search runs with the caller's credentials either way,
+    so nobody is shown a group they could not already list.
+    """
     if security_groups is None:
         return None
     if not security_groups:
@@ -390,7 +399,7 @@ def get_security_group_ids(context, security_groups, **kwargs):
         return []
     else:
         neutron = clients.OpenStackClients(context).neutron()
-        search_opts = {'tenant_id': context.project_id}
+        search_opts = {'tenant_id': project_id or context.project_id}
         security_groups_list = neutron.list_security_groups(
             **search_opts).get('security_groups', [])
         security_group_ids = [item['id'] for item in security_groups_list

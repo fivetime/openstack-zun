@@ -151,6 +151,29 @@ class TestUtils(base.TestCase):
         self.assertRaises(exception.ZunException, utils.get_security_group_ids,
                           self.context, security_groups)
 
+    @mock.patch('zun.common.clients.OpenStackClients.neutron')
+    def test_security_groups_are_looked_up_in_the_containers_project(
+            self, mock_neutron_client):
+        # An admin rebuilding a tenant's container: the groups are the
+        # tenant's, not the admin project's.
+        client = mock_neutron_client.return_value
+        client.list_security_groups.return_value = {'security_groups': [
+            {'id': 'sg-1', 'name': 'daas-tenant'}]}
+        self.assertEqual(['sg-1'], utils.get_security_group_ids(
+            self.context, ['daas-tenant'], project_id='tenant-project'))
+        client.list_security_groups.assert_called_once_with(
+            tenant_id='tenant-project')
+
+    @mock.patch('zun.common.clients.OpenStackClients.neutron')
+    def test_security_groups_default_to_the_callers_project(
+            self, mock_neutron_client):
+        client = mock_neutron_client.return_value
+        client.list_security_groups.return_value = {'security_groups': [
+            {'id': 'sg-1', 'name': 'default'}]}
+        utils.get_security_group_ids(self.context, ['default'])
+        client.list_security_groups.assert_called_once_with(
+            tenant_id=self.context.project_id)
+
     def test_capsule_get_container_spec(self):
         with self.assertRaisesRegex(
                 exception.InvalidCapsuleTemplate,
