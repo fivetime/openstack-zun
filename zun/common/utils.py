@@ -255,11 +255,29 @@ def spawn_n(func, *args, **kwargs):
             # keeps it in a future nobody reads, so say it here.
             LOG.exception('Unhandled error in background task %s',
                           getattr(func, '__qualname__', func))
+        finally:
+            # A green thread died with its task; a pool thread goes on to
+            # the next one, which would log under this one's request id.
+            common_context._request_store.context = None
 
-    if threaded:
-        _get_executor().submit(context_wrapper, *args, **kwargs)
-    else:
+    if not threaded:
         eventlet.spawn_n(context_wrapper, *args, **kwargs)
+        return
+    executor = _get_executor()
+    if _executor_is_full(executor):
+        LOG.warning('All %d threads of the container operation pool are '
+                    'busy, so %s waits for one. If this keeps happening, '
+                    'operations are stuck or [compute]thread_pool_size is '
+                    'too small for this node.', executor._max_workers,
+                    getattr(func, '__qualname__', func))
+    executor.submit(context_wrapper, *args, **kwargs)
+
+
+def _executor_is_full(executor):
+    # futurist keeps no public count of idle workers; nova reads the same.
+    with executor._shutdown_lock:
+        idle = any(w.idle for w in executor._workers)
+        return not idle and len(executor._workers) >= executor._max_workers
 
 
 def translate_exception(function):

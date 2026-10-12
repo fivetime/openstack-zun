@@ -309,6 +309,35 @@ class TestSpawnN(base.TestCase):
         utils.spawn_n(lambda: None)
         self.assertIs(first, utils._executor)
 
+    def test_threading_does_not_leave_the_context_behind(self):
+        CONF.set_override('thread_pool_size', 1, group='compute')
+        seen = []
+        self.context.update_store()
+        utils.spawn_n(lambda: None)
+        # Same pool thread, a task submitted with no current context.
+        common_context._request_store.context = None
+        utils.spawn_n(lambda: seen.append(common_context.get_current()))
+        self._drop_executor()
+        self.assertEqual([None], seen)
+
+    def test_threading_warns_when_every_thread_is_busy(self):
+        CONF.set_override('thread_pool_size', 1, group='compute')
+        release = threading.Event()
+        started = threading.Event()
+
+        def hold():
+            started.set()
+            release.wait(10)
+
+        with mock.patch.object(utils.LOG, 'warning') as warn:
+            utils.spawn_n(hold)
+            started.wait(10)
+            warn.assert_not_called()
+            utils.spawn_n(lambda: None)
+            release.set()
+        warn.assert_called_once()
+        self.assertIn('busy', warn.call_args.args[0])
+
     @mock.patch('eventlet.spawn_n')
     def test_eventlet_uses_a_green_thread(self, green_spawn):
         utils.monkey_patch.concurrency_mode_threading.return_value = False
