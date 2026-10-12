@@ -12,8 +12,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import threading
+import time
 from unittest import mock
 
+from zun.common import utils
 from zun.compute import claims
 from zun.compute import compute_node_tracker
 from zun import objects
@@ -73,3 +76,42 @@ class TestNodeStracker(base.TestCase):
         self.assertTrue(mock_claim.called)
         self.assertTrue(mock_container_update.called)
         self.assertTrue(mock_update.called)
+
+    @mock.patch.object(compute_node_tracker.ComputeNodeTracker,
+                       '_update_available_resource')
+    @mock.patch.object(compute_node_tracker.ComputeNodeTracker,
+                       '_get_node_rp_uuid', return_value='rp')
+    @mock.patch.object(compute_node_tracker.ComputeNodeTracker,
+                       '_setup_pci_tracker')
+    @mock.patch.object(compute_node_tracker.ComputeNodeTracker,
+                       '_get_compute_node')
+    def test_node_is_not_swapped_under_a_claim(self, get_node, setup_pci,
+                                               rp_uuid, update):
+        # A claim holds the lock and reads self.compute_node more than
+        # once; the periodic task's thread must not replace it meanwhile.
+        rt = self._resource_tracker
+        old, new = mock.Mock(), mock.Mock()
+        rt.compute_node = old
+        get_node.return_value = new
+        inside, release = threading.Event(), threading.Event()
+        seen = []
+
+        @utils.synchronized(compute_node_tracker.COMPUTE_RESOURCE_SEMAPHORE)
+        def claim():
+            inside.set()
+            release.wait(5)
+            seen.append(rt.compute_node)
+
+        holder = threading.Thread(target=claim)
+        holder.start()
+        inside.wait(5)
+        periodic = threading.Thread(
+            target=rt.update_available_resources, args=(self.context,))
+        periodic.start()
+        time.sleep(0.3)     # let the refresh reach the lock
+        release.set()
+        holder.join(5)
+        periodic.join(5)
+
+        self.assertEqual([old], seen)
+        self.assertIs(new, rt.compute_node)

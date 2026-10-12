@@ -58,6 +58,14 @@ class ComputeNodeTracker(object):
             dev_pools_obj = self.pci_tracker.stats.to_device_pools_obj()
             compute_node.pci_device_pools = dev_pools_obj
 
+    @utils.synchronized(COMPUTE_RESOURCE_SEMAPHORE)
+    def _adopt_node(self, context, node):
+        # Under the claims' lock: a claim reads self.compute_node and the
+        # PCI tracker several times over and must see one node throughout,
+        # not have it swapped from the periodic task's thread midway.
+        self._setup_pci_tracker(context, node)
+        self.compute_node = node
+
     def update_available_resources(self, context):
         # TODO(hongbin): get available resources from capsule_driver
         # and aggregates resources
@@ -78,8 +86,7 @@ class ComputeNodeTracker(object):
         else:
             self._copy_resources(node, resources)
         node.rp_uuid = self._get_node_rp_uuid(context, node)
-        self._setup_pci_tracker(context, node)
-        self.compute_node = node
+        self._adopt_node(context, node)
         self._update_available_resource(context)
         # NOTE(sbiswas7): Consider removing the return statement if not needed
         return node
