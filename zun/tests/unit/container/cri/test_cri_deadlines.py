@@ -92,7 +92,11 @@ class DriverStubsAreBoundedTest(base.TestCase):
                                    'load_image_driver'):
                 with mock.patch.object(cri_driver.CONF, 'image_driver_list',
                                        []):
-                    return cri_driver.CriDriver()
+                    driver = cri_driver.CriDriver()
+                    # The stubs are made on first use; make them while
+                    # the channel is still the mock.
+                    driver._connect()
+                    return driver
 
     def test_every_stub_that_runs_on_a_thread_has_deadlines(self):
         driver = self._driver()

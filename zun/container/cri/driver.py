@@ -211,6 +211,15 @@ def _off_hub(stub):
 _FIRST_USE = threading.RLock()
 
 
+# Every stub CriDriver makes on its channel; see CriDriver.__init__ for why
+# they are made on first use.
+_STUBS = ('runtime_stub', 'image_stub', 'task_stub', 'snapshot_stub',
+          'diff_stub', 'content_stub', 'ctrd_image_stub')
+
+# Held while a driver makes its channel, so two first callers make one.
+_CONNECT = threading.Lock()
+
+
 def _found_out_once(method):
     @functools.wraps(method)
     def locked(self):
@@ -553,7 +562,59 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def __init__(self):
         super(CriDriver, self).__init__()
-        channel = grpc.insecure_channel(CONF.cri_containerd_address)
+        # Filled on first use by _runtime_snapshotter().
+        self._snapshotter = None
+        # Filled on first use by _can_limit_host_io()/_io_device().
+        self._host_io_ok = None
+        self._io_dev = None
+        # The gRPC channel and its stubs are made on first use (_connect),
+        # not here. zun-compute builds its manager, and so this driver, in
+        # the parent process and runs it in a worker the service launcher
+        # forks. gRPC's fork support is off (zun.monkey_patch), and with it
+        # off a process that has touched gRPC at all -- made one channel,
+        # without a single call on it -- leaves a forked child that cannot
+        # call: every call there, on that channel or on a new one, waits
+        # forever. Measured against containerd with grpcio 1.83, on the
+        # testbed and in a production pod alike. A compute node whose
+        # container driver is this one hung that way in init_containers,
+        # before its RPC server started; a node using it only for capsules
+        # would have hung the first capsule call.
+        # Fork support stays off: it is what made commands zun runs abort.
+        # Not making the channel until the worker needs it serves both.
+        self.image_drivers = {}
+        # Fetching an image has never depended on which runtime will run it,
+        # so the image drivers are the same ones every other container driver
+        # loads. Only the Container API path uses them; a capsule pulls
+        # through the runtime.
+        for driver_name in CONF.image_driver_list:
+            self.image_drivers[driver_name] = img_driver.load_image_driver(
+                driver_name)
+
+    def __getattr__(self, name):
+        # Reached only for an attribute the instance does not have yet:
+        # a stub before the first call made the channel.
+        if name in _STUBS:
+            self._connect()
+            return self.__dict__[name]
+        raise AttributeError("%r object has no attribute %r"
+                             % (type(self).__name__, name))
+
+    def _connect(self):
+        """Make the channel and the stubs on it, once per driver.
+
+        A stub the instance already has is kept: tests set the ones they
+        mean to watch.
+        """
+        with _CONNECT:
+            if all(stub in self.__dict__ for stub in _STUBS):
+                return
+            kept = {stub: self.__dict__[stub] for stub in _STUBS
+                    if stub in self.__dict__}
+            self._make_stubs(grpc.insecure_channel(
+                CONF.cri_containerd_address))
+            self.__dict__.update(kept)
+
+    def _make_stubs(self, channel):
         # Every call on these stubs runs on a native thread. Under eventlet
         # that takes tpool (on native threads it already does, see
         # _off_hub): a gRPC call blocks in C, and the hub does not
@@ -570,11 +631,6 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # an iterator that blocks the hub on each step, which is the
         # problem again with a different face.
         self.runtime_stub = _off_hub(api_pb2_grpc.RuntimeServiceStub(channel))
-        # Filled on first use by _runtime_snapshotter().
-        self._snapshotter = None
-        # Filled on first use by _can_limit_host_io()/_io_device().
-        self._host_io_ok = None
-        self._io_dev = None
         self.image_stub = _off_hub(api_pb2_grpc.ImageServiceStub(channel))
         # containerd's own task service, on the same socket. The CRI is a view
         # of containerd, not the whole of it: pausing a task and sending it a
@@ -598,14 +654,6 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # because pulling then went looking for a call this stub has not
         # got.
         self.ctrd_image_stub = ctrd_images_pb2_grpc.ImagesStub(channel)
-        # Fetching an image has never depended on which runtime will run it,
-        # so the image drivers are the same ones every other container driver
-        # loads. Only the Container API path uses them; a capsule pulls
-        # through the runtime.
-        self.image_drivers = {}
-        for driver_name in CONF.image_driver_list:
-            self.image_drivers[driver_name] = img_driver.load_image_driver(
-                driver_name)
 
     def create_capsule(self, context, capsule, image, requested_networks,
                        requested_volumes):

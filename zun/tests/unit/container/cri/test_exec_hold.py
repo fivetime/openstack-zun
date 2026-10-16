@@ -169,7 +169,11 @@ class _Mode(object):
                                    'load_image_driver'):
                 with mock.patch.object(cri_driver.CONF, 'image_driver_list',
                                        []):
-                    return cri_driver.CriDriver()
+                    driver = cri_driver.CriDriver()
+                    # The stubs are made on first use; make them while
+                    # the channel is still the mock.
+                    driver._connect()
+                    return driver
 
 
 class OffHubTest(_Mode, base.TestCase):

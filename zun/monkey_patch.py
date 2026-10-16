@@ -48,9 +48,10 @@ def patch():
     # epoll fd went with them, and the child aborted ("Epoll1Poller ...
     # epoll_wait error: Bad file descriptor", exit -6). Measured with
     # busy channels: about one fork in a thousand, every run; none in
-    # nine thousand with fork support off. zun never uses a channel
-    # across a fork, so it needs none of it. An operator's own setting
-    # wins.
+    # nine thousand with fork support off. The cost of it off: a process
+    # that has touched gRPC at all cannot fork a child that calls, so the
+    # CRI driver makes its channel in the worker, on first use (see
+    # CriDriver.__init__). An operator's own setting wins.
     os.environ.setdefault('GRPC_ENABLE_FORK_SUPPORT', 'false')
 
     # NOTE: nothing imported above this point may need patching; the
