@@ -354,6 +354,50 @@ class TestMetrics(base.TestCase):
             _, call = self._sent(_reading(read=read))
             self.assertTrue(call.args[2]['timestamp'].endswith('+00:00'))
 
+    def test_a_cri_reading_time_is_iso8601_utc(self):
+        """The CRI gives nanoseconds since the epoch, not a string."""
+        _, call = self._sent(_reading(read=1792186233123456789))
+        self.assertEqual('2026-10-16T21:30:33.123456+00:00',
+                         call.args[2]['timestamp'])
+
+    def test_no_cri_reading_time_falls_back_to_now(self):
+        _, call = self._sent(_reading(read=0))
+        self.assertTrue(call.args[2]['timestamp'].endswith('+00:00'))
+
+    def test_what_the_cri_driver_samples_is_reported(self):
+        """The CRI driver's own reading, from the runtime's own message.
+
+        Each side was tested with a reading shaped as it expected, and
+        the two expected different shapes: every container.metrics round
+        on a CRI node raised, and the node reported nothing.
+        """
+        from zun.container.cri import driver as cri_driver
+        from zun.criapi import api_pb2
+        driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        driver.runtime_stub = mock.Mock()
+        driver.runtime_stub.ListContainerStats.return_value = (
+            api_pb2.ListContainerStatsResponse(stats=[api_pb2.ContainerStats(
+                attributes=api_pb2.ContainerAttributes(id='c-1'),
+                cpu=api_pb2.CpuUsage(
+                    timestamp=1792186233123456789,
+                    usage_core_nano_seconds=api_pb2.UInt64Value(value=5000)),
+                memory=api_pb2.MemoryUsage(
+                    working_set_bytes=api_pb2.UInt64Value(value=4096)))]))
+        container = FakeContainer()
+        container.container_id = 'c-1'
+        with mock.patch.object(driver, '_sandbox_networks', return_value={}):
+            sample = driver.sample_counters({}, [container])[container.uuid]
+
+        sent, call = self._sent(sample)
+
+        self.assertTrue(sent)
+        payload = call.args[2]
+        self.assertEqual(5000, payload['cpu_time_ns'])
+        self.assertEqual(4096, payload['memory_usage_bytes'])
+        self.assertIsNone(payload['memory_limit_bytes'])
+        self.assertEqual('2026-10-16T21:30:33.123456+00:00',
+                         payload['timestamp'])
+
     def test_no_limit_is_null(self):
         _, call = self._sent(_reading(limit=0))
         self.assertIsNone(call.args[2]['memory_limit_bytes'])

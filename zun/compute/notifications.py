@@ -179,8 +179,16 @@ def _sampled_at(stamp):
     """A runtime's reading time as ISO 8601 UTC, or None if it gave none.
 
     docker gives RFC 3339 with nanoseconds, and the zero time when it has
-    no reading. Microseconds are all a consumer keeps.
+    no reading; the CRI gives nanoseconds since the epoch, and zero when
+    it has none. Microseconds are all a consumer keeps.
     """
+    if isinstance(stamp, int) and not isinstance(stamp, bool):
+        if stamp <= 0:
+            return None
+        seconds, nanos = divmod(stamp, 10 ** 9)
+        moment = datetime.datetime.fromtimestamp(
+            seconds, datetime.timezone.utc).replace(microsecond=nanos // 1000)
+        return moment.isoformat()
     if not stamp or stamp.startswith('0001-01-01'):
         return None
     try:
