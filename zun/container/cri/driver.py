@@ -1317,7 +1317,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             stop=tenacity.stop_after_delay(timeout),
             wait=tenacity.wait_exponential(),
             retry=tenacity.retry_if_result(retry_if_result_is_false))
-        r.call(check_init_container_stopped)
+        # Called, not .call(): tenacity 9 removed Retrying.call.
+        r(check_init_container_stopped)
 
     def _show_container(self, context, container):
         container_id = container.container_id
