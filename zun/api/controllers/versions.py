@@ -111,6 +111,11 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              and show) and are null otherwise; raw stats are read from the
              node when asked, with interval (1-5 s) for two readings that
              far apart. Nothing is kept from reports any more.
+    * 1.56 - Add GET /v1/hosts/{host}/stats: a reading of every container,
+             capsule and (asked for) capsule container on a host in one
+             call, with owner, allocation and type; a capsule container
+             names its capsule and says its allocation is counted there.
+             Policy host:stats, admin or the service role.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -123,7 +128,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.55'
+CURRENT_MAX_VER = '1.56'
 
 
 class Version(object):

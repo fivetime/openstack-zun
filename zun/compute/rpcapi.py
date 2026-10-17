@@ -64,6 +64,8 @@ class API(rpc_service.API):
         * 1.2 - Add container_sample and container_sizes: readings and
                 writable-layer sizes taken when asked, for many containers
                 of one host in one call.
+        * 1.3 - Add host_sample: a reading of every object of the asked
+                types on one host.
     """
 
     def __init__(self, context=None, topic=None):
@@ -203,6 +205,13 @@ class API(rpc_service.API):
             host, 'container_sample',
             zun.conf.CONF.compute.stats_rpc_timeout + int(interval or 0),
             containers=containers, interval=interval)
+
+    def host_sample(self, context, host, types=None, label=None,
+                    interval=0):
+        return self._call_bounded(
+            host, 'host_sample',
+            zun.conf.CONF.compute.stats_rpc_timeout + int(interval or 0),
+            types=types, label=label, interval=interval)
 
     def container_sizes(self, context, host, containers):
         return self._call_bounded(

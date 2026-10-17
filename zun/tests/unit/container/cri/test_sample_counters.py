@@ -169,3 +169,68 @@ class SandboxNetworksTest(base.TestCase):
             cri_driver.grpc.RpcError()
 
         self.assertEqual({}, self.driver._sandbox_networks())
+
+
+class SampleCapsulesTest(base.TestCase):
+    """A capsule is read as a whole, from its sandbox's own account."""
+
+    def setUp(self):
+        super(SampleCapsulesTest, self).setUp()
+        self.driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        self.driver.runtime_stub = mock.Mock()
+
+    def _sandbox(self, pod_id, cpu=True):
+        from zun.criapi import api_pb2
+        linux = api_pb2.LinuxPodSandboxStats(
+            memory=api_pb2.MemoryUsage(
+                working_set_bytes=api_pb2.UInt64Value(value=8192)),
+            network=api_pb2.NetworkUsage(
+                default_interface=api_pb2.NetworkInterfaceUsage(
+                    name='eth0',
+                    rx_bytes=api_pb2.UInt64Value(value=11),
+                    tx_bytes=api_pb2.UInt64Value(value=22))))
+        if cpu:
+            linux.cpu.CopyFrom(api_pb2.CpuUsage(
+                timestamp=1792186233123456789,
+                usage_core_nano_seconds=api_pb2.UInt64Value(value=777)))
+        return api_pb2.PodSandboxStats(
+            attributes=api_pb2.PodSandboxAttributes(id=pod_id), linux=linux)
+
+    def _sample(self, sandboxes, capsules):
+        from zun.criapi import api_pb2
+        self.driver.runtime_stub.ListPodSandboxStats.return_value = (
+            api_pb2.ListPodSandboxStatsResponse(stats=sandboxes))
+        return self.driver.sample_capsules({}, capsules)
+
+    def test_the_sandbox_figures_are_the_capsules(self):
+        found = self._sample([self._sandbox('pod-1')],
+                             [mock.Mock(uuid='cap-1', container_id='pod-1')])
+
+        reading = found['cap-1']
+        self.assertEqual(777, reading['cpu']['total_ns'])
+        self.assertEqual(8192, reading['memory']['usage'])
+        self.assertEqual({'rx_bytes': 11, 'tx_bytes': 22,
+                          'rx_packets': None, 'tx_packets': None},
+                         reading['networks']['eth0'])
+        self.assertEqual('2026-10-16T21:30:33.123456+00:00',
+                         reading['timestamp'])
+
+    def test_one_call_for_every_capsule_on_the_host(self):
+        self._sample([self._sandbox('pod-1'), self._sandbox('pod-2')],
+                     [mock.Mock(uuid='a', container_id='pod-1'),
+                      mock.Mock(uuid='b', container_id='pod-2')])
+
+        self.assertEqual(
+            1, self.driver.runtime_stub.ListPodSandboxStats.call_count)
+
+    def test_a_sandbox_without_accounting_is_absent_not_zero(self):
+        found = self._sample([self._sandbox('pod-1', cpu=False)],
+                             [mock.Mock(uuid='cap-1', container_id='pod-1')])
+
+        self.assertEqual({}, found)
+
+    def test_a_sandbox_zun_does_not_own_is_ignored(self):
+        found = self._sample([self._sandbox('someone-elses')],
+                             [mock.Mock(uuid='cap-1', container_id='pod-1')])
+
+        self.assertEqual({}, found)

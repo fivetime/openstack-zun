@@ -288,6 +288,12 @@ class API(object):
                 context, host, members, **kw),
             _by_host(containers), interval=interval)
 
+    def host_sample(self, context, host, types=None, label=None,
+                    interval=0):
+        """Every object of these types on one host, read now."""
+        return self.rpcapi.host_sample(context, host, types=types,
+                                       label=label, interval=interval)
+
     def container_sizes(self, context, containers):
         """Writable-layer sizes of these containers, measured now."""
         return self._fan_out(

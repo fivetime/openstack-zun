@@ -38,7 +38,21 @@ rules = [
                 'method': 'GET'
             }
         ]
-    )
+    ),
+    policy.DocumentedRuleDefault(
+        name=HOST % 'stats',
+        check_str=base.RULE_ADMIN_OR_SERVICE,
+        description='Read every container and capsule on a compute host '
+                    'at once (for a metering collector). An administrator '
+                    'or a service; a collector needs only the service '
+                    'role, not admin.',
+        operations=[
+            {
+                'path': '/v1/hosts/{host_ident}/stats',
+                'method': 'GET'
+            }
+        ]
+    ),
 ]
 
 

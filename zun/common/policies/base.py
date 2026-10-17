@@ -15,6 +15,9 @@ from oslo_policy import policy
 ROLE_ADMIN = 'role:admin'
 RULE_ADMIN_OR_OWNER = 'is_admin:True or project_id:%(project_id)s'
 RULE_ADMIN_API = 'rule:context_is_admin'
+ROLE_SERVICE = 'role:service'
+RULE_SERVICE_API = 'rule:service_api'
+RULE_ADMIN_OR_SERVICE = 'rule:context_is_admin or rule:service_api'
 RULE_DENY_EVERYBODY = 'rule:deny_everybody'
 
 rules = [
@@ -30,6 +33,11 @@ rules = [
         name='admin_api',
         check_str=RULE_ADMIN_API
     ),
+    policy.RuleDefault(
+        name='service_api',
+        check_str=ROLE_SERVICE,
+        description='A service calling another on behalf of the cloud, '
+                    'such as a metering collector.'),
     policy.RuleDefault(
         name="deny_everybody",
         check_str="!",

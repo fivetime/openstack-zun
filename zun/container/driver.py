@@ -607,6 +607,17 @@ class ContainerDriver(object):
         """
         raise NotImplementedError()
 
+    def sample_capsules(self, context, capsules):
+        """One reading per capsule as a whole, by uuid.
+
+        The capsule's own account -- its sandbox -- rather than a sum of
+        its containers: a sandbox holds more than its containers do (the
+        pause process, the network namespace), and its figures are what a
+        capsule as one billable thing used. Taken when asked; a capsule
+        the runtime will not answer about is absent, never zeroed.
+        """
+        return {}
+
     def sample_counters(self, context, containers):
         """One cheap reading per container, for the whole host at once.
 

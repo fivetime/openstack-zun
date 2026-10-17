@@ -1524,6 +1524,146 @@ class Manager(periodic_task.PeriodicTasks):
         return {uuid: {'current': reading, 'previous': first.get(uuid)}
                 for uuid, reading in second.items()}
 
+    #: The kinds of object host_sample can read, as a caller names them.
+    SAMPLE_TYPES = ('container', 'capsule', 'capsule_container')
+
+    @staticmethod
+    def _labelled(obj, label):
+        """Whether `obj` carries `label` (`key` or `key=value`)."""
+        if not label:
+            return True
+        key, _, value = label.partition('=')
+        labels = obj.labels or {}
+        return key in labels and (not value or labels[key] == value)
+
+    @staticmethod
+    def _memory_mb(value):
+        """A container's memory as whole MiB; its record keeps a string."""
+        text = str(value or '').strip().upper().rstrip('B')
+        if not text:
+            return None
+        scale = {'K': 1.0 / 1024, 'M': 1, 'G': 1024, 'T': 1024 * 1024}
+        unit = text[-1] if text[-1] in scale else 'M'
+        number = text[:-1] if text[-1] in scale else text
+        try:
+            return int(float(number) * scale[unit])
+        except ValueError:
+            return None
+
+    def _describe(self, obj, container_type, capsule=None):
+        """What a reader needs beside the reading: who, where, how much.
+
+        The allocation is what the record holds -- what was asked for and
+        held for it -- not what it used, which is the reading. A capsule's
+        allocation is worked out as k8s does (the larger of its containers'
+        sum and each init container) so it is not the sum of its children;
+        a child says that its allocation is counted in its parent's, so a
+        reader adding things up can leave it out.
+        """
+        entry = {
+            'uuid': obj.uuid,
+            'container_type': container_type,
+            'name': obj.name,
+            'project_id': obj.project_id,
+            'user_id': obj.user_id,
+            'host': self.host,
+            'image': obj.image,
+            'runtime': obj.runtime,
+            'status': obj.status,
+            'started_at': (obj.started_at.isoformat()
+                           if getattr(obj, 'started_at', None) else None),
+            'allocation': {'cpu': obj.cpu,
+                           'memory_mb': self._memory_mb(obj.memory),
+                           'disk_gb': obj.disk},
+            # metering.* only: the convention a caller tags what it wants
+            # carried into metering by; everything else stays private.
+            'labels': {k: v for k, v in (obj.labels or {}).items()
+                       if k.startswith('metering.')},
+        }
+        if container_type == 'capsule':
+            entry['children'] = [c.uuid for c in
+                                 list(obj.containers) +
+                                 list(obj.init_containers)]
+            entry['allocation_basis'] = (
+                'max(sum(containers), max(init_containers))')
+        if capsule is not None:
+            entry['capsule_uuid'] = capsule.uuid
+            entry['allocation_included_in_parent'] = True
+        return entry
+
+    def _sample_kinds(self, context, kinds):
+        readings = {}
+        if kinds.get('container'):
+            readings.update(self.driver.sample_counters(
+                context, kinds['container']))
+        if kinds.get('capsule'):
+            readings.update(self.capsule_driver.sample_capsules(
+                context, kinds['capsule']))
+        if kinds.get('capsule_container'):
+            readings.update(self.capsule_driver.sample_counters(
+                context, kinds['capsule_container']))
+        return readings
+
+    @translate_exception
+    def host_sample(self, context, types=None, label=None, interval=0):
+        """A reading of every object of these types on this host.
+
+        For a collector polling the whole host in one call, never on a
+        schedule of zun's own. Only the types asked for are read: a caller
+        that wants capsules alone does not cost the node a reading of
+        every container inside them. `label` narrows it further to what is
+        tagged for it (a collector polling a fine interval only for what
+        autoscales, for instance).
+
+        Answers {'results': [entry + 'reading' + 'previous'],
+        'unavailable': [{'uuid', 'container_type', 'reason'}]}.
+        """
+        types = [t for t in (types or ('container', 'capsule'))
+                 if t in self.SAMPLE_TYPES]
+        interval = max(0, min(int(interval or 0), self.MAX_SAMPLE_INTERVAL))
+        kinds, described = {}, {}
+        if 'container' in types and isinstance(
+                self.driver, driver_module.ContainerDriver):
+            for c in objects.Container.list_by_host(context, self.host):
+                if self._labelled(c, label):
+                    kinds.setdefault('container', []).append(c)
+                    described[c.uuid] = self._describe(c, 'container')
+        if 'capsule' in types or 'capsule_container' in types:
+            for cap in objects.Capsule.list_by_host(context, self.host):
+                if not self._labelled(cap, label):
+                    continue
+                if 'capsule' in types:
+                    kinds.setdefault('capsule', []).append(cap)
+                    described[cap.uuid] = self._describe(cap, 'capsule')
+                if 'capsule_container' in types:
+                    for child, kind in (
+                            [(c, 'capsule_container')
+                             for c in cap.containers] +
+                            [(c, 'capsule_init_container')
+                             for c in cap.init_containers]):
+                        kinds.setdefault('capsule_container', []).append(
+                            child)
+                        described[child.uuid] = self._describe(
+                            child, kind, capsule=cap)
+        first = self._sample_kinds(context, kinds)
+        second = None
+        if interval:
+            time.sleep(interval)
+            second = self._sample_kinds(context, kinds)
+        results, unavailable = [], []
+        for uuid, entry in described.items():
+            current = (second if second is not None else first).get(uuid)
+            if not current:
+                unavailable.append({'uuid': uuid,
+                                    'container_type':
+                                        entry['container_type'],
+                                    'reason': 'the runtime gave no reading'})
+                continue
+            entry['reading'] = current
+            entry['previous'] = first.get(uuid) if second is not None else None
+            results.append(entry)
+        return {'results': results, 'unavailable': unavailable}
+
     @translate_exception
     def container_sizes(self, context, containers):
         """Each container's writable layer, measured now, by uuid.

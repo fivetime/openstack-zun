@@ -1,0 +1,20 @@
+---
+features:
+  - |
+    API 1.56: ``GET /v1/hosts/{host}/stats`` reads every container and
+    capsule on one compute host in one call, for a metering collector
+    that polls hosts rather than containers. ``type`` chooses what is
+    read (``container``, ``capsule``, ``capsule_container``; default
+    ``container,capsule``), ``label`` narrows it to objects carrying a
+    label, and ``interval`` returns two readings that many seconds apart.
+    Each object carries its owner, allocation and type; a capsule is read
+    as a whole from its sandbox and lists its containers; a capsule's
+    container names its capsule and says its allocation is counted there
+    (a capsule's allocation follows k8s and is not the sum of its
+    containers). Only labels prefixed ``metering.`` are returned. zun
+    keeps no schedule of its own: how often a host is read is up to the
+    caller.
+  - |
+    New policy rule ``service_api`` (``role:service``). ``host:stats``
+    defaults to an administrator or the service role, so a metering
+    collector needs only the service role.

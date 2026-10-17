@@ -3391,6 +3391,46 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 'cpu_ns': st.cpu.usage_core_nano_seconds.value,
                 'memory': st.memory.working_set_bytes.value}
 
+    def sample_capsules(self, context, capsules):
+        wanted = {c.container_id: c.uuid for c in capsules if c.container_id}
+        if not wanted:
+            return {}
+        try:
+            sandboxes = self.runtime_stub.ListPodSandboxStats(
+                api_pb2.ListPodSandboxStatsRequest()).stats
+        except grpc.RpcError as exc:
+            LOG.warning('Could not sample the capsules on this host: %s',
+                        exc)
+            return {}
+        found = {}
+        for sandbox in sandboxes:
+            uuid = wanted.get(sandbox.attributes.id)
+            if uuid is None:
+                continue
+            linux = sandbox.linux
+            if not linux.HasField('cpu'):
+                # A sandbox the runtime has no accounting for yet.
+                continue
+            reading = {
+                'timestamp': driver.reading_time(linux.cpu.timestamp),
+                'cpu': {'total_ns': linux.cpu.usage_core_nano_seconds.value,
+                        'system_ns': None,
+                        'online_cpus': os.cpu_count()},
+                'memory': {'usage': linux.memory.working_set_bytes.value,
+                           'limit': None,
+                           'cache': None},
+            }
+            network = linux.network
+            if network.HasField('default_interface'):
+                interface = network.default_interface
+                reading['networks'] = {interface.name or 'eth0': {
+                    'rx_bytes': interface.rx_bytes.value,
+                    'tx_bytes': interface.tx_bytes.value,
+                    'rx_packets': None,
+                    'tx_packets': None}}
+            found[uuid] = reading
+        return found
+
     def sample_counters(self, context, containers):
         """One reading for every container asked about, in two calls.
 
