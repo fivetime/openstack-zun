@@ -1,0 +1,16 @@
+---
+features:
+  - |
+    Changing a container's ``cpu``, ``memory`` or ``swap`` sends
+    ``container.resize.start``, ``.end`` and ``.error``, as nova does for
+    a resize: the start carries what was held before and the end what is
+    held after. A consumer can then follow what a container holds from
+    the lifecycle's ``.end`` events alone; ``container.update``, which is
+    also sent for a record not yet placed and for one that failed to
+    start, is not needed for it.
+fixes:
+  - |
+    A capsule's ``started_at`` is now set when it is created. A capsule
+    never goes through start, the only place that set it, so it was
+    always null in its notifications and host readings, and its lifetime
+    could not be worked out from them.

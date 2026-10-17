@@ -1312,6 +1312,16 @@ class Manager(periodic_task.PeriodicTasks):
 
     @translate_exception
     def container_update(self, context, container, patch):
+        # Only a change of cpu, memory or swap reaches a compute node, so
+        # this is a resize: nova's resize.start/end, the one operation that
+        # changes what a container costs while it lives. A meter reading
+        # allocation from the lifecycle then needs no state-change update,
+        # which also fires for a record not yet placed or never started.
+        with notifications.lifecycle(context, container, 'resize',
+                                     host=self.host):
+            return self._do_container_update(context, container, patch)
+
+    def _do_container_update(self, context, container, patch):
         LOG.debug('Updating a container: %s', container.uuid)
         old_container = container.obj_clone()
         # Update only the fields that have changed

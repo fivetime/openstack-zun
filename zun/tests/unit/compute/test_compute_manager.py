@@ -1282,6 +1282,42 @@ class TestManager(base.TestCase):
         mock_save.assert_called_with(self.context)
         mock_update.assert_called_once_with(self.context, container)
 
+    @mock.patch('zun.compute.notifications.rpc.get_notifier')
+    @mock.patch.object(Container, 'save')
+    @mock.patch.object(fake_driver, 'update')
+    def test_container_update_is_a_resize_lifecycle(self, mock_update,
+                                                    mock_save, get_notifier):
+        """What was held before and after, the way nova tells a resize."""
+        container = Container(self.context,
+                              **utils.get_test_container(memory='256'))
+        sent = []
+        get_notifier.return_value.info.side_effect = (
+            lambda ctxt, event_type, payload:
+            sent.append((event_type, payload['memory'])))
+
+        self.compute_manager.container_update(self.context, container,
+                                              {'memory': '512'})
+
+        self.assertEqual([('container.resize.start', '256'),
+                          ('container.resize.end', '512')], sent)
+
+    @mock.patch('zun.compute.notifications.rpc.get_notifier')
+    @mock.patch.object(fake_driver, 'update')
+    def test_a_resize_that_failed_says_so(self, mock_update, get_notifier):
+        container = Container(self.context, **utils.get_test_container())
+        mock_update.side_effect = exception.DockerError
+
+        self.assertRaises(exception.DockerError,
+                          self.compute_manager.container_update,
+                          self.context, container, {})
+
+        info = [c.args[1] for c in get_notifier.return_value.info.mock_calls
+                if c.args]
+        self.assertNotIn('container.resize.end', info)
+        self.assertEqual(
+            'container.resize.error',
+            get_notifier.return_value.error.call_args.args[1])
+
     @mock.patch.object(fake_driver, 'update')
     def test_container_update_failed(self, mock_update):
         container = Container(self.context, **utils.get_test_container())
