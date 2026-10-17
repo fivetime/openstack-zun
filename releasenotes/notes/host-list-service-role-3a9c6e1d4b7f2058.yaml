@@ -1,0 +1,6 @@
+---
+upgrade:
+  - |
+    ``host:get_all`` now defaults to an administrator or the service role,
+    like ``host:stats``: a metering collector lists the hosts it polls,
+    and holds the service role rather than admin.

@@ -193,3 +193,12 @@ class TestHostStatsDefaultPolicy(api_base.FunctionalTest):
 
     def test_a_tenant_may_not(self):
         self.assertFalse(self._allowed(['member', 'reader']))
+
+    def test_a_collector_may_list_the_hosts_it_polls(self):
+        from zun.common import context as zun_context
+        from zun.common import policy
+        ctx = zun_context.RequestContext(user_id='u', project_id='p',
+                                         roles=['service'])
+        self.assertTrue(policy.enforce(ctx, 'host:get_all',
+                                       action='host:get_all',
+                                       do_raise=False))

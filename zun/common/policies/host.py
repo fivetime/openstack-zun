@@ -19,7 +19,9 @@ HOST = 'host:%s'
 rules = [
     policy.DocumentedRuleDefault(
         name=HOST % 'get_all',
-        check_str=base.RULE_ADMIN_API,
+        # A metering collector lists hosts to poll each one; it holds the
+        # service role, not admin.
+        check_str=base.RULE_ADMIN_OR_SERVICE,
         description='List all compute hosts.',
         operations=[
             {
