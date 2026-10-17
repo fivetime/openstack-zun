@@ -757,13 +757,17 @@ class Manager(periodic_task.PeriodicTasks):
         def do_container_delete():
             if not self._caught_up(container):
                 return
-            self._do_container_delete(context, container, force)
+            last, children = self._do_container_delete(
+                context, container, force)
             # Sent from here rather than inside, because the delete runs in
             # a spawned thread and its caller has already returned: without
             # an end from the thread that did the work, a consumer never
             # learns the container finally went away.
-            notifications.notify(context, container, 'delete', 'end',
-                                 host=self.host)
+            notifications.notify(
+                context, container, 'delete', 'end', host=self.host,
+                extra={'last_reading': last} if last else None,
+                children_extra={uuid: {'last_reading': reading}
+                                for uuid, reading in children.items()})
 
         utils.spawn_n(do_container_delete)
 
@@ -774,6 +778,11 @@ class Manager(periodic_task.PeriodicTasks):
         # the container stopped costing.
         notifications.notify(context, container, 'delete', 'start',
                              host=self.host)
+        # Before the work: once the runtime has removed it there is
+        # nothing left to read, and a container gone between two polls
+        # would otherwise never account for what it used.
+        last = self._last_reading(context, container)
+        children = self._last_readings_of_children(context, container)
         with self._update_task_state(context, container,
                                      consts.CONTAINER_DELETING):
             reraise = not force
@@ -808,6 +817,42 @@ class Manager(periodic_task.PeriodicTasks):
         # delete_allocation_for_instance doesn't raise and therefore
         # allocation is successfully deleted in placement
         container.destroy(context)
+        return last, children
+
+    def _last_reading(self, context, container):
+        """What the runtime says this used, read just before it goes.
+
+        Only when a notification would carry it: reading the runtime is
+        work a deployment that does not listen should not pay for.
+        Never raises -- a reading that cannot be had is left out, and the
+        operation goes on.
+        """
+        if not notifications.enabled():
+            return None
+        try:
+            if isinstance(container, objects.Capsule):
+                found = self.capsule_driver.sample_capsules(context,
+                                                            [container])
+            else:
+                found = self.driver.sample_counters(context, [container])
+        except Exception as exc:                            # noqa: BLE001
+            LOG.debug('no last reading of %s: %s', container.uuid, exc)
+            return None
+        return found.get(container.uuid)
+
+    def _last_readings_of_children(self, context, container):
+        if (not isinstance(container, objects.Capsule) or
+                not notifications.enabled()):
+            return {}
+        children = (list(container.containers or []) +
+                    list(container.init_containers or []))
+        if not children:
+            return {}
+        try:
+            return self.capsule_driver.sample_counters(context, children)
+        except Exception as exc:                            # noqa: BLE001
+            LOG.debug('no last readings in %s: %s', container.uuid, exc)
+            return {}
 
     def add_security_group(self, context, container, security_group):
         @utils.synchronized(container.uuid)
@@ -924,8 +969,11 @@ class Manager(periodic_task.PeriodicTasks):
                           finish_action=container_actions.STOP)
     def _do_container_stop(self, context, container, timeout, signal=None):
         LOG.debug('Stopping container: %s', container.uuid)
-        with notifications.lifecycle(context, container, 'stop',
-                                     host=self.host), \
+        # Read before stopping: a stopped container's counters are gone.
+        last = self._last_reading(context, container)
+        with notifications.lifecycle(
+                context, container, 'stop', host=self.host,
+                end_extra={'last_reading': last} if last else None), \
                 self._update_task_state(context, container,
                                         consts.CONTAINER_STOPPING):
             # NOTE(hongbin): capsule shouldn't reach here

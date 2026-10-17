@@ -1,0 +1,26 @@
+---
+features:
+  - |
+    Lifecycle notifications (payload version 2.0) tell the three kinds of
+    object apart by prefix: ``container.*`` for a container,
+    ``capsule.*`` for a capsule and ``capsule.container.*`` for a
+    capsule's container (init containers included), so a consumer can
+    account for each on its own without counting one twice. Every payload
+    carries ``container_type``, ``runtime`` and ``occurred_at`` (when it
+    happened, ISO 8601 UTC -- a sample timestamped with it is the same
+    however often the message is delivered). A capsule lists its
+    ``children`` and its ``allocation_basis`` (its allocation follows k8s
+    and is not the sum of its containers); a capsule's container names
+    its ``capsule_uuid`` and says ``allocation_included_in_parent``. A
+    capsule's create and delete end also announce each of its containers.
+    Stop and delete end carry ``last_reading``, read from the runtime
+    just before the work, so a container gone between two polls still
+    accounts for what it used.
+upgrade:
+  - |
+    Capsule events, formerly ``container.*``, are now ``capsule.*``, and
+    ``container.update`` for a capsule is ``capsule.update``. Record
+    times in payloads are ISO 8601 UTC.
+  - |
+    When no notification driver is configured, zun builds no payload and
+    reads nothing from the runtime for one.

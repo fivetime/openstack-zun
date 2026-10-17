@@ -142,7 +142,7 @@ class Connection(object):
     def _add_containers_filters(self, query, filters):
         filter_names = ['name', 'image', 'project_id', 'user_id',
                         'memory', 'host', 'task_state', 'status',
-                        'auto_remove', 'uuid', 'capsule_id']
+                        'auto_remove', 'uuid', 'capsule_id', 'id']
 
         return self._add_filters(query, models.Container, filters=filters,
                                  filter_names=filter_names)

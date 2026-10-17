@@ -60,13 +60,15 @@ def init(conf):
 
 
 def get_notifier(service=None, host=None, publisher_id=None):
-    """A notifier for one service, or None before init().
+    """A notifier for one service, or None when nothing would be sent.
 
-    Returns None rather than raising when notifications were never set up:
-    a container should still be created on a deployment that does not
-    listen for the fact.
+    None before init(), and None when no notification driver is
+    configured -- oslo.messaging's default. A caller holding None builds
+    no payload and reads nothing to put in one: a deployment that does not
+    listen pays nothing for being told. A container is still created on a
+    deployment that does not listen for the fact.
     """
-    if NOTIFIER is None:
+    if NOTIFIER is None or not NOTIFIER.is_enabled():
         return None
     if publisher_id is None:
         publisher_id = '%s.%s' % (service or 'zun', host or CONF.host)

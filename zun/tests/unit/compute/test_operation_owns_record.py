@@ -104,7 +104,8 @@ class QueuedOperationCatchesUpTest(_ManagerTest):
                                side_effect=lambda f: f()), \
                 mock.patch.object(self.manager, '_do_container_delete',
                                   side_effect=lambda ctx, c, force:
-                                  ran.append(c.container_id)), \
+                                  ran.append(c.container_id) or
+                                  (None, {})), \
                 mock.patch.object(manager.notifications, 'notify'):
             self.manager.container_delete(self.context, self.container,
                                           force=True)
