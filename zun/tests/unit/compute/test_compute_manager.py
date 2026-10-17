@@ -798,6 +798,8 @@ class TestManager(base.TestCase):
             container=capsule,
             limits=None, run=True)
         mock_save.assert_called_with(self.context)
+        # Created is started for a capsule: nothing else stamps it.
+        self.assertIsNotNone(capsule.started_at)
         mock_pull.assert_any_call(self.context, capsule.image, '',
                                   'always', 'glance', registry=None)
         mock_create.assert_called_once_with(self.context, capsule, image,

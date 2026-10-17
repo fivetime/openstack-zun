@@ -538,6 +538,12 @@ class Manager(periodic_task.PeriodicTasks):
                     container = self.capsule_driver.create_capsule(
                         context, container, image, requested_networks,
                         requested_volumes)
+                    # A capsule is started by being created and never goes
+                    # through start(), which is what stamps a container; left
+                    # unset, its payloads and readings said it never started
+                    # and its lifetime could not be worked out.
+                    if container.status == consts.RUNNING:
+                        container.started_at = timeutils.utcnow()
                 elif isinstance(container, objects.Container):
                     container = self.driver.create(context, container, image,
                                                    requested_networks,
