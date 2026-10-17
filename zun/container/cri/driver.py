@@ -220,6 +220,31 @@ _STUBS = ('runtime_stub', 'image_stub', 'task_stub', 'snapshot_stub',
 _CONNECT = threading.Lock()
 
 
+def _sandbox_or_containers(linux, group, field, accounted):
+    """A sandbox's figure, or its containers' sum where it keeps none.
+
+    A sandbox normally accounts for everything in it. Some runtimes keep
+    no account at that level and say so with zeros -- Kata's sandbox, read
+    through containerd, reports every memory field as 0 (usage, available
+    and working set together) while each container in it reports its own,
+    and a running sandbox cannot have used nothing with nothing to spare.
+    There the containers' figures are summed, and the reading says so.
+    Neither level answering leaves the figure out rather than zero.
+
+    Answers (value, 'sandbox' | 'containers') or (None, None).
+    """
+    if linux.HasField(group):
+        own = getattr(linux, group)
+        if any(getattr(own, f).value for f in accounted):
+            return getattr(own, field).value, 'sandbox'
+    values = [getattr(getattr(c, group), field).value
+              for c in linux.containers
+              if c.HasField(group) and getattr(c, group).HasField(field)]
+    if not values:
+        return None, None
+    return sum(values), 'containers'
+
+
 def _found_out_once(method):
     @functools.wraps(method)
     def locked(self):
@@ -3408,18 +3433,27 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             if uuid is None:
                 continue
             linux = sandbox.linux
-            if not linux.HasField('cpu'):
+            cpu_ns, cpu_basis = _sandbox_or_containers(
+                linux, 'cpu', 'usage_core_nano_seconds',
+                ('usage_core_nano_seconds',))
+            if cpu_ns is None:
                 # A sandbox the runtime has no accounting for yet.
                 continue
+            stamp = (linux.cpu.timestamp if linux.HasField('cpu')
+                     else linux.containers[0].cpu.timestamp)
             reading = {
-                'timestamp': driver.reading_time(linux.cpu.timestamp),
-                'cpu': {'total_ns': linux.cpu.usage_core_nano_seconds.value,
+                'timestamp': driver.reading_time(stamp),
+                'cpu': {'total_ns': cpu_ns,
                         'system_ns': None,
-                        'online_cpus': os.cpu_count()},
-                'memory': {'usage': linux.memory.working_set_bytes.value,
-                           'limit': None,
-                           'cache': None},
+                        'online_cpus': os.cpu_count(),
+                        'basis': cpu_basis},
             }
+            memory, memory_basis = _sandbox_or_containers(
+                linux, 'memory', 'working_set_bytes',
+                ('working_set_bytes', 'available_bytes', 'usage_bytes'))
+            if memory is not None:
+                reading['memory'] = {'usage': memory, 'limit': None,
+                                     'cache': None, 'basis': memory_basis}
             network = linux.network
             if network.HasField('default_interface'):
                 interface = network.default_interface

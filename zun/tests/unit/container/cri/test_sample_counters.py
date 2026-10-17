@@ -234,3 +234,79 @@ class SampleCapsulesTest(base.TestCase):
                              [mock.Mock(uuid='cap-1', container_id='pod-1')])
 
         self.assertEqual({}, found)
+
+
+class SandboxWithoutItsOwnAccountTest(base.TestCase):
+    """Kata's sandbox through containerd: zeros at the sandbox level.
+
+    Measured on the testbed: a running capsule's sandbox reported usage,
+    available and working set all 0 while its one container reported a
+    working set of 12640256 bytes. Zero would claim the capsule used no
+    memory; the containers' sum is what it used.
+    """
+
+    def setUp(self):
+        super(SandboxWithoutItsOwnAccountTest, self).setUp()
+        self.driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        self.driver.runtime_stub = mock.Mock()
+
+    def _sample(self, linux):
+        from zun.criapi import api_pb2
+        self.driver.runtime_stub.ListPodSandboxStats.return_value = (
+            api_pb2.ListPodSandboxStatsResponse(stats=[
+                api_pb2.PodSandboxStats(
+                    attributes=api_pb2.PodSandboxAttributes(id='pod-1'),
+                    linux=linux)]))
+        return self.driver.sample_capsules(
+            {}, [mock.Mock(uuid='cap-1', container_id='pod-1')])
+
+    def _linux(self, pod_memory=0, container_memory=(12640256,),
+               pod_cpu=776113291000, container_cpu=()):
+        from zun.criapi import api_pb2
+        u = api_pb2.UInt64Value
+        linux = api_pb2.LinuxPodSandboxStats(
+            memory=api_pb2.MemoryUsage(
+                timestamp=1792225873001764752,
+                working_set_bytes=u(value=pod_memory),
+                available_bytes=u(value=0), usage_bytes=u(value=0)))
+        if pod_cpu is not None:
+            linux.cpu.CopyFrom(api_pb2.CpuUsage(
+                timestamp=1792225873001764752,
+                usage_core_nano_seconds=u(value=pod_cpu)))
+        for i, mem in enumerate(container_memory):
+            stats = linux.containers.add()
+            stats.memory.CopyFrom(api_pb2.MemoryUsage(
+                working_set_bytes=u(value=mem)))
+            if i < len(container_cpu):
+                stats.cpu.CopyFrom(api_pb2.CpuUsage(
+                    timestamp=1792225873001764752,
+                    usage_core_nano_seconds=u(value=container_cpu[i])))
+        return linux
+
+    def test_the_containers_stand_in_and_say_so(self):
+        reading = self._sample(self._linux(
+            container_memory=(12640256, 1000)))['cap-1']
+
+        self.assertEqual(12641256, reading['memory']['usage'])
+        self.assertEqual('containers', reading['memory']['basis'])
+        self.assertEqual(776113291000, reading['cpu']['total_ns'])
+        self.assertEqual('sandbox', reading['cpu']['basis'])
+
+    def test_a_sandbox_that_keeps_its_own_account_is_used(self):
+        reading = self._sample(self._linux(pod_memory=50000000))['cap-1']
+
+        self.assertEqual(50000000, reading['memory']['usage'])
+        self.assertEqual('sandbox', reading['memory']['basis'])
+
+    def test_no_account_anywhere_is_no_figure_not_zero(self):
+        reading = self._sample(self._linux(container_memory=()))['cap-1']
+
+        self.assertNotIn('memory', reading)
+
+    def test_cpu_from_the_containers_when_the_sandbox_has_none(self):
+        reading = self._sample(self._linux(
+            pod_cpu=None, container_memory=(1, 2),
+            container_cpu=(100, 50)))['cap-1']
+
+        self.assertEqual(150, reading['cpu']['total_ns'])
+        self.assertEqual('containers', reading['cpu']['basis'])
