@@ -76,6 +76,15 @@ class SampleCountersTest(base.TestCase):
         self.assertEqual('2026-10-16T21:30:33.123456+00:00',
                          found['u-2']['timestamp'])
 
+    def test_a_stopped_container_is_not_a_reading(self):
+        """The CRI answers a stopped one with zeros and no time."""
+        stats = [_stat('c-1'), _stat('c-2')]
+        stats[0].cpu.timestamp = 0
+
+        found = self._sample(stats=stats)
+
+        self.assertEqual({'u-2'}, set(found))
+
     def test_the_runtimes_own_message_is_read(self):
         """From the CRI's real protobuf, not a hand-made shape."""
         from zun.criapi import api_pb2
@@ -302,6 +311,12 @@ class SandboxWithoutItsOwnAccountTest(base.TestCase):
         reading = self._sample(self._linux(container_memory=()))['cap-1']
 
         self.assertNotIn('memory', reading)
+
+    def test_a_stopped_sandbox_is_not_a_reading(self):
+        linux = self._linux(pod_memory=0, container_memory=())
+        linux.cpu.timestamp = 0
+
+        self.assertEqual({}, self._sample(linux))
 
     def test_cpu_from_the_containers_when_the_sandbox_has_none(self):
         reading = self._sample(self._linux(

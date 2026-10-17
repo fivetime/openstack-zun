@@ -147,3 +147,17 @@ class SampleCountersTest(base.TestCase):
 
     def test_a_host_with_nothing_on_it_asks_nothing(self):
         self.assertEqual({}, self._sample({}))
+
+    def test_a_stopped_container_is_not_a_reading(self):
+        """docker answers a stopped one with zeros and its zero time.
+
+        Taken as a reading, the zero counter went into a delete's
+        notification as the container's last cpu time -- a counter that
+        went back to nothing.
+        """
+        stopped = dict(LIVE_READING, read='0001-01-01T00:00:00Z',
+                       cpu_stats={'cpu_usage': {'total_usage': 0}})
+
+        found = self._sample({'c1': stopped, 'c2': LIVE_READING})
+
+        self.assertEqual(['u-c2'], list(found))

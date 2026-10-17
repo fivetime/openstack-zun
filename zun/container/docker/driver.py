@@ -1364,7 +1364,13 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                     # must not cost the others their reading.
                     LOG.debug('could not sample %s: %s', uuid, exc)
                     continue
-                found[uuid] = _counters(res)
+                reading = _counters(res)
+                if reading['timestamp'] is None:
+                    # docker's zero time: a stopped container, which it
+                    # answers with zeros. Not a reading -- a zero cpu
+                    # counter would claim the counter went back to nothing.
+                    continue
+                found[uuid] = reading
         return found
 
     def list_local_images(self):

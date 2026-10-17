@@ -3439,10 +3439,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             if cpu_ns is None:
                 # A sandbox the runtime has no accounting for yet.
                 continue
-            stamp = (linux.cpu.timestamp if linux.HasField('cpu')
-                     else linux.containers[0].cpu.timestamp)
+            stamp = driver.reading_time(
+                linux.cpu.timestamp if linux.HasField('cpu')
+                else linux.containers[0].cpu.timestamp)
+            if stamp is None:
+                # A stopped sandbox: zeros and no time are not a reading.
+                continue
             reading = {
-                'timestamp': driver.reading_time(stamp),
+                'timestamp': stamp,
                 'cpu': {'total_ns': cpu_ns,
                         'system_ns': None,
                         'online_cpus': os.cpu_count(),
@@ -3501,8 +3505,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             uuid = wanted.get(entry.attributes.id)
             if uuid is None:
                 continue
+            stamp = driver.reading_time(entry.cpu.timestamp)
+            if stamp is None:
+                # A stopped container, answered with zeros and no time.
+                # Not a reading: a zero counter would claim it went back
+                # to nothing.
+                continue
             reading = {
-                'timestamp': driver.reading_time(entry.cpu.timestamp),
+                'timestamp': stamp,
                 'cpu': {'total_ns': entry.cpu.usage_core_nano_seconds.value,
                         # The CRI reports what the container burned and
                         # not what the host did, so there is no system
