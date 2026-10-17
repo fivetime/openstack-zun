@@ -85,10 +85,11 @@ _basic_keys = (
 def format_container(context, url, container, usage=None):
     """One container as the API shows it.
 
-    `usage` is what the API last heard about this container from the node
-    running it -- a measurement, held in a cache, never in the database.
-    Absent, the size fields read as null: unknown, which is distinct from
-    zero and is the honest answer for a node that has not reported.
+    `usage` is the writable-layer size the node running it measured for
+    this request, when the caller asked for it (``size=true``, 1.55) --
+    a measurement, never stored. Absent, the size fields read as null:
+    unknown, which is distinct from zero and is the honest answer when
+    nobody asked or the node could not be reached.
     """
     def transform(key, value):
         if key not in _basic_keys:

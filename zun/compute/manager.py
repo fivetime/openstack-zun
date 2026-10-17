@@ -128,10 +128,6 @@ def _image_id_of(committed):
 class Manager(periodic_task.PeriodicTasks):
     """Manages the running containers."""
 
-    #: The beginning of the audit window carried by the next usage report;
-    #: set to now at the top of each report so consecutive windows abut.
-    _usage_window = None
-
     #: When each reporting task last ran, by name. The interval is read
     #: here rather than given to the decorator: a decorator's arguments
     #: are evaluated when the class is defined, which is before the config
@@ -151,11 +147,6 @@ class Manager(periodic_task.PeriodicTasks):
             return False
         self._last_report[name] = now
         return True
-
-    #: The beginning of the billing period the next exists report covers.
-    #: None until the first tick, which is skipped so that a period is
-    #: never reported as starting at a restart.
-    _exists_window = None
 
     def __init__(self, container_driver=None):
         super(Manager, self).__init__(CONF)
@@ -1502,6 +1493,50 @@ class Manager(periodic_task.PeriodicTasks):
                           'driver %s') % type(self.capsule_driver).__name__)
         return self.capsule_driver.capsule_stats(context, capsule)
 
+    #: The longest a caller may ask two readings to be taken apart. The
+    #: RPC worker answering waits that long, so it is kept short.
+    MAX_SAMPLE_INTERVAL = 5
+
+    @translate_exception
+    def container_sample(self, context, containers, interval=0):
+        """Readings of these containers, taken now.
+
+        One reading each without an interval. With one, a second reading
+        of every container `interval` seconds after the first: the pair a
+        rate is worked out from, for a caller holding no earlier reading
+        of its own (docker's one-shot stats). All of them are read
+        together, so the wait is `interval` once rather than once per
+        container -- docker's own two-sample stats cost a second each.
+
+        Answers {uuid: {'current': reading, 'previous': reading or None}}.
+        A container the runtime would not answer about is absent, never
+        zeroed.
+        """
+        interval = max(0, min(int(interval or 0), self.MAX_SAMPLE_INTERVAL))
+        if not containers:
+            return {}
+        first = self.driver.sample_counters(context, containers)
+        if not interval:
+            return {uuid: {'current': reading, 'previous': None}
+                    for uuid, reading in first.items()}
+        time.sleep(interval)
+        second = self.driver.sample_counters(context, containers)
+        return {uuid: {'current': reading, 'previous': first.get(uuid)}
+                for uuid, reading in second.items()}
+
+    @translate_exception
+    def container_sizes(self, context, containers):
+        """Each container's writable layer, measured now, by uuid.
+
+        Only when asked: measuring walks the layer on disk.
+        """
+        if not containers:
+            return {}
+        sizes = self.driver.measure_writable_layers(context, containers)
+        measured_at = timeutils.utcnow(with_timezone=True).isoformat()
+        return {uuid: {'size_rw': size, 'measured_at': measured_at}
+                for uuid, size in sizes.items()}
+
     @translate_exception
     def container_stats(self, context, container):
         LOG.debug('Displaying stats of the container: %s', container.uuid)
@@ -2113,138 +2148,6 @@ class Manager(periodic_task.PeriodicTasks):
             # operation until the driver implements this.
             LOG.debug('State sync is not implemented by capsule driver %s',
                       type(self.capsule_driver).__name__)
-
-    @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=True)
-    @context.set_context
-    def report_usage(self, ctx):
-        """Say what this host's containers are using, one report per host.
-
-        Reported rather than asked for: measuring a writable layer walks
-        its files, so it is done here on a schedule and the API serves
-        the latest figure it heard. Nothing is written to the database.
-        A figure that is lost is replaced by the next one.
-
-        One notification per host carrying every container, not one per
-        container: the cost of a report is the message, and a node with
-        two hundred containers should not send two hundred of them.
-        """
-        if not self._due('usage', CONF.usage_report.report_interval):
-            return
-        if not isinstance(self.driver, driver_module.ContainerDriver):
-            return
-        window_start = self._usage_window
-        self._usage_window = timeutils.utcnow()
-        containers = objects.Container.list_by_host(ctx, self.host)
-        if not containers:
-            return
-        try:
-            sizes = self.driver.measure_writable_layers(ctx, containers)
-        except Exception as exc:
-            # A host that cannot measure this round says nothing rather
-            # than something wrong; its figures age out and read unknown.
-            LOG.warning('could not measure container usage: %s', exc)
-            return
-        try:
-            counters = self.driver.sample_counters(ctx, containers)
-        except Exception as exc:
-            # Sizes are still worth sending without them.
-            LOG.warning('could not sample container counters: %s', exc)
-            counters = {}
-        notifications.notify_usage(ctx, self.host, containers, sizes,
-                                   window_start, counters)
-
-    @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
-    @context.set_context
-    def report_exists(self, ctx):
-        """The billing heartbeat: one message per container, per period.
-
-        Separate from report_usage in cadence and in shape, because the
-        two answer different questions. This one says a container was
-        here for a period and what it was given, which is what a bill is
-        rated from; that one says what a writable layer measures, which
-        is what an API serves. Losing one of these costs a period;
-        losing one of those costs nothing.
-
-        run_immediately is off: the first period after a restart would
-        otherwise be reported as beginning at that restart, which would
-        bill it short.
-        """
-        if not self._due('exists', CONF.usage_report.exists_interval):
-            return
-        window_start = self._exists_window
-        self._exists_window = timeutils.utcnow()
-        if window_start is None:
-            return
-        containers = objects.Container.list_by_host(ctx, self.host)
-        if not containers:
-            return
-        sizes = {}
-        if isinstance(self.driver, driver_module.ContainerDriver):
-            try:
-                sizes = self.driver.measure_writable_layers(ctx, containers)
-            except Exception as exc:
-                # A period still has to be reported even when nothing could
-                # be measured: what it cost to exist does not depend on it.
-                LOG.warning('could not measure for the exists report: %s',
-                            exc)
-        for container in containers:
-            notifications.notify_exists(ctx, container,
-                                        size_rw=sizes.get(container.uuid),
-                                        window_start=window_start,
-                                        host=self.host)
-        LOG.debug('reported %d containers as existing', len(containers))
-
-    #: When the next container.metrics round is due (time.monotonic()).
-    _metrics_due = None
-
-    def _metrics_round_due(self, interval):
-        """True when a metrics round is due; due times are a fixed grid.
-
-        Not "interval since the last round" as _due counts it: that drifts
-        later by up to a tick every round, and a consumer computing a rate
-        from consecutive samples wants them the interval apart. A grid that
-        has fallen a whole interval behind -- the periodic thread was busy,
-        the service was paused -- starts over from now rather than sending
-        a burst to catch up.
-        """
-        now = time.monotonic()
-        if self._metrics_due is None or now - self._metrics_due >= interval:
-            self._metrics_due = now
-        if now < self._metrics_due:
-            return False
-        self._metrics_due += interval
-        return True
-
-    @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
-    @context.set_context
-    def report_metrics(self, ctx):
-        """Every running container's CPU and memory, one message each.
-
-        For alarms and autoscaling, on a clock of its own
-        ([usage_report] metrics_interval, a minute by default): what
-        container.usage carries is batched per host for the API's cache,
-        and container.exists comes hourly for billing; neither can be
-        turned into a sample per container per minute.
-        """
-        interval = CONF.usage_report.metrics_interval
-        if not interval or not self._metrics_round_due(interval):
-            return
-        if not isinstance(self.driver, driver_module.ContainerDriver):
-            return
-        containers = [c for c in objects.Container.list_by_host(ctx, self.host)
-                      if c.status == consts.RUNNING]
-        if not containers:
-            return
-        try:
-            counters = self.driver.sample_counters(ctx, containers)
-        except Exception as exc:
-            LOG.warning('could not sample containers for metrics: %s', exc)
-            return
-        sent = sum(1 for c in containers
-                   if notifications.notify_metrics(
-                       ctx, c, counters.get(c.uuid), host=self.host))
-        LOG.debug('reported metrics for %d of %d running containers',
-                  sent, len(containers))
 
     @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
     @context.set_context

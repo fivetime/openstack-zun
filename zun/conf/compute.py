@@ -188,6 +188,14 @@ Possible values:
         'host_shared_with_nova',
         default=False,
         help='Whether this compute node is shared with nova'),
+    cfg.IntOpt(
+        'stats_rpc_timeout',
+        default=10, min=1,
+        help='Seconds the API waits for one compute node to answer a '
+             'request for readings or sizes of the containers it runs. '
+             'Asked of every node concerned at once; a node that does '
+             'not answer in time is listed as failed and the others are '
+             'answered as usual.'),
 ]
 
 service_opts = [

@@ -1,0 +1,23 @@
+---
+features:
+  - |
+    API 1.55: ``size=true`` on container list and show measures each
+    container's writable layer (``size_rw``, ``size_measured_at``) when
+    asked; without it the fields are null. Raw stats
+    (``stats?raw=true``) are read from the node when asked, and
+    ``interval`` (1-5 seconds) reads twice that far apart and returns
+    both readings -- what a one-shot ``docker stats`` needs. A request
+    spanning several nodes asks them all at once; a node that does not
+    answer within ``[compute] stats_rpc_timeout`` (default 10 seconds)
+    leaves only its own figures unknown.
+upgrade:
+  - |
+    zun no longer samples containers or measures writable layers on a
+    schedule, and sends no ``container.usage``, ``container.exists`` or
+    ``container.metrics`` notifications. The ``[usage_report]`` option
+    group is removed and zun-api no longer listens on the notification
+    bus. Collecting usage for metering is the metering service's job:
+    it can read the stats API when and as often as the operator
+    configures. Lifecycle notifications are unchanged. A raw stats reply
+    without ``interval`` now carries one reading, so its previous-reading
+    fields are null; ask with ``interval`` for two.

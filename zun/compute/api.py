@@ -13,6 +13,8 @@
 """Handles all requests relating to compute resources (e.g. containers,
 networking and storage of containers, and compute hosts on which they run)."""
 
+import concurrent.futures
+
 from oslo_log import log as logging
 
 from zun.common import consts
@@ -28,6 +30,18 @@ from zun.scheduler.client import query as scheduler_client
 
 CONF = zun.conf.CONF
 LOG = logging.getLogger(__name__)
+
+
+#: How many compute nodes one request asks at the same time.
+_FANOUT_WORKERS = 16
+
+
+def _by_host(objects_):
+    hosts = {}
+    for obj in objects_:
+        if obj.host:
+            hosts.setdefault(obj.host, []).append(obj)
+    return hosts
 
 
 @profiler.trace_cls("rpc")
@@ -241,6 +255,45 @@ class API(object):
     def container_put_archive(self, context, container, *args, **kwargs):
         return self.rpcapi.container_put_archive(context, container, *args,
                                                  **kwargs)
+
+    def _fan_out(self, method, by_host, **kwargs):
+        """Ask every host its share at once; one slow host costs only itself.
+
+        Answers (merged results by uuid, {host: reason} for each host that
+        failed). A host that failed is named rather than left out: a caller
+        reading "no figure" has to be able to tell "nothing there" from
+        "could not ask".
+        """
+        results, failed = {}, {}
+        if not by_host:
+            return results, failed
+        workers = min(len(by_host), _FANOUT_WORKERS)
+        with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+            asks = {pool.submit(method, host, members, **kwargs): host
+                    for host, members in by_host.items()}
+            for done in concurrent.futures.as_completed(asks):
+                host = asks[done]
+                try:
+                    results.update(done.result() or {})
+                except Exception as exc:                # noqa: BLE001
+                    LOG.warning('could not read containers on %(host)s: '
+                                '%(err)s', {'host': host, 'err': exc})
+                    failed[host] = type(exc).__name__
+        return results, failed
+
+    def container_sample(self, context, containers, interval=0):
+        """Readings of these containers, taken now; see manager."""
+        return self._fan_out(
+            lambda host, members, **kw: self.rpcapi.container_sample(
+                context, host, members, **kw),
+            _by_host(containers), interval=interval)
+
+    def container_sizes(self, context, containers):
+        """Writable-layer sizes of these containers, measured now."""
+        return self._fan_out(
+            lambda host, members: self.rpcapi.container_sizes(
+                context, host, members),
+            _by_host(containers))
 
     def container_stats(self, context, container):
         return self.rpcapi.container_stats(context, container)

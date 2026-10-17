@@ -208,6 +208,13 @@ query_param_stats = {
     'type': 'object',
     'properties': {
         'raw': parameter_types.boolean_extended,
+        # 1.55: read twice, this many seconds apart.
+        'interval': {
+            'type': ['integer', 'string'],
+            'pattern': '^[0-5]$',
+            'minimum': 0,
+            'maximum': 5,
+        },
     },
     'additionalProperties': False,
 }

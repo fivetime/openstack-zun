@@ -118,15 +118,16 @@ def _counters(res):
     """The fields one reading carries.
 
     A single sample: the previous-reading fields are left for whoever
-    holds the reading before this one, which is the cache the reports go
-    into. one_shot leaves them empty here, and filling them with what
-    docker would have sampled a second ago would be a rate over an
-    interval nobody asked about.
+    holds the reading before this one -- the caller, or the second
+    reading compute takes when asked for an interval. one_shot leaves
+    them empty here, and filling them with what docker would have
+    sampled a second ago would be a rate over an interval nobody asked
+    about.
     """
     cpu = res.get('cpu_stats') or {}
     memory = res.get('memory_stats') or {}
     out = {
-        'timestamp': res.get('read'),
+        'timestamp': driver.reading_time(res.get('read')),
         'cpu': {
             'total_ns': (cpu.get('cpu_usage') or {}).get('total_usage'),
             'system_ns': cpu.get('system_cpu_usage'),
@@ -1354,12 +1355,13 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                     # docker waits for a second sample so it can fill in
                     # precpu, which costs a second per container and is
                     # work we do not need -- the caller compares its own
-                    # readings, taken a reporting interval apart.
+                    # readings, or asks compute for two taken an
+                    # interval apart for every container at once.
                     res = docker.stats(container_id, decode=False,
                                        stream=False, one_shot=True)
                 except Exception as exc:                    # noqa: BLE001
                     # One container the runtime would not answer about
-                    # must not cost the host its whole report.
+                    # must not cost the others their reading.
                     LOG.debug('could not sample %s: %s', uuid, exc)
                     continue
                 found[uuid] = _counters(res)

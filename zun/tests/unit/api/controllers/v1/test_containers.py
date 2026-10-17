@@ -1886,6 +1886,143 @@ class TestContainerController(api_base.FunctionalTest):
         self.assertEqual(200, response.status_int)
         self.assertTrue(mock_container_stats.called)
 
+    V155 = {'OpenStack-API-Version': 'container 1.55'}
+
+    def _one_container(self, mock_get_by_uuid):
+        test_container = utils.get_test_container()
+        obj = objects.Container(self.context, **test_container)
+        mock_get_by_uuid.return_value = obj
+        return obj
+
+    @patch('zun.common.utils.validate_container_state')
+    @patch('zun.compute.api.API.container_sample')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_raw_stats_are_read_when_asked(self, mock_get_by_uuid,
+                                           mock_sample, mock_validate):
+        """1.55: from the node now, not from a schedule's leftovers."""
+        obj = self._one_container(mock_get_by_uuid)
+        mock_sample.return_value = ({obj.uuid: {
+            'current': {'timestamp': 't2', 'cpu': {'total_ns': 2}},
+            'previous': {'timestamp': 't1', 'cpu': {'total_ns': 1}}}}, {})
+
+        response = self.get('/v1/containers/%s/stats?raw=true&interval=1'
+                            % obj.uuid, headers=dict(self.V155))
+
+        self.assertEqual(200, response.status_int)
+        self.assertEqual(1, mock_sample.call_args.kwargs['interval'])
+        self.assertEqual('t1', response.json['previous_timestamp'])
+        self.assertEqual(1, response.json['cpu']['previous_total_ns'])
+        self.assertEqual(2, response.json['cpu']['total_ns'])
+        self.assertEqual('t2', response.json['reported_at'])
+
+    @patch('zun.common.utils.validate_container_state')
+    @patch('zun.compute.api.API.container_sample')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_one_raw_reading_has_no_previous(self, mock_get_by_uuid,
+                                             mock_sample, mock_validate):
+        obj = self._one_container(mock_get_by_uuid)
+        mock_sample.return_value = ({obj.uuid: {
+            'current': {'timestamp': 't2', 'cpu': {'total_ns': 2}},
+            'previous': None}}, {})
+
+        response = self.get('/v1/containers/%s/stats?raw=true' % obj.uuid,
+                            headers=dict(self.V155))
+
+        self.assertEqual(0, mock_sample.call_args.kwargs['interval'])
+        self.assertIsNone(response.json['previous_timestamp'])
+        self.assertIsNone(response.json['cpu']['previous_total_ns'])
+
+    @patch('zun.common.utils.validate_container_state')
+    @patch('zun.compute.api.API.container_sample')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_raw_stats_from_a_node_that_did_not_answer(
+            self, mock_get_by_uuid, mock_sample, mock_validate):
+        obj = self._one_container(mock_get_by_uuid)
+        mock_sample.return_value = ({}, {obj.host: 'MessagingTimeout'})
+
+        response = self.get('/v1/containers/%s/stats?raw=true' % obj.uuid,
+                            headers=dict(self.V155), expect_errors=True)
+
+        self.assertNotEqual(200, response.status_int)
+
+    @patch('zun.common.utils.validate_container_state')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_interval_is_only_for_raw_stats(self, mock_get_by_uuid,
+                                            mock_validate):
+        obj = self._one_container(mock_get_by_uuid)
+
+        response = self.get('/v1/containers/%s/stats?interval=1' % obj.uuid,
+                            headers=dict(self.V155), expect_errors=True)
+
+        self.assertEqual(400, response.status_int)
+
+    @patch('zun.common.utils.validate_container_state')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_interval_needs_1_55(self, mock_get_by_uuid, mock_validate):
+        obj = self._one_container(mock_get_by_uuid)
+
+        response = self.get(
+            '/v1/containers/%s/stats?raw=true&interval=1' % obj.uuid,
+            headers={'OpenStack-API-Version': 'container 1.54'},
+            expect_errors=True)
+
+        self.assertEqual(400, response.status_int)
+
+    @patch('zun.compute.api.API.container_sizes')
+    @patch('zun.compute.api.API.container_show')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_show_measures_nothing_unless_asked(self, mock_get_by_uuid,
+                                                mock_show, mock_sizes):
+        obj = self._one_container(mock_get_by_uuid)
+        mock_show.return_value = obj
+
+        response = self.get('/v1/containers/%s/' % obj.uuid)
+
+        mock_sizes.assert_not_called()
+        self.assertIsNone(response.json['size_rw'])
+
+    @patch('zun.compute.api.API.container_sizes')
+    @patch('zun.compute.api.API.container_show')
+    @patch('zun.objects.Container.get_by_uuid')
+    def test_show_with_size_measures_it(self, mock_get_by_uuid, mock_show,
+                                        mock_sizes):
+        obj = self._one_container(mock_get_by_uuid)
+        mock_show.return_value = obj
+        mock_sizes.return_value = ({obj.uuid: {
+            'size_rw': 4096, 'measured_at': 'now'}}, {})
+
+        response = self.get('/v1/containers/%s/?size=true' % obj.uuid,
+                            headers=dict(self.V155))
+
+        self.assertEqual(4096, response.json['size_rw'])
+        self.assertEqual('now', response.json['size_measured_at'])
+
+    @patch('zun.compute.api.API.container_sizes')
+    @patch('zun.objects.Container.list')
+    def test_list_size_from_a_node_that_failed_is_unknown(self, mock_list,
+                                                          mock_sizes):
+        """Null -- unknown -- not zero, which would say it holds nothing."""
+        test_container = utils.get_test_container()
+        obj = objects.Container(self.context, **test_container)
+        mock_list.return_value = [obj]
+        mock_sizes.return_value = ({}, {obj.host: 'MessagingTimeout'})
+
+        response = self.get('/v1/containers/?size=true',
+                            headers=dict(self.V155))
+
+        self.assertIsNone(response.json['containers'][0]['size_rw'])
+
+    @patch('zun.objects.Container.list')
+    def test_list_size_needs_1_55(self, mock_list):
+        mock_list.return_value = []
+
+        response = self.get(
+            '/v1/containers/?size=true',
+            headers={'OpenStack-API-Version': 'container 1.54'},
+            expect_errors=True)
+
+        self.assertEqual(400, response.status_int)
+
     @patch('zun.common.utils.validate_container_state')
     @patch('zun.compute.api.API.container_commit')
     @patch('zun.objects.Container.get_by_name')

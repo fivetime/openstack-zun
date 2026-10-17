@@ -106,6 +106,11 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              signal; execute detach; put_archive copy_uidgid and
              no_overwrite_dir_non_dir; a contents mount's mode, uid and
              gid; and [volume] max_contents_size.
+    * 1.55 - Stop reporting usage on a schedule. size_rw and
+             size_measured_at are measured when asked (size=true on list
+             and show) and are null otherwise; raw stats are read from the
+             node when asked, with interval (1-5 s) for two readings that
+             far apart. Nothing is kept from reports any more.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -118,7 +123,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.54'
+CURRENT_MAX_VER = '1.55'
 
 
 class Version(object):

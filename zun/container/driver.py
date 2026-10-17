@@ -12,7 +12,9 @@
 # limitations under the License.
 
 import copy
+import datetime
 import platform
+import re
 import sys
 
 import os_resource_classes as orc
@@ -33,6 +35,9 @@ from zun.volume import driver as vol_driver
 
 LOG = logging.getLogger(__name__)
 CONF = zun.conf.CONF
+
+_RFC3339 = re.compile(
+    r'^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:?\d\d)?$')
 
 
 # TODO(hongbin): define a list of standard traits keyed by capabilities
@@ -57,6 +62,42 @@ ARCH_ALIASES = {
     'x86-64': 'x86_64',
     'arm64': 'aarch64',
 }
+
+
+def reading_time(stamp):
+    """When a runtime took a reading, as ISO 8601 UTC, or None.
+
+    The runtimes say it differently -- docker as RFC 3339 with nanoseconds
+    and the zero time when it has no reading, the CRI as nanoseconds since
+    the epoch and zero when it has none -- and a caller computing a rate,
+    or recording a sample, must not have to know which runtime answered.
+    So every driver hands its reading time through here and the rest of
+    zun sees one form. Microseconds are all a consumer keeps.
+    """
+    if isinstance(stamp, bool) or stamp is None:
+        return None
+    if isinstance(stamp, int):
+        if stamp <= 0:
+            return None
+        seconds, nanos = divmod(stamp, 10 ** 9)
+        moment = datetime.datetime.fromtimestamp(
+            seconds, datetime.timezone.utc).replace(microsecond=nanos // 1000)
+        return moment.isoformat()
+    match = _RFC3339.match(str(stamp))
+    if not match or match.group(1).startswith('0001-01-01'):
+        return None
+    head, frac, zone = match.groups()
+    try:
+        moment = datetime.datetime.strptime(head, '%Y-%m-%dT%H:%M:%S')
+    except ValueError:
+        return None
+    moment = moment.replace(microsecond=int(((frac or '') + '000000')[:6]))
+    if zone and zone != 'Z':
+        sign = 1 if zone[0] == '+' else -1
+        digits = zone[1:].replace(':', '')
+        moment -= sign * datetime.timedelta(hours=int(digits[:2]),
+                                            minutes=int(digits[2:]))
+    return moment.replace(tzinfo=datetime.timezone.utc).isoformat()
 
 
 def host_architecture():
@@ -569,15 +610,17 @@ class ContainerDriver(object):
     def sample_counters(self, context, containers):
         """One cheap reading per container, for the whole host at once.
 
-        Meant to be called on a schedule, not per request: it takes a
-        single sample and does not wait for a second one, because the
-        caller compares its own consecutive readings rather than asking
-        the runtime to do it. That is the difference between five
+        Called when someone asks, never on a schedule: it takes a single
+        sample and does not wait for a second one, because the caller
+        compares its own consecutive readings rather than asking the
+        runtime to do it. That is the difference between five
         milliseconds a container and two seconds a container.
 
         Answers {uuid: counters} in the shape raw_stats uses, minus the
-        previous sample -- there is none in a single reading. A container
-        that cannot be sampled is absent rather than zeroed.
+        previous sample -- there is none in a single reading. The reading
+        time goes through reading_time(), so every driver answers in the
+        same form. A container that cannot be sampled is absent rather
+        than zeroed.
         """
         return {}
 
@@ -591,9 +634,9 @@ class ContainerDriver(object):
         from the answer, which the reader shows as unknown rather than as
         zero -- zero would say it occupies nothing.
 
-        One call for the whole host rather than one per container: this
-        runs on a schedule and the runtime can answer for everything it
-        holds in a single round trip.
+        Measured only when a caller asks (``size=true``): walking a
+        writable layer reads the disk, and nothing should pay for that
+        unless someone wants the figure.
         """
         return {}
 

@@ -38,7 +38,6 @@ from zun.common import name_generator
 from zun.common.policies import container as policies
 from zun.common import policy
 from zun.common import quota
-from zun.common import usage_cache
 from zun.common import utils
 import zun.conf
 from zun.network import model as network_model
@@ -73,15 +72,13 @@ class ContainerCollection(collection.Collection):
 
     @staticmethod
     def convert_with_links(rpc_containers, limit, url=None,
-                           expand=False, **kwargs):
+                           expand=False, sizes=None, **kwargs):
         context = pecan.request.context
         collection = ContainerCollection()
-        # One cache round trip for the page, not one per container.
-        usage_by_uuid = usage_cache.recall_many(
-            [p.uuid for p in rpc_containers])
+        sizes = sizes or {}
         collection.containers = \
             [view.format_container(context, url, p,
-                                   usage=usage_by_uuid.get(p.uuid))
+                                   usage=sizes.get(p.uuid))
              for p in rpc_containers]
         collection.next = collection.get_next(limit, url=url, **kwargs)
         return collection
@@ -133,37 +130,62 @@ class ContainersActionsController(base.Controller):
         return action
 
 
-def _raw_stats_from_reports(container):
-    """The last two readings the container's node sent.
+def _wants_size(kwargs):
+    """Whether the caller asked for writable-layer sizes (API 1.55)."""
+    size = kwargs.pop('size', None)
+    if size is None:
+        return False
+    api_utils.version_check('size', '1.55')
+    try:
+        return strutils.bool_from_string(size, strict=True)
+    except ValueError:
+        raise exception.InvalidValue(_('size must be true or false'))
 
-    Served from what the nodes report rather than fetched when asked. A
-    container's counters live on the node running it, so answering a
-    request would mean reaching out to that node and waiting -- about two
-    seconds each, because a runtime asked for a rate samples twice -- and
-    a tenant with containers spread over a hundred nodes would pay that a
-    hundred times over, every time anything read them.
 
-    Both readings are here because a rate is the difference between two,
-    and a caller cannot take two of its own: each request would land on
-    whichever reading the node had most recently sent.
+def _sizes(context, containers):
+    """size_rw of each container, measured now, by uuid.
+
+    Only for a caller that asked: measuring walks each writable layer on
+    disk. A container whose node could not be asked keeps no entry, and
+    reads as null -- unknown, which zero would not be.
     """
-    held = usage_cache.recall(container.uuid)
-    if not held or not held.get('counters'):
+    compute_api = pecan.request.compute_api
+    sizes, failed = compute_api.container_sizes(
+        context, [c for c in containers if c.host])
+    if failed:
+        LOG.warning('sizes unknown for containers on %s', sorted(failed))
+    return sizes
+
+
+def _raw_stats(context, container, interval):
+    """The container's counters, read now; two readings with an interval.
+
+    Asked of the node running it when a caller asks, never kept from a
+    schedule. Without an interval it is one reading and the previous-
+    reading fields are null: a caller computing a rate holds its own
+    previous reading. With one, the node reads twice, `interval` seconds
+    apart, and both readings come back -- what a one-shot `docker stats`
+    needs, since it has no earlier reading of its own.
+    """
+    compute_api = pecan.request.compute_api
+    readings, failed = compute_api.container_sample(
+        context, [container], interval=interval)
+    held = readings.get(container.uuid)
+    if not held or not held.get('current'):
+        if failed:
+            raise exception.ContainerHostNotUp(container=container.uuid,
+                                               host=container.host)
         raise exception.OperationNotSupported(_(
-            'No counters have been reported for container %s yet. They '
-            'arrive with the next report from the node running it.')
-            % container.uuid)
-    current = dict(held['counters'])
-    previous = held.get('previous_counters') or {}
-    # A first reading has nothing before it, and a rate computed against
-    # nothing is zero rather than wrong.
-    current['previous_timestamp'] = held.get('previous_measured_at')
+            'The runtime did not answer for container %s.') % container.uuid)
+    current = dict(held['current'])
+    previous = held.get('previous') or {}
+    current['previous_timestamp'] = previous.get('timestamp')
     current['cpu'] = dict(current.get('cpu') or {})
     current['cpu']['previous_total_ns'] = (
         (previous.get('cpu') or {}).get('total_ns'))
     current['cpu']['previous_system_ns'] = (
         (previous.get('cpu') or {}).get('system_ns'))
-    current['reported_at'] = held.get('measured_at')
+    current['reported_at'] = current.get('timestamp')
     return current
 
 
@@ -264,6 +286,7 @@ class ContainersController(base.Controller):
         sort_key = kwargs.pop('sort_key', 'id')
         resource_url = kwargs.pop('resource_url', None)
         expand = kwargs.pop('expand', None)
+        wants_size = _wants_size(kwargs)
 
         container_allowed_filters = ['name', 'image', 'project_id', 'user_id',
                                      'memory', 'host', 'task_state', 'status',
@@ -297,9 +320,11 @@ class ContainersController(base.Controller):
                                             sort_key,
                                             sort_dir,
                                             filters=filters)
+        sizes = _sizes(context, containers) if wants_size else None
         return ContainerCollection.convert_with_links(containers, limit,
                                                       url=resource_url,
                                                       expand=expand,
+                                                      sizes=sizes,
                                                       sort_key=sort_key,
                                                       sort_dir=sort_dir)
 
@@ -315,6 +340,7 @@ class ContainersController(base.Controller):
             policy.enforce(context, "container:get_one_all_projects",
                            action="container:get_one_all_projects")
             context.all_projects = True
+        wants_size = _wants_size(kwargs)
         container = api_utils.get_resource('Container', container_ident)
         check_policy_on_container(container.as_dict(), "container:get_one")
         if container.host:
@@ -324,9 +350,10 @@ class ContainersController(base.Controller):
             except exception.ContainerHostNotUp as e:
                 LOG.error("Failed to get container details: %s", str(e))
 
+        usage = (_sizes(context, [container]).get(container.uuid)
+                 if wants_size else None)
         return view.format_container(context, pecan.request.host_url,
-                                     container,
-                                     usage=usage_cache.recall(container.uuid))
+                                     container, usage=usage)
 
     def _generate_name_for_container(self):
         """Generate a random name like: zeta-22-container."""
@@ -1389,15 +1416,23 @@ class ContainersController(base.Controller):
         :param container_ident: UUID or Name of a container.
         :param raw: return the counters themselves rather than figures
             worked out from them. Since 1.48.
+        :param interval: with raw, read twice this many seconds apart
+            (1-5) and return both readings. Since 1.55; without it the
+            counters are one reading.
         """
         container = api_utils.get_resource('Container', container_ident)
         check_policy_on_container(container.as_dict(), "container:stats")
         utils.validate_container_state(container, 'stats')
         context = pecan.request.context
         compute_api = pecan.request.compute_api
+        interval = kwargs.get('interval')
+        if interval is not None:
+            api_utils.version_check('interval', '1.55')
         if strutils.bool_from_string(kwargs.get('raw', False), strict=False):
             api_utils.version_check('raw', '1.48')
-            return _raw_stats_from_reports(container)
+            return _raw_stats(context, container, int(interval or 0))
+        if interval is not None:
+            raise exception.InvalidValue(_('interval is only for raw stats'))
         LOG.debug('Calling compute.container_stats with %s', container.uuid)
         return compute_api.container_stats(context, container)
 

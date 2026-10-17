@@ -30,7 +30,7 @@ def _value(number):
 
 def _stat(container_id, cpu_ns=100, memory=2048):
     return mock.Mock(attributes=mock.Mock(id=container_id),
-                     cpu=mock.Mock(timestamp=7,
+                     cpu=mock.Mock(timestamp=1792186233123456789,
                                    usage_core_nano_seconds=_value(cpu_ns)),
                      memory=mock.Mock(working_set_bytes=_value(memory)))
 
@@ -64,7 +64,36 @@ class SampleCountersTest(base.TestCase):
         found = self._sample()
 
         self.assertEqual(200, found['u-2']['cpu']['total_ns'])
-        self.assertEqual(7, found['u-2']['timestamp'])
+
+    def test_the_reading_time_is_in_the_form_every_driver_uses(self):
+        """The CRI says nanoseconds since the epoch; docker says RFC 3339.
+
+        A consumer was written for docker's form and every reading from a
+        CRI node raised in it -- so the driver converts at the source.
+        """
+        found = self._sample()
+
+        self.assertEqual('2026-10-16T21:30:33.123456+00:00',
+                         found['u-2']['timestamp'])
+
+    def test_the_runtimes_own_message_is_read(self):
+        """From the CRI's real protobuf, not a hand-made shape."""
+        from zun.criapi import api_pb2
+        stats = [api_pb2.ContainerStats(
+            attributes=api_pb2.ContainerAttributes(id='c-1'),
+            cpu=api_pb2.CpuUsage(
+                timestamp=1792186233123456789,
+                usage_core_nano_seconds=api_pb2.UInt64Value(value=5000)),
+            memory=api_pb2.MemoryUsage(
+                working_set_bytes=api_pb2.UInt64Value(value=4096)))]
+
+        found = self._sample(stats=stats)
+
+        self.assertEqual({'u-1'}, set(found))
+        self.assertEqual(5000, found['u-1']['cpu']['total_ns'])
+        self.assertEqual(4096, found['u-1']['memory']['usage'])
+        self.assertEqual('2026-10-16T21:30:33.123456+00:00',
+                         found['u-1']['timestamp'])
 
     def test_there_is_no_invented_system_figure(self):
         """A reader dividing by it would divide by something made up here."""

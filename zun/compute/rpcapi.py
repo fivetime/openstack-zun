@@ -61,6 +61,9 @@ class API(rpc_service.API):
 
         * 1.0 - Initial version.
         * 1.1 - Add image endpoints.
+        * 1.2 - Add container_sample and container_sizes: readings and
+                writable-layer sizes taken when asked, for many containers
+                of one host in one call.
     """
 
     def __init__(self, context=None, topic=None):
@@ -187,6 +190,25 @@ class API(rpc_service.API):
     def container_stats(self, context, container):
         return self._call(container.host, 'container_stats',
                           container=container)
+
+    def _call_bounded(self, server, method, timeout, **kwargs):
+        # One node at a time is asked with its own deadline, so a node that
+        # does not answer costs the caller that deadline and not the
+        # global rpc_response_timeout.
+        cctxt = self._client.prepare(server=server, timeout=timeout)
+        return cctxt.call(self._context, method, **kwargs)
+
+    def container_sample(self, context, host, containers, interval=0):
+        return self._call_bounded(
+            host, 'container_sample',
+            zun.conf.CONF.compute.stats_rpc_timeout + int(interval or 0),
+            containers=containers, interval=interval)
+
+    def container_sizes(self, context, host, containers):
+        return self._call_bounded(
+            host, 'container_sizes',
+            zun.conf.CONF.compute.stats_rpc_timeout,
+            containers=containers)
 
     @check_container_host
     def capsule_stats(self, context, capsule):

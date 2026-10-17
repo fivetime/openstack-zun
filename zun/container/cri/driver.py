@@ -3392,13 +3392,13 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 'memory': st.memory.working_set_bytes.value}
 
     def sample_counters(self, context, containers):
-        """One reading for every container on this host, in two calls.
+        """One reading for every container asked about, in two calls.
 
-        The counters a bill is worked out from, taken on a schedule
-        rather than per request. Whoever holds the previous reading
-        computes the rate; a single sample carries no previous fields
-        and inventing them would be a rate over an interval nobody
-        asked about.
+        Taken when a caller asks -- stats, or a collector polling the
+        host -- never on a schedule of zun's own. Whoever holds the
+        previous reading computes the rate; a single sample carries no
+        previous fields and inventing them would be a rate over an
+        interval nobody asked about.
 
         Two calls rather than two per container: the runtime answers
         for everything it holds at once, and the network figures come
@@ -3428,7 +3428,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             if uuid is None:
                 continue
             reading = {
-                'timestamp': entry.cpu.timestamp,
+                'timestamp': driver.reading_time(entry.cpu.timestamp),
                 'cpu': {'total_ns': entry.cpu.usage_core_nano_seconds.value,
                         # The CRI reports what the container burned and
                         # not what the host did, so there is no system
