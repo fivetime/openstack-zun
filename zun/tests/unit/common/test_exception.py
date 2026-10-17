@@ -65,6 +65,17 @@ class TestComputeNodeUnresponsive(base.TestCase):
 
         self.assertIn('neither accepted nor refused', str(message))
 
+    def test_it_names_the_deadline_a_reading_has(self):
+        """A host's reading waits [compute] stats_rpc_timeout.
+
+        Not the global RPC timeout; an operator reads the message to know
+        which deadline was missed.
+        """
+        message = str(exception.ComputeNodeUnresponsive())
+
+        self.assertIn('[compute] stats_rpc_timeout', message)
+        self.assertIn('[DEFAULT] rpc_response_timeout', message)
+
     def test_the_exception_carries_the_code_by_itself(self):
         self.assertEqual(504, exception.ComputeNodeUnresponsive.code)
 

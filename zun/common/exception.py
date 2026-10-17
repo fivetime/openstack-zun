@@ -295,10 +295,11 @@ class ComputeNodeUnresponsive(ZunException):
     looking at is the node rather than the request. Left unnamed it
     arrives as the same obfuscated 500 as every other failure.
     """
-    message = _("The compute node did not answer within "
-                "[DEFAULT] rpc_response_timeout. The container it holds "
-                "may still be starting or stuck; the request was neither "
-                "accepted nor refused.")
+    message = _("The compute node did not answer in time ([DEFAULT] "
+                "rpc_response_timeout, or [compute] stats_rpc_timeout for "
+                "a reading). The request was neither accepted nor "
+                "refused: what it asked of the node may still be running, "
+                "and it is the node that needs looking at.")
     code = 504
 
 
