@@ -1317,8 +1317,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             stop=tenacity.stop_after_delay(timeout),
             wait=tenacity.wait_exponential(),
             retry=tenacity.retry_if_result(retry_if_result_is_false))
-        # Called, not .call(): tenacity 9 removed Retrying.call.
-        r(check_init_container_stopped)
+        # Not r.call(): deprecated in tenacity 7 and removed in 8. Not
+        # r(...) either: Retrying is only callable since 7, and 6 is still
+        # allowed. wraps() works across all of them.
+        r.wraps(check_init_container_stopped)()
 
     def _show_container(self, context, container):
         container_id = container.container_id
