@@ -1242,6 +1242,7 @@ Request
    - command: exec_command
    - run: exec_run
    - interactive: exec_interactive
+   - timeout: exec_timeout
 
 Response
 --------

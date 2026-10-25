@@ -1202,7 +1202,7 @@ class Manager(periodic_task.PeriodicTasks):
 
     @translate_exception
     def container_exec(self, context, container, command, run, interactive,
-                       detach=False):
+                       detach=False, timeout=None):
         LOG.debug('Executing command in container: %s', container.uuid)
         try:
             # By the container's own type, not by which driver this service
@@ -1222,7 +1222,11 @@ class Manager(periodic_task.PeriodicTasks):
                         "exec_id": exec_id,
                         "token": None}
             if run:
-                output, exit_code = driver.execute_run(exec_id, command)
+                # Only when asked for (1.57): a driver that predates it
+                # still takes the call it always took.
+                extra = {'timeout': timeout} if timeout else {}
+                output, exit_code = driver.execute_run(exec_id, command,
+                                                       **extra)
                 return {"output": output,
                         "exit_code": exit_code,
                         "exec_id": None,

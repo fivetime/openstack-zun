@@ -103,6 +103,18 @@ exec_run:
   in: query
   required: false
   type: boolean
+exec_timeout:
+  description: |
+    Seconds to wait for the command to finish, between 1 and the
+    deployment's ``[api] max_execute_timeout`` (300 by default). Only a
+    command that is run and waited for takes one: it cannot be combined
+    with ``interactive`` or ``detach``, nor with ``run`` set to false.
+    Without it, the command may take ``[docker] execute_timeout`` or
+    ``[container_driver] cri_exec_timeout`` seconds, as before.
+  in: query
+  required: false
+  type: integer
+  min_version: 1.57
 fixed_ip-query:
   description: |
     Fixed IP addresses. If you request a specific fixed IP address without

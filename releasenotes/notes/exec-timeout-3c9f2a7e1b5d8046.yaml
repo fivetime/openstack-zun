@@ -1,0 +1,17 @@
+---
+features:
+  - |
+    API 1.57: ``POST /v1/containers/{id}/execute`` takes ``timeout``, the
+    seconds to wait for a command that is run and waited for, up to the
+    new option ``[api] max_execute_timeout`` (300 by default). The RPC to
+    the compute node then waits that long plus a margin, instead of the
+    global ``rpc_response_timeout`` that a long command would outlive.
+    Without ``timeout`` nothing changes: ``[docker] execute_timeout`` or
+    ``[container_driver] cri_exec_timeout`` applies as before.
+upgrade:
+  - |
+    A request with ``timeout`` fails against a compute node that predates
+    it. Upgrade the compute nodes before, or together with, the API.
+    Requests without it are unaffected. The request holds an API worker
+    for as long as the command runs; size ``[api] max_execute_timeout``
+    and the API's worker threads accordingly.

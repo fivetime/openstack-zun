@@ -200,6 +200,8 @@ query_param_execute_command = {
         'command': parameter_types.exec_command,
         # 1.54: start it and do not wait, docker's `exec -d`.
         'detach': parameter_types.boolean,
+        # 1.57: how long to wait for it, in seconds.
+        'timeout': parameter_types.positive_integer,
     },
     'additionalProperties': False
 }

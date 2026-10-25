@@ -688,8 +688,12 @@ class ContainerDriver(object):
         """Create an execute instance for running a command."""
         raise NotImplementedError()
 
-    def execute_run(self, exec_id):
-        """Run the command specified by an execute instance."""
+    def execute_run(self, exec_id, command, timeout=None):
+        """Run the command specified by an execute instance.
+
+        Waits `timeout` seconds for it, or the driver's configured limit
+        when none is given.
+        """
         raise NotImplementedError()
 
     def execute_resize(self, exec_id, height, width):

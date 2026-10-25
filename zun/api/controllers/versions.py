@@ -116,6 +116,11 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              call, with owner, allocation and type; a capsule container
              names its capsule and says its allocation is counted there.
              Policy host:stats, admin or the service role.
+    * 1.57 - execute takes timeout: seconds to wait for a run command,
+             up to [api] max_execute_timeout (300 by default). The RPC
+             waits that long plus a margin rather than the global
+             rpc_response_timeout. Without it, [docker] execute_timeout
+             or [container_driver] cri_exec_timeout as before.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -128,7 +133,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.56'
+CURRENT_MAX_VER = '1.57'
 
 
 class Version(object):

@@ -37,6 +37,16 @@ api_service_opts = [
                default=1000,
                help='The maximum number of items returned in a single '
                     'response from a collection resource.'),
+    cfg.IntOpt('max_execute_timeout',
+               default=300,
+               min=1,
+               help='The longest a caller may ask a command run through the '
+                    'exec endpoint to take (API 1.57, the timeout '
+                    'parameter). The request holds an API worker for as long '
+                    'as the command runs, so this bounds how long one caller '
+                    'can keep one busy. A caller that asks for no timeout '
+                    'gets [docker] execute_timeout or [container_driver] '
+                    'cri_exec_timeout, as before.'),
     cfg.StrOpt('api_paste_config',
                default="api-paste.ini",
                help="Configuration file for WSGI definition of API."),

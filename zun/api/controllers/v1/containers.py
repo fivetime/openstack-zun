@@ -231,6 +231,33 @@ def _commit_options(kwargs):
     return options
 
 
+def _exec_timeout(timeout, run, interactive, detach):
+    """How long a run exec may take, as asked (1.57).
+
+    Only a command the request waits for has a timeout: a detached one is
+    not waited for, and an interactive session lasts as long as whoever
+    holds it. The ceiling is the operator's, because the request holds an
+    API worker for as long as the command runs.
+    """
+    if not run or interactive or detach:
+        raise exception.InvalidValue(_(
+            'timeout is how long to wait for the command, and only a '
+            'command that is run and waited for is waited for: it cannot '
+            'be combined with detach or an interactive session'))
+    try:
+        timeout = int(timeout)
+    except (TypeError, ValueError):
+        raise exception.InvalidValue(_(
+            'timeout is a number of seconds; %s is not one') % timeout)
+    ceiling = CONF.api.max_execute_timeout
+    if not 1 <= timeout <= ceiling:
+        raise exception.InvalidValue(_(
+            'timeout is between 1 and %(ceiling)d seconds here; '
+            '%(timeout)d was asked for') %
+            {'ceiling': ceiling, 'timeout': timeout})
+    return timeout
+
+
 class ContainersController(base.Controller):
     """Controller for Containers."""
 
@@ -1178,13 +1205,15 @@ class ContainersController(base.Controller):
     @validation.validate_query_param(pecan.request,
                                      schema.query_param_execute_command)
     def execute(self, container_ident, run=True, interactive=False,
-                detach=False, **kwargs):
+                detach=False, timeout=None, **kwargs):
         """Execute command in a running container.
 
         :param container_ident: UUID or Name of a container.
         :param run: If True, execute run.
         :param interactive: Keep STDIN open and allocate a
                             pseudo-TTY for interactive.
+        :param timeout: Seconds to wait for the command to finish (1.57),
+                        up to [api] max_execute_timeout.
         """
         container = api_utils.get_resource('Container', container_ident)
         check_policy_on_container(container.as_dict(), "container:execute")
@@ -1201,6 +1230,9 @@ class ContainersController(base.Controller):
             raise exception.InvalidValue(_(
                 'detach starts a command and does not wait for it; it cannot '
                 'be combined with an interactive session'))
+        if timeout is not None:
+            api_utils.version_check('timeout', '1.57')
+            timeout = _exec_timeout(timeout, run, interactive, detach)
         LOG.debug('Calling compute.container_exec with %(uuid)s command '
                   '%(command)s',
                   {'uuid': container.uuid, 'command': kwargs['command']})
@@ -1210,6 +1242,11 @@ class ContainersController(base.Controller):
             return compute_api.container_exec(context, container,
                                               kwargs['command'],
                                               run, interactive, detach=True)
+        if timeout is not None:
+            return compute_api.container_exec(context, container,
+                                              kwargs['command'],
+                                              run, interactive,
+                                              timeout=timeout)
         return compute_api.container_exec(context, container,
                                           kwargs['command'],
                                           run, interactive)

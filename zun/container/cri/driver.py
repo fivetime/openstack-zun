@@ -1813,12 +1813,13 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 return False
             time.sleep(0.5)
 
-    def execute_run(self, exec_id, command):
+    def execute_run(self, exec_id, command, timeout=None):
         # Bounded well below the RPC reply timeout. A command that outlives
         # that — `sh` with nothing on stdin is enough — leaves the caller with
         # a server error sixty seconds later instead of being told it ran too
-        # long.
-        timeout = CONF.cri_exec_timeout
+        # long. A timeout the caller asked for (1.57) comes with an RPC
+        # deadline of its own.
+        timeout = timeout or CONF.cri_exec_timeout
         try:
             exit_code, out, err = self._exec_in_container(
                 exec_id, command, timeout)

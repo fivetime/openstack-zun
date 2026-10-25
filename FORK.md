@@ -906,6 +906,25 @@ DockerDriver 建容器前,只要 entrypoint 或 command 有一个没给,就把�
 经 RPC 反序列化(oslo.messaging 用原文+kwargs 重建)同样保持原文。测试
 `zun/tests/unit/common/test_exception.py::TestMessagesWithPercentSigns`,旧代码上 4 条失败、报的正是生产那句。
 
+### 4.15 API 1.57:exec 按请求给超时(2026-10-25)
+
+`execute?run=true` 原来只能等 `[docker] execute_timeout`(生产 30 s)或 `[container_driver] cri_exec_timeout`
+(默认 30 s),而且这个值必须小于全局 `rpc_response_timeout`(默认 60 s):命令比 RPC 活得久,调用方拿到的是
+"节点不应答"而不是超时本身。跑几分钟的命令(qinling 的 Zun 编排后端按函数超时同步调用)只能放弃同步、改轮询。
+
+- 新参数 `timeout`(秒),1.57 起;只对"运行并等待"的命令有效,和 `detach`、`interactive`、`run=false` 同用都是 400。
+- 上限 `[api] max_execute_timeout`(默认 300,运维可调);超出 400 并说出上限。请求在命令跑完前一直占着一个
+  zun-api 工作线程,这个上限就是"一个调用方最多能占一个线程多久"。
+- 带了 `timeout` 时 RPC 走 `_call_bounded`,截止 = `timeout` + `rpcapi.EXEC_REPLY_MARGIN`(30 s)。余量必须大于
+  CRI 驱动自己在命令超时后的等待(`cri/driver.py` 的 `EXEC_REPLY_MARGIN`,15 s,运行时杀命令再排空输出),
+  否则两边同时到点,调用方听到的是节点不应答;测试 `test_the_margin_outlasts_the_node_s_own` 钉住这个关系。
+- 不带 `timeout` 时一切照旧:RPC 消息里不放这个参数,manager 也不往驱动传,老 compute 节点和老驱动照常接受。
+  ⚠️ 反过来,带 `timeout` 的请求发到还没升级的 compute 会失败,所以**先升 compute 再升 API**(或一起升)。
+- docker 驱动的超时信息现在说出等了多少秒(仍是 409 Conflict);CRI 驱动仍是 400(`Command did not finish
+  within N seconds`)。两种状态码不一致是原有行为,这一版没动。
+- 测试 `zun/tests/unit/api/controllers/v1/test_exec_timeout.py`、`zun/tests/unit/compute/test_exec_timeout.py`,
+  旧代码上 17 条里 13 条失败(通过的 4 条正是"不带时和以前一样")。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

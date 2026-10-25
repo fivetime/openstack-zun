@@ -22,6 +22,13 @@ from zun.common import rpc_service
 import zun.conf
 from zun import objects
 
+# Seconds an exec's reply may take beyond the command's own timeout. It has
+# to outlast the node's own wait past that timeout -- the CRI driver gives
+# the runtime 15 seconds (cri/driver.py EXEC_REPLY_MARGIN) to kill the
+# command and drain its output -- or the caller is told the node stopped
+# answering instead of why the command was stopped.
+EXEC_REPLY_MARGIN = 30
+
 
 def check_container_host(func):
     """Verify that the container names a compute host, and that it is up.
@@ -134,8 +141,18 @@ class API(rpc_service.API):
 
     @check_container_host
     def container_exec(self, context, container, command, run, interactive,
-                       detach=False):
+                       detach=False, timeout=None):
         extra = {'detach': True} if detach else {}
+        if timeout:
+            # The reply comes when the command is done, so the RPC waits
+            # the command's own timeout and a little more -- not the global
+            # rpc_response_timeout, which a long command would outlive and
+            # a short one should not have to wait out.
+            return self._call_bounded(
+                container.host, 'container_exec',
+                timeout + EXEC_REPLY_MARGIN,
+                container=container, command=command, run=run,
+                interactive=interactive, timeout=timeout)
         return self._call(container.host, 'container_exec',
                           container=container, command=command, run=run,
                           interactive=interactive, **extra)

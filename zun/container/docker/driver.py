@@ -1783,16 +1783,18 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         with docker_utils.docker_client() as docker:
             docker.exec_start(exec_id, detach=True)
 
-    def execute_run(self, exec_id, command):
+    def execute_run(self, exec_id, command, timeout=None):
+        timeout = timeout or CONF.docker.execute_timeout
         with docker_utils.docker_client() as docker:
             sock = docker.exec_start(exec_id, detach=False, tty=False,
                                      stream=False, socket=True)
             try:
-                output = docker_utils.read_exec_output(
-                    sock, CONF.docker.execute_timeout)
+                output = docker_utils.read_exec_output(sock, timeout)
             except socket.timeout:
                 raise exception.Conflict(_(
-                    "Timeout on executing command: %s") % command)
+                    "Timeout on executing command: %(command)s did not "
+                    "finish within %(timeout)d seconds") %
+                    {'command': command, 'timeout': timeout})
             inspect_res = docker.exec_inspect(exec_id)
             return output, inspect_res['ExitCode']
 
