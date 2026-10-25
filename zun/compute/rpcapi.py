@@ -210,11 +210,12 @@ class API(rpc_service.API):
         return self._call(container.host, 'container_stats',
                           container=container)
 
-    def _call_bounded(self, server, method, timeout, **kwargs):
+    def _call_bounded(self, server, method, rpc_timeout, **kwargs):
         # One node at a time is asked with its own deadline, so a node that
         # does not answer costs the caller that deadline and not the
-        # global rpc_response_timeout.
-        cctxt = self._client.prepare(server=server, timeout=timeout)
+        # global rpc_response_timeout. Not named timeout: that is also an
+        # argument of the calls themselves (container_exec, 1.57).
+        cctxt = self._client.prepare(server=server, timeout=rpc_timeout)
         return cctxt.call(self._context, method, **kwargs)
 
     def container_sample(self, context, host, containers, interval=0):

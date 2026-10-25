@@ -924,6 +924,10 @@ DockerDriver 建容器前,只要 entrypoint 或 command 有一个没给,就把�
   within N seconds`)。两种状态码不一致是原有行为,这一版没动。
 - 测试 `zun/tests/unit/api/controllers/v1/test_exec_timeout.py`、`zun/tests/unit/compute/test_exec_timeout.py`,
   旧代码上 17 条里 13 条失败(通过的 4 条正是"不带时和以前一样")。
+- ⚠️ 849daed6 上线(rev 59)后实测:带 `timeout` 的请求全部 500(`_call_bounded() got multiple values for argument
+  'timeout'`)。`_call_bounded` 自己的截止参数也叫 `timeout`,和 RPC 参数撞名;单测把 `_call_bounded` 整个 mock 掉,
+  没测出来。改名 `rpc_timeout`,补 `test_through_the_real_bounded_call`(走真实 `_call_bounded`,只 mock RPC client;
+  旧代码上复现同一个 TypeError)。
 
 ## 五、共享文件系统的信任边界
 

@@ -53,6 +53,26 @@ class TestRpcWaitsAsLongAsTheCommand(base.TestCase):
         self.assertEqual(240, kwargs['timeout'])
         self.api._call.assert_not_called()
 
+    def test_through_the_real_bounded_call(self):
+        """The command's timeout is an argument of the call itself.
+
+        It reached _call_bounded beside that method's own deadline
+        argument, once named timeout too: every request with one was a
+        TypeError, which the API answered with 500. Mocking
+        _call_bounded hid it.
+        """
+        api = rpcapi.API.__new__(rpcapi.API)
+        api._client = mock.Mock()
+        api._context = None
+        api.container_exec(None, self.container, 'c', True, False,
+                           timeout=240)
+
+        api._client.prepare.assert_called_once_with(
+            server='h', timeout=240 + rpcapi.EXEC_REPLY_MARGIN)
+        call = api._client.prepare.return_value.call
+        self.assertEqual(240, call.call_args.kwargs['timeout'])
+        self.assertEqual('container_exec', call.call_args.args[1])
+
     def test_the_margin_outlasts_the_node_s_own(self):
         """Else the caller hears 'the node stopped answering' instead."""
         self.assertGreater(rpcapi.EXEC_REPLY_MARGIN,
