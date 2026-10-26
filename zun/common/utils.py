@@ -188,8 +188,13 @@ def parse_image_name(image, driver=None, registry=None):
         image_tag = ''
         return image_repo, image_tag
 
+    # A digest names the exact image and outranks a tag given with it.
+    # It travels in the tag's place: the docker API takes a digest there,
+    # and image_reference() joins it back with '@' rather than ':'.
     image_tag = 'latest'
-    if image_parts['tag']:
+    if image_parts['digest']:
+        image_tag = image_parts['digest']
+    elif image_parts['tag']:
         image_tag = image_parts['tag']
 
     domain, _ = image_parts.split_hostname()
@@ -200,6 +205,14 @@ def parse_image_name(image, driver=None, registry=None):
             image_repo = '%s/%s' % (CONF.docker.default_registry, image_repo)
 
     return image_repo, image_tag
+
+
+def image_reference(repo, tag):
+    """The one reference a repo and tag from parse_image_name stand for."""
+    if not tag:
+        return repo
+    # A tag cannot contain ':' and a digest always does.
+    return '%s%s%s' % (repo, '@' if ':' in tag else ':', tag)
 
 
 _executor = None

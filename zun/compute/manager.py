@@ -1929,9 +1929,7 @@ class Manager(periodic_task.PeriodicTasks):
     def _do_image_pull(self, context, image):
         LOG.debug('Creating image...')
         image_driver_name = CONF.default_image_driver
-        repo_tag = image.repo
-        if image.tag:
-            repo_tag += ":" + image.tag
+        repo_tag = utils.image_reference(image.repo, image.tag)
         if uuidutils.is_uuid_like(image.repo):
             image.tag = ''
             image_driver_name = 'glance'
@@ -1948,14 +1946,16 @@ class Manager(periodic_task.PeriodicTasks):
                                 "different from %(tar_tag)s the tag in tar",
                                 {'glance_tag': pulled_image['tags'],
                                  'tar_tag': pulled_image['tag']})
-                repo_tag = ':'.join([pulled_image['repo'],
-                                     pulled_image['tag']]) \
-                    if pulled_image['tag'] else pulled_image['repo']
+                repo_tag = utils.image_reference(pulled_image['repo'],
+                                                 pulled_image['tag'])
             image_dict = self.driver.inspect_image(repo_tag)
 
-            image_parts = image_dict['RepoTags'][0].split(":", 1)
-            image.repo = image_parts[0]
-            image.tag = image_parts[1]
+            # An image pulled by digest alone has no tags, and the
+            # digest it was asked for is already the most exact name.
+            if image_dict.get('RepoTags'):
+                image_parts = image_dict['RepoTags'][0].split(":", 1)
+                image.repo = image_parts[0]
+                image.tag = image_parts[1]
             image.image_id = image_dict['Id']
             image.size = image_dict['Size']
             image.save()

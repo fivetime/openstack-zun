@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    An image given by digest, ``repo@sha256:...``, is now pulled and run by
+    that digest. The digest used to be dropped, so the docker driver pulled
+    ``repo:latest`` instead: a ``manifest unknown`` error where the registry
+    has no ``latest`` tag, and a different image where it has one.

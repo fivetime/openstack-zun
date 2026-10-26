@@ -929,6 +929,21 @@ DockerDriver 建容器前,只要 entrypoint 或 command 有一个没给,就把�
   没测出来。改名 `rpc_timeout`,补 `test_through_the_real_bounded_call`(走真实 `_call_bounded`,只 mock RPC client;
   旧代码上复现同一个 TypeError)。
 
+### 4.16 按 digest 引用的镜像按 digest 拉取和运行(2026-10-26)
+
+`image` 写成 `repo@sha256:…` 时,`parse_image_name` 只取 name 和 tag,digest 被丢掉、tag 补成 `latest`:docker 路径
+拉的是 `repo:latest`。仓库里没有 `latest` 时报 404 `manifest unknown`(qinling 按 digest 钉运行时,生产实测撞上);
+有 `latest` 时更糟,跑的是另一个镜像。胶囊走 CRI 驱动,直接用原始引用,不受影响。
+
+- `parse_image_name` 有 digest 时把它放在 tag 的位置返回(同时给了 tag 也以 digest 为准)。docker 的
+  `/images/create` 接受 `tag=sha256:…`。
+- 新增 `utils.image_reference(repo, tag)`:tag 里有 `:` 就是 digest,用 `@` 拼回去,否则用 `:`。docker 镜像驱动的本地查找、
+  docker 驱动建容器(含胶囊里的容器)、CRI 驱动的 `pull_image`、`image_pull` 的 inspect,原来各自用 `:` 拼,都换成它。
+- `image_pull`(images API)按 digest 拉到的镜像没有 `RepoTags`,原来取 `RepoTags[0]` 会 IndexError;现在没有就保留请求时的 repo/tag。
+- 拉取策略:digest 不是 `latest`,默认 `ifnotpresent`,和固定 tag 一样;digest 不可变,本地有就是同一个镜像。
+- 测试 `zun/tests/unit/image/docker/test_image_digest.py` 从引用字符串经 `parse_image_name` 一直走到 docker 客户端
+  (只 mock 客户端),旧代码上 6 条里 5 条失败(通过的那条是"tag 和以前一样")。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

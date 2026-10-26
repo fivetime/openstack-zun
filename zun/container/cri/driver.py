@@ -3741,7 +3741,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         image_loaded is True because there is nothing left to load: the image
         is in the runtime's store, not in a file waiting to be imported.
         """
-        ref = '%s:%s' % (repo, tag) if tag else repo
+        ref = utils.image_reference(repo, tag)
         try:
             self._pull_image_ref(ref)
         except grpc.RpcError as e:

@@ -432,10 +432,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             network_driver = zun_network.driver(context=context,
                                                 docker_api=docker)
             name = container.name
-            if image['tag']:
-                image_repo = image['repo'] + ":" + image['tag']
-            else:
-                image_repo = image['repo']
+            image_repo = utils.image_reference(image['repo'], image['tag'])
             LOG.debug('Creating container with image %(image)s name %(name)s',
                       {'image': image_repo, 'name': name})
             self._provision_network(context, network_driver,
@@ -2321,10 +2318,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             self._apply_create_options(container, host_config)
 
             kwargs['host_config'] = docker.create_host_config(**host_config)
-            if image['tag']:
-                image_repo = image['repo'] + ":" + image['tag']
-            else:
-                image_repo = image['repo']
+            image_repo = utils.image_reference(image['repo'], image['tag'])
             response = docker.create_container(image_repo, **kwargs)
             container.container_id = response['Id']
             docker.start(container.container_id)

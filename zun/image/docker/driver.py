@@ -53,7 +53,7 @@ class DockerDriver(driver.ContainerImageDriver):
 
     def _search_image_on_host(self, repo, tag):
         with docker_utils.docker_client() as docker:
-            image = repo + ":" + tag
+            image = utils.image_reference(repo, tag)
             LOG.debug('Inspecting image locally %s', image)
             try:
                 image_dict = docker.inspect_image(image)
@@ -83,8 +83,8 @@ class DockerDriver(driver.ContainerImageDriver):
                 raise exception.ImageNotFound(message=str(e))
             except errors.APIError:
                 LOG.exception('Error on pulling image')
-                message = _('Error on pulling image: %(repo)s:%(tag)s') % {
-                    'repo': repo, 'tag': tag}
+                message = _('Error on pulling image: %s'
+                            ) % utils.image_reference(repo, tag)
                 raise exception.ZunException(message)
 
     def push_image(self, context, repo, tag, registry):
