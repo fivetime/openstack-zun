@@ -1,0 +1,11 @@
+---
+fixes:
+  - |
+    The pod ceiling and block IO limits of a runc capsule on a node with
+    systemd cgroups are now really given to its slice. zun-compute's
+    container shares the host's PID 1 but not its root, so ``systemctl``
+    took itself to be in a chroot, ignored every command and exited 0: the
+    capsule ran without its ceiling, and its slice outlived it. ``systemctl``
+    is now told to act regardless (``SYSTEMD_IGNORE_CHROOT``), and what
+    systemd reports for the slice is checked after the properties are set;
+    a capsule whose limits did not hold is refused.

@@ -587,6 +587,13 @@ SYSTEMD_IO_PROPERTIES = (
     ('wiops', 'IOWriteIOPSMax'),
 )
 
+# What `systemctl show` reports a slice property as, where that is not the
+# name it is set by; the value comes back in other units too.
+SYSTEMD_SHOWN_AS = {
+    'CPUQuota': 'CPUQuotaPerSecUSec',
+    'CPUQuotaPeriodSec': 'CPUQuotaPeriodUSec',
+}
+
 
 class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 driver.CapsuleDriver):
@@ -1114,25 +1121,67 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                   'driver': 'systemd' if known[runtime] else 'cgroupfs'})
         return known[runtime]
 
+    @staticmethod
+    def _systemctl(*args):
+        # zun-compute runs in a container that shares the host's PID 1 and
+        # /run but not its root. systemctl takes that for a chroot and,
+        # there, prints "Running in chroot, ignoring command" and exits 0
+        # without asking systemd anything. It is the host's systemd that is
+        # meant, through its socket under the shared /run.
+        return utils.execute('systemctl', *args,
+                             env_variables={'SYSTEMD_IGNORE_CHROOT': '1'})
+
     def _set_slice_properties(self, capsule, props, what):
         """Give the capsule's slice `props`, or fail closed.
 
         --runtime: they last as long as the node is up, which is as long as
         the sandbox can. The slice need not exist yet; systemd starts it.
+        What systemd then reports is checked, not systemctl's exit status:
+        a command it ignores exits 0 too.
         """
         if not props:
             return
+        name = self._slice_name(capsule)
         args = ['%s=%s' % item for item in sorted(props.items())]
         try:
-            utils.execute('systemctl', 'set-property', '--runtime',
-                          self._slice_name(capsule), *args)
+            self._systemctl('set-property', '--runtime', name, *args)
+            shown = {SYSTEMD_SHOWN_AS.get(key, key): key for key in props}
+            out, _err = self._systemctl(
+                'show', '--property=' + ','.join(sorted(shown)), name)
+            missing = self._properties_not_held(props, shown, out)
         except Exception as e:
             raise exception.ZunException(
                 'The %(what)s for capsule %(uuid)s could not be set on its '
                 'slice: %(err)s -- refusing to run it unlimited'
                 % {'what': what, 'uuid': capsule.uuid, 'err': e})
+        if missing:
+            raise exception.ZunException(
+                'The %(what)s for capsule %(uuid)s did not hold on its '
+                'slice (%(props)s) -- refusing to run it unlimited'
+                % {'what': what, 'uuid': capsule.uuid,
+                   'props': ', '.join(missing)})
         LOG.debug('Slice of %(uuid)s: %(props)s',
                   {'uuid': capsule.uuid, 'props': args})
+
+    @staticmethod
+    def _properties_not_held(props, shown, out):
+        """The properties `systemctl show` output says the slice lacks.
+
+        One set under its own name reads back as given; one shown under
+        another name (and unit) need only no longer be unlimited.
+        """
+        held = dict(line.split('=', 1) for line in out.splitlines()
+                    if '=' in line)
+        missing = []
+        for show_name, key in sorted(shown.items()):
+            value = held.get(show_name)
+            if show_name == key:
+                ok = value == str(props[key])
+            else:
+                ok = value not in (None, '', 'infinity')
+            if not ok:
+                missing.append('%s=%s' % (key, value))
+        return missing
 
     def _release_slice(self, owner):
         """Stop the capsule's slice and drop the properties it was given.
@@ -1142,13 +1191,12 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         drop-in under /run/systemd, would outlive every capsule.
         """
         name = self._slice_name(owner)
-        for cmd in (('systemctl', 'stop', name),
-                    ('systemctl', 'revert', name)):
+        for verb in ('stop', 'revert'):
             try:
-                utils.execute(*cmd)
+                self._systemctl(verb, name)
             except Exception as e:
                 LOG.warning('Could not %(cmd)s %(slice)s: %(err)s',
-                            {'cmd': cmd[1], 'slice': name, 'err': e})
+                            {'cmd': verb, 'slice': name, 'err': e})
 
     @staticmethod
     def _log_directory():

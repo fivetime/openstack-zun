@@ -30,6 +30,10 @@ from zun.tests import base
 
 UUID = 'ea8e2a25-2901-438d-8157-de7ffd68d051'
 SLICE = 'zun-ea8e2a25_2901_438d_8157_de7ffd68d051.slice'
+ENV = {'env_variables': {'SYSTEMD_IGNORE_CHROOT': '1'}}
+MEM = 256 * 1024 * 1024
+CEILING_SHOWN = ('CPUQuotaPerSecUSec=500ms\nCPUQuotaPeriodUSec=100ms\n'
+                 'MemoryMax=%d\nMemorySwapMax=0\n' % MEM)
 
 CONTAINERD_CONFIG = {'containerd': {'runtimes': {
     'runc': {'options': {'SystemdCgroup': True}},
@@ -91,12 +95,41 @@ class SystemdCgroupsTest(base.TestCase):
         self.driver.runtime_stub.Status.assert_not_called()
 
     def test_the_ceiling_is_the_slices_own_properties(self):
+        self.execute.side_effect = [('', ''), (CEILING_SHOWN, '')]
+
         self.driver._apply_pod_ceiling(self.capsule, 'runc')
 
-        self.execute.assert_called_once_with(
-            'systemctl', 'set-property', '--runtime', SLICE,
-            'CPUQuota=50.00%', 'CPUQuotaPeriodSec=100000us',
-            'MemoryMax=%d' % (256 * 1024 * 1024), 'MemorySwapMax=0')
+        self.assertEqual(
+            [mock.call('systemctl', 'set-property', '--runtime', SLICE,
+                       'CPUQuota=50.00%', 'CPUQuotaPeriodSec=100000us',
+                       'MemoryMax=%d' % MEM, 'MemorySwapMax=0', **ENV),
+             mock.call('systemctl', 'show',
+                       '--property=CPUQuotaPerSecUSec,CPUQuotaPeriodUSec,'
+                       'MemoryMax,MemorySwapMax', SLICE, **ENV)],
+            self.execute.call_args_list)
+
+    def test_a_ceiling_systemctl_ignored_fails_closed(self):
+        # What systemctl does in zun-compute's container when not told
+        # otherwise: exits 0, having asked systemd nothing.
+        ignored = ('', "Running in chroot, ignoring command 'set-property'")
+        self.execute.side_effect = [
+            ignored, ('', "Running in chroot, ignoring command 'show'")]
+
+        self.assertRaises(exception.ZunException,
+                          self.driver._apply_pod_ceiling,
+                          self.capsule, 'runc')
+
+    def test_a_ceiling_that_did_not_hold_fails_closed(self):
+        self.execute.side_effect = [
+            ('', ''),
+            ('CPUQuotaPerSecUSec=infinity\nCPUQuotaPeriodUSec=100ms\n'
+             'MemoryMax=infinity\nMemorySwapMax=infinity\n', '')]
+
+        e = self.assertRaises(exception.ZunException,
+                              self.driver._apply_pod_ceiling,
+                              self.capsule, 'runc')
+        self.assertIn('CPUQuota=infinity', str(e))
+        self.assertIn('MemoryMax=infinity', str(e))
 
     def test_a_ceiling_systemd_refuses_fails_closed(self):
         self.execute.side_effect = exception.CommandError(
@@ -115,19 +148,27 @@ class SystemdCgroupsTest(base.TestCase):
         self.capsule.device_read_iops = None
         self.capsule.device_write_iops = 200
 
+        weight = hostio.io_weight(500)
+        self.execute.side_effect = [
+            ('', ''),
+            ('IOReadBandwidthMax=/dev/block/253:0 1048576\n'
+             'IOWeight=%d\nIOWriteIOPSMax=/dev/block/253:0 200\n'
+             % weight, '')]
+
         self.driver._apply_host_io_limits(self.capsule, 'sandbox-id')
 
-        self.execute.assert_called_once_with(
-            'systemctl', 'set-property', '--runtime', SLICE,
-            'IOReadBandwidthMax=/dev/block/253:0 1048576',
-            'IOWeight=%d' % hostio.io_weight(500),
-            'IOWriteIOPSMax=/dev/block/253:0 200')
+        self.assertEqual(
+            mock.call('systemctl', 'set-property', '--runtime', SLICE,
+                      'IOReadBandwidthMax=/dev/block/253:0 1048576',
+                      'IOWeight=%d' % weight,
+                      'IOWriteIOPSMax=/dev/block/253:0 200', **ENV),
+            self.execute.call_args_list[0])
 
     def test_the_slice_is_stopped_and_its_properties_dropped(self):
         self.driver._release_slice(self.capsule)
 
-        self.assertEqual([mock.call('systemctl', 'stop', SLICE),
-                          mock.call('systemctl', 'revert', SLICE)],
+        self.assertEqual([mock.call('systemctl', 'stop', SLICE, **ENV),
+                          mock.call('systemctl', 'revert', SLICE, **ENV)],
                          self.execute.call_args_list)
 
     def test_a_dashed_parent_nests_as_systemd_reads_it(self):

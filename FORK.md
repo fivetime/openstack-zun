@@ -1117,10 +1117,27 @@ systemd 驱动同样的做法:
   CPUQuota= CPUQuotaPeriodSec= MemoryMax= MemorySwapMax=`(slice 不存在时 systemd 自己建),失败即拒绝(不让租户无限制跑)。
 - **块 IO**:`IOWeight=`、`IO{Read,Write}{Bandwidth,IOPS}Max=/dev/block/MAJ:MIN N` 设在 slice 上。
 - **删除**:`systemctl stop` + `systemctl revert`(否则 slice 和 /run/systemd/system.control 下的 drop-in 永远留着)。
-- zun-compute 是特权容器、挂了宿主 `/var/run`,镜像里有 `systemctl`,直接经宿主 D-Bus 操作。
+- zun-compute 是特权容器、hostPID、挂了宿主 `/run`,镜像里有 `systemctl`,经宿主 systemd 的 socket 操作——**但要带
+  `SYSTEMD_IGNORE_CHROOT=1`**,见下面的补记。
 - **验证**:单测(命名、自动判断与缓存、配置覆盖、上限与 IO 属性、失败即拒、释放);真驱动代码对 SystemdCgroup 的 containerd 实验
   实例走完整流程:slice 名正确、cpu.max `50000 100000`、memory.max 256 MiB、swap 0、io.weight 2930、io.max wbps=10 MiB/s,
   `daemon-reload` 后不变,沙箱 scope 在 slice 下,删除后 slice 与 drop-in 都没了。
+
+**补记(同日,生产验收发现):上面的属性在生产上一个都没设上,而且没报错。**zun-compute 容器和宿主共用 PID 1,但根目录不同,
+`systemctl` 据此判定自己在 chroot 里,对 set-property/show/stop/revert 一律打印 `Running in chroot, ignoring command
+'set-property'` 然后**退出码 0**。驱动只看退出码,以为设上了,失败即拒从没触发;删除时 stop/revert 同样被忽略,slice 留着
+(OpenStack-2026.2-Upgrade 会话在 worker2 上发现:slice 在,CPUQuota/MemoryMax/MemorySwapMax 全是 infinity;各容器自己的
+cpu.max/memory.max 由 runc 写在容器 scope 上,仍然生效,缺的是 pod 上限)。上面的实验是在宿主上直接跑驱动代码,不在
+chroot 里,所以没暴露。修法:
+
+- 所有 systemctl 调用带 `SYSTEMD_IGNORE_CHROOT=1`:要操作的本来就是宿主 systemd,经共享 `/run` 下它的 socket 连得到。
+- **不信退出码,回读**:set-property 之后 `systemctl show` 这些属性;按原名显示的要和设的值逐字相同,改了名显示的
+  (CPUQuota→CPUQuotaPerSecUSec,CPUQuotaPeriodSec→CPUQuotaPeriodUSec,单位也变)要求不再是 infinity。不符即拒绝建沙箱,
+  报出哪几个属性没设上。
+- **验证**:新单测(chroot 被忽略时失败即拒、回读不符时失败即拒;在无修复代码上先看它失败);用生产镜像 05fe9d4e,
+  特权 + `--pid=host` + 挂宿主 `/run`(和 zun-compute 相同)跑改后的驱动代码:不带变量时复现 `Running in chroot` + rc 0,
+  带变量后宿主上 MemoryMax 268435456、CPUQuotaPerSecUSec 500ms、IOWeight 100,一个 systemd 不接受的值被拒绝,释放后
+  drop-in 清零。
 
 ## 五、共享文件系统的信任边界
 
