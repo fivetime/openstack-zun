@@ -62,7 +62,9 @@ class HTTPNotAcceptableAPIVersion(exc.HTTPNotAcceptable):
             err['links'] = [links]
             err['title'] = "Requested microversion is unsupported"
 
-        self.app_iter = [json.dump_as_bytes(err).encode("latin-1")]
+        # dump_as_bytes is bytes already: encoding it again raised, and a
+        # client asking for a newer version than this got a 500 instead.
+        self.app_iter = [json.dump_as_bytes(err)]
         self.headers['Content-Length'] = str(len(self.app_iter[0]))
 
         return super(HTTPNotAcceptableAPIVersion, self).__call__(

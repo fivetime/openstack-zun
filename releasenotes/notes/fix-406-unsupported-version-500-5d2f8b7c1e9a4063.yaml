@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    A request asking for an API microversion outside the range the server
+    supports is answered with 406 and the supported range again, instead of
+    failing with a 500 while the error body was built.

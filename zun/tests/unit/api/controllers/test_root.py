@@ -165,3 +165,33 @@ class TestRootController(api_base.FunctionalTest):
 
         response = app.get('/v1/containers', expect_errors=True)
         self.assertEqual(401, response.status_int)
+
+
+class TestUnsupportedVersion(api_base.FunctionalTest):
+    """A client newer than the server is told so, not handed a 500."""
+
+    def _get(self, version):
+        return self.get('/v1/services', headers={
+            'OpenStack-API-Version': 'container %s' % version},
+            expect_errors=True)
+
+    def test_above_the_maximum_is_a_406_naming_it(self):
+        major, minor = versions.CURRENT_MAX_VER.split('.')
+        response = self._get('%s.%d' % (major, int(minor) + 1))
+
+        self.assertEqual(406, response.status_int)
+        self.assertEqual('container %s' % versions.CURRENT_MAX_VER,
+                         response.headers['OpenStack-API-Maximum-Version'])
+        self.assertEqual('container %s' % versions.BASE_VER,
+                         response.headers['OpenStack-API-Minimum-Version'])
+        error = response.json['errors'][0]
+        self.assertEqual(406, error['status'])
+        self.assertEqual('Requested microversion is unsupported',
+                         error['title'])
+
+    def test_below_the_minimum_is_a_406_too(self):
+        response = self._get('0.9')
+
+        self.assertEqual(406, response.status_int)
+        self.assertEqual('container %s' % versions.BASE_VER,
+                         response.headers['OpenStack-API-Minimum-Version'])
