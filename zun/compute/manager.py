@@ -1231,8 +1231,9 @@ class Manager(periodic_task.PeriodicTasks):
                 if not isinstance(output, exec_output.ExecOutput):
                     # A driver that returns one blob, as all did before.
                     output = exec_output.ExecOutput.from_combined(output)
-                # Text from here on: the reply crosses RPC as JSON.
-                reply = output.as_reply()
+                # Base64 on the wire, see ExecOutput.as_wire; the API makes
+                # the caller's fields from it.
+                reply = output.as_wire()
                 reply.update({"exit_code": exit_code,
                               "exec_id": None,
                               "token": None})

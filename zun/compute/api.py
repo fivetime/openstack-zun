@@ -24,6 +24,7 @@ from zun.common import profiler
 from zun.compute import container_actions
 from zun.compute import rpcapi
 import zun.conf
+from zun.container import exec_output
 from zun import objects
 from zun.scheduler.client import query as scheduler_client
 
@@ -199,6 +200,13 @@ class API(object):
     def container_exec(self, context, container, *args, **kwargs):
         data = self.rpcapi.container_exec(context, container, *args,
                                           **kwargs)
+        if 'output_b64' in data:
+            # A command run and waited for, answered by a node that sends
+            # its output as base64 (ExecOutput.as_wire). A node that
+            # predates it answers `output` alone, which is passed on.
+            wire = {k: data.pop(k) for k in list(data) if k.endswith('_b64')}
+            wire['output_truncated'] = data.pop('output_truncated', [])
+            data.update(exec_output.client_fields(wire))
         token = data.pop('token', None)
         exec_id = data.get('exec_id')
         # The node running the container says which proxy reaches it; only it

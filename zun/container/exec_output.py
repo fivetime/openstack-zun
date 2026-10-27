@@ -86,7 +86,16 @@ class ExecOutput(object):
 
     @property
     def combined(self):
-        return b''.join(bytes(self._kept[s][a:b]) for s, a, b in self._runs)
+        """Both streams in the order written, as older callers read them.
+
+        A stream cut inside a character loses that partial character here
+        too, so `output` agrees with the stream's own field.
+        """
+        usable = {s: _usable_length(bytes(self._kept[s]),
+                                    _NAMES[s] in self.truncated)
+                  for s in (STDOUT, STDERR)}
+        return b''.join(bytes(self._kept[s][a:min(b, usable[s])])
+                        for s, a, b in self._runs if a < usable[s])
 
     @classmethod
     def from_combined(cls, output):
@@ -97,45 +106,71 @@ class ExecOutput(object):
         result.feed(STDOUT, output or b'')
         return result
 
-    def as_reply(self):
-        """The fields of the exec's answer, all of them JSON-safe.
+    def as_wire(self):
+        """What the compute node sends back over RPC.
 
-        The answer crosses RPC as JSON, so bytes have to become text here;
-        a command writing anything but UTF-8 used to fail the whole request
-        with a decode error. A stream that is valid UTF-8 is text; one that
-        is not is base64, and says so, so nothing is silently altered.
-        `output`, the combined field older callers read, has to stay a
-        string: undecodable bytes in it are replaced, and output_replaced
-        names the streams that had any.
+        Base64 only, which JSON carries as it is. Text would not travel
+        that well: the RPC payload is JSON with ensure_ascii, wrapped in
+        JSON again by oslo.messaging, so a NUL or a CJK character costs
+        seven bytes on the wire, and a reply bounded in bytes would not be
+        bounded on the broker, whose messages have a size limit (16 MiB on
+        RabbitMQ by default). In base64 three bytes cost four, whatever
+        they are; the caller's fields are made from this by the API
+        (client_fields).
         """
-        reply = {'output_truncated': sorted(self.truncated),
-                 'output_replaced': []}
-        for stream in (STDOUT, STDERR):
-            name = _NAMES[stream]
-            try:
-                reply[name] = _text(bytes(self._kept[stream]),
-                                    name in self.truncated)
-                reply[name + '_encoding'] = 'utf-8'
-            except UnicodeDecodeError:
-                data = bytes(self._kept[stream])
-                reply[name] = base64.b64encode(data).decode('ascii')
-                reply[name + '_encoding'] = 'base64'
-                reply['output_replaced'].append(name)
-        reply['output'] = self.combined.decode('utf-8', 'replace')
-        return reply
+        return {
+            'stdout_b64': base64.b64encode(self.stdout).decode('ascii'),
+            'stderr_b64': base64.b64encode(self.stderr).decode('ascii'),
+            'output_b64': base64.b64encode(self.combined).decode('ascii'),
+            'output_truncated': sorted(self.truncated),
+        }
+
+
+def client_fields(wire):
+    """The fields a caller reads, from what the compute node sent.
+
+    A stream that is valid UTF-8 is text; one that is not is base64, and
+    says so, so nothing is silently altered (a command writing anything
+    but UTF-8 used to fail the whole request). `output`, the combined
+    field older callers read, has to stay a string: undecodable bytes in
+    it are replaced, and output_replaced names the streams that had any.
+    """
+    truncated = list(wire.get('output_truncated') or [])
+    fields = {'output_truncated': truncated, 'output_replaced': []}
+    for name in ('stdout', 'stderr'):
+        data = base64.b64decode(wire.get(name + '_b64') or '')
+        try:
+            fields[name] = _text(data, name in truncated)
+            fields[name + '_encoding'] = 'utf-8'
+        except UnicodeDecodeError:
+            fields[name] = base64.b64encode(data).decode('ascii')
+            fields[name + '_encoding'] = 'base64'
+            fields['output_replaced'].append(name)
+    fields['output'] = base64.b64decode(
+        wire.get('output_b64') or '').decode('utf-8', 'replace')
+    return fields
+
+
+def _usable_length(data, truncated):
+    """How much of `data` is whole characters, when a cut ended it.
+
+    A cut made at the limit can land inside a character. Only that case
+    is trimmed: bytes that are not UTF-8 anywhere else are left alone.
+    """
+    if not truncated:
+        return len(data)
+    try:
+        data.decode('utf-8')
+    except UnicodeDecodeError as e:
+        if e.reason == 'unexpected end of data' and e.end == len(data):
+            return e.start
+    return len(data)
 
 
 def _text(data, truncated):
     """`data` as text, or UnicodeDecodeError when it is not UTF-8.
 
-    A cut made at the limit can land inside a character. Text that was
-    truncated loses that partial character rather than being reported as
-    binary.
+    Text that was truncated loses a partial last character rather than
+    being reported as binary.
     """
-    try:
-        return data.decode('utf-8')
-    except UnicodeDecodeError as e:
-        if (truncated and e.reason == 'unexpected end of data'
-                and e.end == len(data)):
-            return data[:e.start].decode('utf-8')
-        raise
+    return data[:_usable_length(data, truncated)].decode('utf-8')

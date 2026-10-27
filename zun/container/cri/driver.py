@@ -139,7 +139,9 @@ _CALLS_WITH_THEIR_OWN_TIMEOUT = frozenset(['StopContainer', 'ExecSync'])
 
 # containerd keeps at most this much of each stream of a synchronous exec
 # and drops the rest without saying so (maxStreamSize in
-# internal/cri/server/container_execsync.go).
+# internal/cri/server/container_execsync.go). With its default
+# max_send_message_size, also 16 MiB, an answer that large is refused
+# before it is sent; a runtime configured to send more can reach it.
 RUNTIME_EXEC_STREAM_MAX = 16 * 1024 * 1024
 # gRPC's own default refuses any answer over 4 MiB, so a command printing
 # more than that failed with RESOURCE_EXHAUSTED instead of returning its
@@ -1840,6 +1842,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
                 raise exception.Invalid(
                     _('Command did not finish within %d seconds') % timeout)
+            if e.code() == grpc.StatusCode.RESOURCE_EXHAUSTED:
+                # The runtime refuses to send an answer over its own
+                # message size (containerd's [grpc] max_send_message_size,
+                # 16 MiB by default): the command ran, its output is lost.
+                raise exception.Invalid(_(
+                    'The command finished, but its output is larger than '
+                    'the container runtime will send back; write less, or '
+                    'copy large results out as files'))
             if _output_still_held(e):
                 # The command is done; what the runtime could not do is
                 # collect its output, because a process the command started

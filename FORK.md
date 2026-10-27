@@ -950,7 +950,7 @@ DockerDriver 建容器前,只要 entrypoint 或 command 有一个没给,就把�
 一条 `cat` 大文件就能把 compute 节点和 API worker 撑大到文件那么大。另外输出不是 UTF-8 时(二进制、图片),
 compute 回 RPC 前做 JSON 序列化直接 `UnicodeDecodeError`,调用方只拿到 500。
 
-- 新选项 `[compute] exec_output_limit`(默认 65536 字节,最小 1024):stdout、stderr 各保留这么多。命令照常跑完、
+- 新选项 `[compute] exec_output_limit`(默认 65536 字节,最小 1024,最大 2 MiB):stdout、stderr 各保留这么多。命令照常跑完、
   退出码是真的,超出的部分边读边丢。docker 驱动的 `read_exec_output` 改成边收边拆帧(以前是全部收齐再拆),
   任何时刻只持有已保留的部分加不到一个帧头。
 - CRI 驱动:containerd 的 `ExecSync` 自己攒满整段输出再一次性返回(每路最多 16 MiB,超出静默截断,
@@ -958,12 +958,22 @@ compute 回 RPC 前做 JSON 序列化直接 `UnicodeDecodeError`,调用方只拿
   `max_receive_message_length` 从默认 4 MiB 调到 33 MiB:以前两路合计超过 4 MiB 时 `ExecSync` 直接
   `RESOURCE_EXHAUSTED`,走不到任何截断逻辑(kubezun 会话指出)。这个通道探针也在用,只调大接收上限,探针行为不变;
   截断只加在 `execute_run`(API 发起的同步执行)上,探针走的 `_exec_in_container` 没动。
+- ⚠ **RPC 上传的一律是 base64**(`ExecOutput.as_wire`:`stdout_b64`、`stderr_b64`、`output_b64`、`output_truncated`),
+  调用方看到的字段由 API 侧的 `exec_output.client_fields` 生成(`compute/api.py` 的 `container_exec`)。第一版在 compute
+  就把输出转成文本放进回复,kubezun 会话核对时实测指出:RPC 载荷是 `ensure_ascii` 的 JSON,oslo.messaging 还要再包一层 JSON,
+  NUL 或中文一个字节在消息里要 7 个字节,回复里同一份内容又出现两次(各流 + 合并),上限 L 时最坏约 28L,
+  1 MiB 就是 28 MiB,超过 RabbitMQ 16 MiB 的单条上限:不是截断,而是 compute 发不出回复、API 等到超时报 500。
+  base64 不管内容是什么都是 4/3,最坏约 5.33L:1 MiB → 5.33 MiB、2 MiB(选项上限)→ 10.67 MiB。测试
+  `test_the_largest_reply_fits_the_broker_s_message` 用真实的序列化器和 `serialize_msg` 包装钉住这一点。
+  ⚠ 滚动升级时:新 compute 配旧 API,旧 API 会把 `*_b64` 原样转给调用方、没有 `output`。**先升 API 或一起升**。
+- CRI 驱动收到 `RESOURCE_EXHAUSTED`(containerd 自己的 `max_send_message_size` 默认也是 16 MiB,超过就拒发)时
+  给一句清楚的 400,不再是 500。"≥ 16 MiB 标记截断"只有节点放大了这个发送上限才会走到。
 - 新模块 `zun/container/exec_output.py` 的 `ExecOutput`:两路分别保留,记住写入顺序,`combined` 按原顺序交错
   (老字段 `output` 和以前一样;CRI 仍是 stdout 在前、stderr 在后)。
 - 回复新增字段(按本 fork 惯例对所有版本都返回,1.58 只记录出现的版本):`stdout`、`stderr`、
   `stdout_encoding`/`stderr_encoding`(`utf-8`,或不是 UTF-8 时 `base64`,原样保真)、`output_truncated`
   (被截断的流)、`output_replaced`(不是 UTF-8 的流)。截断切在多字节字符中间时丢掉那半个字符,仍按文本给。
-  `output` 必须是字符串,里面的非 UTF-8 字节换成替换字符。
+  `output` 必须是字符串,里面的非 UTF-8 字节换成替换字符;被截断的流在合并输出里同样丢掉末尾半个字符,`output` 和该流字段一致。
 - 响应头 `X-Zun-Output-Truncated`、`X-Zun-Output-Replaced`(值为流名,逗号分隔)对任何版本都给:固定在老版本、
   只读 `output` 的调用方(kubezun 固定 1.40)也能知道输出被截断或改过。交互式 exec(`run=false&interactive=true`)
   回复和以前完全一样,不带这两个头。
@@ -971,8 +981,9 @@ compute 回 RPC 前做 JSON 序列化直接 `UnicodeDecodeError`,调用方只拿
 - **不做的**:不存任何执行结果(用户定:存储的代价不可评估,恶意调用能打爆存储)。不一直占着 API 的做法是
   流式执行(非终端 exec 也走 wsproxy 多通道),另做。
 - 测试 `zun/tests/unit/compute/test_exec_output.py`、`zun/tests/unit/api/controllers/v1/test_exec_output.py`、
-  `zun/tests/unit/container/docker/test_utils.py`(`TestReadExecOutput`):只把新模块放进旧代码时,27 条里 16 条失败
-  (通过的是新模块自身、交互式不变这类)。compute 那组走真实的 RPC 序列化器:旧代码上二进制输出在这里抛
+  `zun/tests/unit/container/docker/test_utils.py`(`TestReadExecOutput`):只把新模块放进旧代码(69a42c84)时,32 条里 18 条失败
+  (通过的是新模块自身、交互式不变、旧 compute 回复照传这类);在第一版 0780a601 上 4 条失败(最坏回复超 16 MiB、
+  经真实序列化后二进制和整块输出、CRI 拒发)。compute 那组走真实的 RPC 序列化器:旧代码上二进制输出在这里抛
   `UnicodeDecodeError`。读取测试的写入端加了超时:读取方提前出错时,写入线程不会卡在满的 socket 上让清理永远等。
 
 ## 五、共享文件系统的信任边界

@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import base64
 import threading
 import time
 from unittest import mock
@@ -1178,7 +1179,9 @@ class TestManager(base.TestCase):
         container = Container(self.context, **utils.get_test_container())
         result = self.compute_manager.container_exec(
             self.context, container, 'fake_cmd', True, False)
-        self.assertEqual('fake_output', result.get('output'))
+        # Base64 on the wire (ExecOutput.as_wire); the API decodes it.
+        self.assertEqual(b'fake_output',
+                         base64.b64decode(result.get('output_b64')))
         self.assertEqual('fake_exit_code', result.get('exit_code'))
         self.assertIsNone(result.get('exec_id'))
         self.assertIsNone(result.get('token'))

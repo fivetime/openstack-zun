@@ -24,7 +24,7 @@ def _reply(stdout=b'', stderr=b'', limit=8):
     output = exec_output.ExecOutput(limit=limit)
     output.feed(exec_output.STDOUT, stdout)
     output.feed(exec_output.STDERR, stderr)
-    reply = output.as_reply()
+    reply = exec_output.client_fields(output.as_wire())
     reply.update({'exit_code': 0, 'exec_id': None, 'proxy_url': None})
     return reply
 

@@ -198,7 +198,7 @@ Possible values:
              'answered as usual.'),
     cfg.IntOpt(
         'exec_output_limit',
-        default=65536, min=1024, max=4194304,
+        default=65536, min=1024, max=2097152,
         help='Bytes of stdout, and as many of stderr, kept from a command '
              'that is run and waited for (execute with run=true). The '
              'command still runs to its end; what it writes beyond this is '
@@ -207,8 +207,9 @@ Possible values:
              'header). The whole output travels in one RPC reply and is '
              'held by the compute node and the API worker until it is '
              'answered, so this bounds what one request can make them '
-             'hold. At most 4 MiB: both streams, base64 when they are '
-             'not UTF-8, have to fit in one message of the RPC broker '
+             'hold. At most 2 MiB: the reply carries both streams and '
+             'their combination, in base64, about 5.4 times this limit, '
+             'and has to fit in one message of the RPC broker '
              '(RabbitMQ\'s max_message_size, 16 MiB by default). Exec '
              'output is a channel for a command\'s result, not for files: '
              'copy files with the archive API.'),

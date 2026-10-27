@@ -11,14 +11,22 @@ features:
     version.
 upgrade:
   - |
-    New option ``[compute] exec_output_limit`` (65536 bytes by default):
+    New option ``[compute] exec_output_limit`` (65536 bytes by default,
+    2 MiB at most):
     each stream of a synchronous exec keeps at most this much; the command
     still runs to its end. Before, the whole output was held by the compute
     node and the API worker whatever its size. Raise it where callers read
-    large outputs through exec; the output travels in one RPC reply.
+    large outputs through exec; the output travels in one RPC reply, as
+    base64, about 5.4 times the limit at most.
+  - |
+    The compute node now sends a waited-for command's output as base64 and
+    the API makes the caller's fields from it. Upgrade the API before, or
+    together with, the compute nodes: an older API passes the new reply on
+    without its ``output`` field.
 fixes:
   - |
     A synchronous exec whose output is not UTF-8 no longer fails with a
     server error: such a stream is returned in base64. On the CRI driver a
     command printing more than 4 MiB no longer fails with
-    ``RESOURCE_EXHAUSTED``.
+    ``RESOURCE_EXHAUSTED``, and an answer over the runtime's own send
+    limit is refused with a message saying so instead of a server error.
