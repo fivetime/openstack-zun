@@ -1098,6 +1098,30 @@ attach / 交互式 exec / logs 的令牌是库里的 UUID,**永不过期、可�
   45–90 s——heartbeat=0 四种会话(attach、logs、docker 流式、CRI 流式)都在 ~31 s 被断;heartbeat=10 全部收到最后的输出和 Success。
   ⚠ 实验时注意:Envoy 路由级 `idle_timeout` 会覆盖 HCM 的 `stream_idle_timeout`(边车配置里设 0 就是为此),拿它模拟 gateway 要去掉。
 
+### 4.22 systemd cgroup 驱动的节点上 runc capsule 起不来(2026-10-27)
+
+zun-worker 同时是 Kubernetes 节点,containerd 的 runc 为 kubelet 配了 `SystemdCgroup = true`。驱动给沙箱的 cgroup 父路径
+一直是 cgroupfs 写法 `/zun.slice/<uuid>`,runc 直接拒绝:`runc create failed: expected cgroupsPath to be of format
+"slice:prefix:name"`——**所有 runc capsule 都起不来**(OpenStack-2026.2-Upgrade 会话发现,本机 fork containerd main.20261027 +
+SystemdCgroup 复现)。kata capsule 不受影响(kata 的 cgroup 由 shim 管,containerd 配置里没有 SystemdCgroup)。
+
+光改名字不够:**systemd 会把手写进 slice 文件的上限改回 max**——实测预先写好 cpu.max/memory.max,沙箱一起来就变 `max`;
+起来后再写,一次 `daemon-reload` 又变回 `max`。只有 slice 自己的属性(`systemctl set-property`)经得住。所以改成和 kubelet 的
+systemd 驱动同样的做法:
+
+- **判断**:`[DEFAULT] cri_cgroup_driver`(auto/cgroupfs/systemd,默认 auto)。auto 时按 runtime 读 containerd 配置
+  (CRI `Status(verbose)`,和 snapshotter 同一份)里的 `SystemdCgroup`,每个 runtime 只问一次;读不到不记住,下次再问。
+- **命名**:systemd 的 runtime 用 `zun-<uuid 的 - 换成 _>.slice`(systemd 把 `-` 当层级,kubelet 对 pod uid 也这么换),
+  落在 `zun.slice` 下;containerd 看到 `.slice` 结尾自动用 `slice:cri-containerd:<id>` 格式。cgroupfs 的 runtime 不变。
+- **pod 上限**(cri_pod_cgroup_runtimes 里的 runc/runsc):建沙箱**之前** `systemctl set-property --runtime <slice>
+  CPUQuota= CPUQuotaPeriodSec= MemoryMax= MemorySwapMax=`(slice 不存在时 systemd 自己建),失败即拒绝(不让租户无限制跑)。
+- **块 IO**:`IOWeight=`、`IO{Read,Write}{Bandwidth,IOPS}Max=/dev/block/MAJ:MIN N` 设在 slice 上。
+- **删除**:`systemctl stop` + `systemctl revert`(否则 slice 和 /run/systemd/system.control 下的 drop-in 永远留着)。
+- zun-compute 是特权容器、挂了宿主 `/var/run`,镜像里有 `systemctl`,直接经宿主 D-Bus 操作。
+- **验证**:单测(命名、自动判断与缓存、配置覆盖、上限与 IO 属性、失败即拒、释放);真驱动代码对 SystemdCgroup 的 containerd 实验
+  实例走完整流程:slice 名正确、cpu.max `50000 100000`、memory.max 256 MiB、swap 0、io.weight 2930、io.max wbps=10 MiB/s,
+  `daemon-reload` 后不变,沙箱 scope 在 slice 下,删除后 slice 与 drop-in 都没了。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

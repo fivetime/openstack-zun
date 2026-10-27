@@ -214,6 +214,17 @@ Interdependencies to other options:
                     'what it can. On a kata capsule the figures under here '
                     'describe the virtual machine, which is the right unit '
                     'for a node and the wrong one for a container.'),
+    cfg.StrOpt('cri_cgroup_driver',
+               default='auto',
+               choices=['auto', 'cgroupfs', 'systemd'],
+               help='How a capsule sandbox\'s cgroups are named and limited. '
+                    'A runtime whose runc is told SystemdCgroup=true -- which '
+                    'is what a node that is also a Kubernetes node with the '
+                    'systemd cgroup driver has -- refuses a cgroup path and '
+                    'takes only a systemd slice, and systemd resets whatever '
+                    'is written into a slice\'s files by hand. "auto" reads '
+                    'each runtime\'s SystemdCgroup from containerd\'s own '
+                    'config; the other two say it for every runtime.'),
     cfg.ListOpt('cri_pod_cgroup_runtimes',
                 default=['runc', 'runsc'],
                 help='Runtimes for which the driver writes the pod-level '

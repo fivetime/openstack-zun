@@ -579,6 +579,15 @@ def _restart_count(container):
         return 0
 
 
+# The systemd property for each io.max key, for a sandbox on a slice.
+SYSTEMD_IO_PROPERTIES = (
+    ('rbps', 'IOReadBandwidthMax'),
+    ('wbps', 'IOWriteBandwidthMax'),
+    ('riops', 'IOReadIOPSMax'),
+    ('wiops', 'IOWriteIOPSMax'),
+)
+
+
 class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 driver.CapsuleDriver):
     """Implementation of container drivers for CRI runtime.
@@ -816,6 +825,21 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         if weight is None and line is None:
             return
 
+        if self._systemd_cgroups(self._runtime_of(subject)):
+            # On the sandbox's slice, as properties: a file systemd owns is
+            # reset by it (see _apply_pod_ceiling). The slice holds the whole
+            # sandbox, which is what the leaf held.
+            props = {}
+            if weight is not None:
+                props['IOWeight'] = str(weight)
+            for key, prop in SYSTEMD_IO_PROPERTIES:
+                value = getattr(subject, dict(hostio.IO_MAX_FIELDS)[key],
+                                None)
+                if device and value:
+                    props[prop] = '/dev/block/%s %d' % (device, int(value))
+            self._set_slice_properties(subject, props, 'block IO limits')
+            return
+
         cgroup = self._sandbox_cgroup(subject, sandbox_id)
         if cgroup is None:
             raise exception.ZunException(_(
@@ -962,6 +986,22 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 - agg['memory_limit_in_bytes'])
         if not writes:
             return
+        if self._systemd_cgroups(runtime):
+            # A slice's files are systemd's: a value written into one by
+            # hand is put back to "max" when the slice starts, and again on
+            # every daemon-reload -- measured, both. Given as the slice's own
+            # properties, before the sandbox exists, it holds from the first
+            # process on, the way kubelet's systemd driver does it.
+            props = {}
+            if 'cpu_quota' in agg:
+                props['CPUQuotaPeriodSec'] = '%dus' % agg['cpu_period']
+                props['CPUQuota'] = '%.2f%%' % (
+                    agg['cpu_quota'] * 100.0 / agg['cpu_period'])
+            if 'memory_limit_in_bytes' in agg:
+                props['MemoryMax'] = writes['memory.max']
+                props['MemorySwapMax'] = writes['memory.swap.max']
+            self._set_slice_properties(capsule, props, 'pod ceiling')
+            return
         try:
             os.makedirs(path, exist_ok=True)
             for name, value in writes.items():
@@ -995,8 +1035,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         return [(getattr(m, 'cpu', None), getattr(m, 'memory', None))
                 for m in members]
 
-    @staticmethod
-    def _sandbox_cgroup_parent(capsule):
+    def _sandbox_cgroup_parent(self, capsule):
         """Where this sandbox's own accounting lives on the host.
 
         One slice per capsule under a shared parent, so a node's capsules are
@@ -1015,8 +1054,101 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # (cgroup2 VerifyGroupPath) -- and rejects it with "invalid group
         # path", which reads like the path names something that does not
         # exist rather than like a path written the wrong way.
+        if self._systemd_cgroups(self._runtime_of(capsule)):
+            return self._slice_name(capsule)
         return '/%s/%s' % (CONF.cri_sandbox_cgroup_parent.strip('/'),
                            capsule.uuid)
+
+    @staticmethod
+    def _slice_name(capsule):
+        """The capsule's slice, a child of cri_sandbox_cgroup_parent.
+
+        systemd reads every "-" in a slice's name as a level of nesting,
+        so the uuid's dashes become underscores -- kubelet does the same to
+        a pod uid -- and "zun.slice" is the parent of "zun-<uuid>.slice".
+        """
+        parent = CONF.cri_sandbox_cgroup_parent.strip('/')
+        if parent.endswith('.slice'):
+            parent = parent[:-len('.slice')]
+        return '%s-%s.slice' % (parent, capsule.uuid.replace('-', '_'))
+
+    @staticmethod
+    def _runtime_of(subject):
+        return getattr(subject, 'runtime', None) or CONF.container_runtime
+
+    def _systemd_cgroups(self, runtime):
+        """Whether `runtime` files its cgroups through systemd.
+
+        runc told SystemdCgroup=true takes a cgroup parent only as a systemd
+        slice and refuses a path outright ("expected cgroupsPath to be of
+        format slice:prefix:name") -- every runc capsule failed to start on a
+        node whose containerd is set up for a kubelet with the systemd
+        driver. Read from containerd's config, once per runtime: it cannot
+        change without restarting containerd. A runtime it does not say
+        that for -- a kata one, whose cgroups the shim manages -- keeps the
+        path.
+        """
+        if CONF.cri_cgroup_driver != 'auto':
+            return CONF.cri_cgroup_driver == 'systemd'
+        known = self.__dict__.setdefault('_systemd_by_runtime', {})
+        if runtime in known:
+            return known[runtime]
+        try:
+            resp = self.runtime_stub.Status(
+                api_pb2.StatusRequest(verbose=True))
+        except grpc.RpcError as e:
+            # Not remembered: the next sandbox asks again.
+            LOG.warning('Could not read the runtime config, so the cgroups '
+                        'of a %(runtime)s sandbox are named as a path: '
+                        '%(err)s', {'runtime': runtime, 'err': e})
+            return False
+        try:
+            config = json.loads(resp.info.get('config', '{}'))
+            options = (config['containerd']['runtimes'][runtime]
+                       .get('options') or {})
+            known[runtime] = bool(options.get('SystemdCgroup'))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            known[runtime] = False
+        LOG.info('Runtime %(runtime)s files its cgroups through %(driver)s',
+                 {'runtime': runtime,
+                  'driver': 'systemd' if known[runtime] else 'cgroupfs'})
+        return known[runtime]
+
+    def _set_slice_properties(self, capsule, props, what):
+        """Give the capsule's slice `props`, or fail closed.
+
+        --runtime: they last as long as the node is up, which is as long as
+        the sandbox can. The slice need not exist yet; systemd starts it.
+        """
+        if not props:
+            return
+        args = ['%s=%s' % item for item in sorted(props.items())]
+        try:
+            utils.execute('systemctl', 'set-property', '--runtime',
+                          self._slice_name(capsule), *args)
+        except Exception as e:
+            raise exception.ZunException(
+                'The %(what)s for capsule %(uuid)s could not be set on its '
+                'slice: %(err)s -- refusing to run it unlimited'
+                % {'what': what, 'uuid': capsule.uuid, 'err': e})
+        LOG.debug('Slice of %(uuid)s: %(props)s',
+                  {'uuid': capsule.uuid, 'props': args})
+
+    def _release_slice(self, owner):
+        """Stop the capsule's slice and drop the properties it was given.
+
+        systemd keeps a slice that was given properties after the runtime
+        removed everything under it; without this one slice, and one
+        drop-in under /run/systemd, would outlive every capsule.
+        """
+        name = self._slice_name(owner)
+        for cmd in (('systemctl', 'stop', name),
+                    ('systemctl', 'revert', name)):
+            try:
+                utils.execute(*cmd)
+            except Exception as e:
+                LOG.warning('Could not %(cmd)s %(slice)s: %(err)s',
+                            {'cmd': cmd[1], 'slice': name, 'err': e})
 
     @staticmethod
     def _log_directory():
@@ -3942,6 +4074,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         # runtime did; the runtime removes only what it created, so the
         # directory would outlive the capsule one empty dir at a time. Gone
         # already, or still holding the runtime's children, are both fine.
+        if self._systemd_cgroups(self._runtime_of(owner)):
+            self._release_slice(owner)
+            return
         try:
             os.rmdir(self.CGROUP_ROOT + self._sandbox_cgroup_parent(owner))
         except OSError:

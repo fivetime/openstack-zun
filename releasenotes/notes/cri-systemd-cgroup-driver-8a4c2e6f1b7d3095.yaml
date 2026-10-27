@@ -1,0 +1,13 @@
+---
+fixes:
+  - |
+    A runc capsule now starts on a node whose containerd runs runc with
+    ``SystemdCgroup = true`` -- what a node that is also a Kubernetes node
+    with the systemd cgroup driver has -- instead of being refused with
+    "expected cgroupsPath to be of format slice:prefix:name". Its sandbox
+    is placed in a systemd slice under ``cri_sandbox_cgroup_parent``, and
+    its pod ceiling and block IO limits are given to that slice as systemd
+    properties, which systemd keeps; values written into a slice's files
+    are put back by systemd. ``[DEFAULT] cri_cgroup_driver`` (``auto``,
+    ``cgroupfs`` or ``systemd``) says which is used; ``auto`` reads each
+    runtime's ``SystemdCgroup`` from containerd.

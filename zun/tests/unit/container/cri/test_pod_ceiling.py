@@ -35,6 +35,7 @@ class PodCeilingTest(base.TestCase):
     def setUp(self):
         super(PodCeilingTest, self).setUp()
         self.driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        self.config(cri_cgroup_driver='cgroupfs')
         self.root = tempfile.mkdtemp()
         self._patch(mock.patch.object(cri_driver.CriDriver, 'CGROUP_ROOT',
                                       self.root))
@@ -50,8 +51,7 @@ class PodCeilingTest(base.TestCase):
     def _pod_dir(self):
         return os.path.join(
             self.root,
-            cri_driver.CriDriver._sandbox_cgroup_parent(
-                self.capsule).lstrip('/'))
+            self.driver._sandbox_cgroup_parent(self.capsule).lstrip('/'))
 
     def _read(self, name):
         with open(os.path.join(self._pod_dir(), name)) as f:
