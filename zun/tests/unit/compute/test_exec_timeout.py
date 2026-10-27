@@ -126,12 +126,15 @@ class TestDockerDriverWaitsAsAsked(base.TestCase):
         self.driver = docker_driver.DockerDriver.__new__(
             docker_driver.DockerDriver)
         docker = mock.MagicMock()
-        docker.exec_start.return_value = 'sock'
         docker.exec_inspect.return_value = {'ExitCode': 0}
         client = mock.patch.object(docker_driver.docker_utils,
                                    'docker_client')
         client.start().return_value.__enter__.return_value = docker
         self.addCleanup(client.stop)
+        start = mock.patch.object(docker_driver.docker_utils, 'start_exec',
+                                  return_value=('sock', b''))
+        start.start()
+        self.addCleanup(start.stop)
         self.docker = docker
 
     @mock.patch('zun.container.docker.utils.read_exec_output',
@@ -139,7 +142,7 @@ class TestDockerDriverWaitsAsAsked(base.TestCase):
     def test_the_asked_timeout_is_the_one_kept(self, read):
         self.driver.execute_run('e1', 'c', timeout=240)
 
-        read.assert_called_once_with('sock', 240)
+        read.assert_called_once_with('sock', 240, head=b'')
 
     @mock.patch('zun.container.docker.utils.read_exec_output',
                 return_value=b'ok')
@@ -147,7 +150,8 @@ class TestDockerDriverWaitsAsAsked(base.TestCase):
         self.driver.execute_run('e1', 'c')
 
         read.assert_called_once_with('sock',
-                                     zun.conf.CONF.docker.execute_timeout)
+                                     zun.conf.CONF.docker.execute_timeout,
+                                     head=b'')
 
     @mock.patch('zun.container.docker.utils.read_exec_output',
                 side_effect=socket.timeout())

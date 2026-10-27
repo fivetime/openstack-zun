@@ -33,8 +33,11 @@ from zun.common import context
 from zun.common import exception
 from zun.common.i18n import _
 import zun.conf
+from zun.db import api as dbapi
 from zun import monkey_patch
 from zun import objects
+from zun.websocket import channel
+from zun.websocket import console_token
 from zun.websocket import exec_stream
 from zun.websocket import exec_token
 from zun.websocket.websocketclient import WebSocketClient
@@ -64,6 +67,16 @@ def _target_options(url):
     return {'ca_file': CONF.docker.ca_file,
             'cert_file': CONF.docker.cert_file,
             'key_file': CONF.docker.key_file}
+
+
+def _session_kind(query):
+    if query.get('stream', [''])[0] == 'exec':
+        return console_token.STREAM
+    if query.get('exec_id', [''])[0]:
+        return console_token.EXEC
+    if query.get('stream', [''])[0] == 'logs':
+        return console_token.LOGS
+    return console_token.ATTACH
 
 
 def _as_websocket_url(url):
@@ -97,9 +110,15 @@ class ExecStreamWebSocket(websockifyserver.CompatibleWebSocket):
     def select_subprotocol(self, protocols):
         stream = self._stream()
         if stream is not None:
-            for offered in protocols:
-                if offered.strip() == stream.protocol:
-                    return offered
+            # The newest both sides speak. v5 only adds the close frame, so a
+            # client asking for v4 is served by a v5 runtime as it asked; it
+            # just never closes stdin.
+            usable = channel.PROTOCOLS[
+                channel.PROTOCOLS.index(stream.protocol):]
+            for protocol in usable:
+                for offered in protocols:
+                    if offered.strip() == protocol:
+                        return offered
         return super(ExecStreamWebSocket, self).select_subprotocol(protocols)
 
     def end_headers(self):
@@ -241,36 +260,71 @@ class ZunProxyRequestHandlerBase(object):
             self._handle_ins_outs(target, ins, outs)
 
     def validate_connection(self):
-        """Before the upgrade: a streamed exec is dialled here (1.59).
+        """Before the upgrade: the token is checked here, for every session.
 
-        So that what the runtime negotiated can be in the answer to the
-        upgrade, and so that a token that opens nothing, or a runtime that
-        will not take the exec, is an HTTP error with a reason the client
-        can read instead of a connection dropped after it was accepted.
+        A token that opens nothing is an HTTP error with a reason the client
+        can read, not a connection dropped after it was accepted. Signed
+        tokens (console_token) are checked and, for a session kept in the
+        database, used up here too, so that no connection is upgraded on one
+        that was used before. A streamed exec (1.59) is also dialled here,
+        so that what the runtime negotiated can be in the answer.
         """
         self.exec_stream = None
+        self.session = None
         query = urlparse.parse_qs(urlparse.urlparse(self.path).query)
-        if query.get('stream', [''])[0] != 'exec':
+        kind = _session_kind(query)
+        if kind != console_token.STREAM and not console_token.checking():
+            # A bare token is checked against its row after the upgrade.
             return super(ZunProxyRequestHandlerBase,
                          self).validate_connection()
-        # The runtime is dialled from here, so the hub has to be this
-        # child's own before it is (see new_websocket_client).
+        # The database and the runtime are reached from here, so the hub has
+        # to be this child's own before they are (see new_websocket_client).
         ZunProxyRequestHandlerBase._own_hub()
         token = query.get('token', [''])[0]
         uuid = query.get('uuid', [''])[0]
+        exec_id = query.get('exec_id', [''])[0]
         try:
-            payload = exec_token.open_token(token)
-            if payload.get('uuid') != uuid:
-                raise exception.InvalidWebsocketToken()
-            self._verify_origin('%s?stream=exec' %
-                                CONF.websocket_proxy.base_url)
-            self.exec_stream = exec_stream.open_stream(payload)
+            token = console_token.unwrap(kind, uuid, token, exec_id)
+            if kind == console_token.STREAM:
+                payload = exec_token.open_token(token)
+                if payload.get('uuid') != uuid:
+                    raise exception.InvalidWebsocketToken()
+                self._verify_origin('%s?stream=exec' %
+                                    CONF.websocket_proxy.base_url)
+                self.exec_stream = exec_stream.open_stream(payload)
+            else:
+                self.session = (self._claim(kind, uuid, token, exec_id),
+                                token)
         except (exception.ZunException, exec_stream.StreamRefused) as e:
             exec_stream.refuse(self, e)
             # Answered: what is left is to end the connection, which this
             # is how websockify is told to do without logging a traceback.
             raise websockifyserver.WebSockifyServer.EClose(
-                'refused a streamed exec: %s' % e)
+                'refused a %s session: %s' % (kind, e))
+
+    def _claim(self, kind, uuid, token, exec_id):
+        """The container whose session `token` opens, its token used up.
+
+        Read before the token is cleared, so that what is checked after the
+        upgrade -- the token against the row -- is checked against what the
+        row held when this connection came.
+        """
+        ctx = context.get_admin_context(all_projects=True)
+        try:
+            container = self._find_container(ctx, uuid)
+        except exception.ContainerNotFound:
+            raise exception.InvalidWebsocketToken()
+        if kind == console_token.EXEC:
+            held = [e.token for e in container.exec_instances
+                    if e.exec_id == exec_id]
+        elif kind == console_token.LOGS:
+            held = [container.logs_token]
+        else:
+            held = [container.websocket_token]
+        if token not in held or not dbapi.consume_console_token(
+                ctx, container.uuid, kind, token, exec_id or None):
+            raise exception.InvalidWebsocketToken()
+        return container
 
     @staticmethod
     def _own_hub():
@@ -286,8 +340,12 @@ class ZunProxyRequestHandlerBase(object):
         if isinstance(stream, exec_stream.ExecStream):
             # Dialled, and on its own hub, in validate_connection.
             stream.run(self)
-            return
-        ZunProxyRequestHandlerBase._own_hub()
+            # Ended with a close frame, not a dropped connection, which a
+            # client cannot tell from a failure.
+            raise self.CClose(1000, 'exec ended')
+        session = getattr(self, 'session', None)
+        if not isinstance(session, tuple):
+            ZunProxyRequestHandlerBase._own_hub()
 
         # The zun expected behavior is to have token
         # passed to the method GET of the request
@@ -299,9 +357,12 @@ class ZunProxyRequestHandlerBase(object):
         exec_id = urlparse.parse_qs(query).get("exec_id", [""]).pop()
         stream = urlparse.parse_qs(query).get("stream", [""]).pop()
 
-        ctx = context.get_admin_context(all_projects=True)
-
-        container = self._find_container(ctx, uuid)
+        if isinstance(session, tuple):
+            # Checked, used up, and on its own hub, in validate_connection.
+            container, token = session
+        else:
+            ctx = context.get_admin_context(all_projects=True)
+            container = self._find_container(ctx, uuid)
 
         if exec_id:
             self._new_exec_client(container, token, uuid, exec_id)

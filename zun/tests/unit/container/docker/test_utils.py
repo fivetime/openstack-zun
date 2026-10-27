@@ -205,3 +205,45 @@ class TestReadExecOutput(base.DriverTestCase):
         self.assertEqual(b'cd', output.stdout)
         self.assertEqual(b'ab', output.stderr)
         self.assertEqual(b'abcd', output.combined)
+
+
+class TestStartExec(base.DriverTestCase):
+    """The start of the output arrives with the upgrade's headers."""
+
+    def setUp(self):
+        super(TestStartExec, self).setUp()
+        self.listener = socket.socket()
+        self.listener.bind(('127.0.0.1', 0))
+        self.listener.listen()
+        self.addCleanup(self.listener.close)
+        self.payload = struct.pack('>BxxxL', 1, 5000) + b'a' * 5000
+        threading.Thread(target=self._daemon, daemon=True).start()
+        self.client = docker_utils.DockerHTTPClient(
+            'http://127.0.0.1:%d' % self.listener.getsockname()[1],
+            '1.44', 5)
+
+    def _daemon(self):
+        """A daemon whose command wrote before the headers were read."""
+        conn, _addr = self.listener.accept()
+        request = b''
+        while b'\r\n\r\n' not in request:
+            request += conn.recv(4096)
+        head, body = request.split(b'\r\n\r\n', 1)
+        length = int([line.split(b':')[1] for line in head.split(b'\r\n')
+                      if line.lower().startswith(b'content-length')][0])
+        while len(body) < length:
+            body += conn.recv(4096)
+        # One write: headers and output reach the client together.
+        conn.sendall(b'HTTP/1.1 101 UPGRADED\r\n'
+                     b'Content-Type: application/vnd.docker.raw-stream\r\n'
+                     b'Connection: Upgrade\r\nUpgrade: tcp\r\n\r\n' +
+                     self.payload)
+        conn.close()
+
+    def test_none_of_the_output_is_lost(self):
+        """exec_start(socket=True) reads none of these 5000 bytes."""
+        sock, head = docker_utils.start_exec(self.client, 'e1')
+        output = docker_utils.read_exec_output(sock, 5, limit=10000,
+                                               head=head)
+
+        self.assertEqual(b'a' * 5000, output.stdout)

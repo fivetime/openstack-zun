@@ -46,6 +46,7 @@ os-vif>=1.15.1 # Apache-2.0
 SQLAlchemy>=1.4.0 # MIT
 stevedore>=3.3.0 # Apache-2.0
 cryptography>=2.7 # BSD/Apache-2.0
+PyJWT>=2.4.0 # MIT
 docker>=4.3.0 # Apache-2.0
 neutron-lib>=1.13.0 # Apache-2.0
 pyroute2>=0.5.7 # Apache-2.0 (+ dual licensed GPL2)

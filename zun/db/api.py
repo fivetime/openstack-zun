@@ -1081,6 +1081,23 @@ def list_exec_instances(context, filters=None, limit=None, marker=None,
         context, filters, limit, marker, sort_key, sort_dir)
 
 
+@profiler.trace("db")
+def consume_console_token(context, container_uuid, kind, token,
+                          exec_id=None):
+    """Clear a session's token if it is still `token`; True if it was.
+
+    One connection per token: whichever connection gets here first clears
+    it, and every other one finds it gone.
+
+    :param container_uuid: The container the session belongs to.
+    :param kind: 'attach', 'logs' or 'exec'.
+    :param token: The bare token the connection came with.
+    :param exec_id: The exec, for kind 'exec'.
+    """
+    return _get_dbdriver_instance().consume_console_token(
+        context, container_uuid, kind, token, exec_id)
+
+
 @profiler.trace('db')
 def count_usage(context, container_type, project_id, flag):
     return _get_dbdriver_instance().count_usage(context, container_type,

@@ -1,0 +1,32 @@
+---
+features:
+  - |
+    Console tokens can be signed. With ``[websocket_proxy]
+    token_signing_key`` (an EC P-256 private key, PEM) set on ``zun-api``,
+    the token in every session url -- attach, interactive exec, logs and
+    streamed exec -- is a JWT (ES256) naming the container, the kind of
+    session and when it expires: ``[websocket_proxy] console_token_ttl``
+    seconds (default 60) for attach, exec and logs, ``exec_token_ttl`` for a
+    streamed exec. With ``[websocket_proxy] token_verify_key`` (the public
+    key) set on ``zun-wsproxy``, every session's token is checked before the
+    websocket is upgraded, and a token is good for one connection: the proxy
+    clears it from the database on use. A proxy in front of ``zun-wsproxy``
+    can check the same tokens with the public key alone;
+    ``python -m zun.websocket.console_token <public key>`` prints it as a
+    JWKS, and ``tools/wsproxy-edge/envoy_config.py`` renders an Envoy
+    configuration that does.
+upgrade:
+  - |
+    With signed tokens, a session url can be used once and only within its
+    lifetime; a client that reconnects asks the API for a new one. Without
+    the two key options nothing changes. ``zun-wsproxy`` forks a process for
+    each connection before it reads the request; where it is reachable from
+    untrusted networks, put a proxy that checks the tokens in front of it.
+fixes:
+  - |
+    A streamed exec client that offers only ``v4.channel.k8s.io`` is served
+    instead of refused; the stream now ends with a close frame after every
+    queued frame is sent; output that arrived together with docker's upgrade
+    answer is no longer dropped, which also fixes the start of a synchronous
+    exec's output going missing; a CRI stream whose client goes away is cut
+    so that the runtime ends the command.

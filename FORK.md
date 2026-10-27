@@ -1047,6 +1047,50 @@ compute 节点上抛出的异常经 oslo.messaging 回到 API 时,`deserialize_r
   (stdout/stderr、退出码、stdin 关闭、二进制、32 MiB 慢读者下处理进程内存不涨、超时 3.1 s 杀掉、断开即杀、令牌拒绝/复用/过期、
   32 并发 sleep 2 共 2.7 s)、本机上游 containerd 2.2.2(v4)与 fork main.20261027(v5:`wc -c` 收到 `[255,0]` 后输出 70000)。
 
+**2026-10-27 补修(同一批上线)**:
+- **v4 客户端握手 400**:只报 `v4.channel.k8s.io` 的客户端(qinling)被 websockify 回 "Invalid protocol selected"。现在从客户端
+  报的子协议里选**双方都会的最新版**(v5 运行时也能服务 v4 客户端,v4 下关 stdin 照旧回 BadRequest)。
+- **结束时没有 close 帧、排队帧可能丢**:结束前先把 websockify 队列里的帧发完(`_drain`,最多 30 s),再发 `CClose(1000)`。
+- **docker-py 吞掉随 101 一起到达的输出**:`exec_start(socket=True)` 把和响应头同一批读进 HTTP 缓冲的字节丢了(假服务器实测
+  5008 字节一个不剩)。新 `docker_utils.start_exec()` 把缓冲里已读到的字节取出来先处理;**同步 exec 也受益**(生产现有问题:
+  输出偶发缺开头)。
+- **CRI 客户端断开时改硬断**:上游 containerd 对优雅关闭不杀命令,只有硬断才杀。
+- **docker 连接读失败不再当成 EOF**:回 Failure "the output is incomplete",并让节点杀命令。
+- **⚠ 已知未结论:docker 路径偶发丢尾**。10-27 上午 32 MiB 输出约 50 轮里 7–8 次少最后 128/160 KiB(32 KiB 整数倍),状态仍是
+  Success;wsproxy 计数显示是 dockerd 给的就少(读到多少转多少、无读错误)。可疑点 moby `daemon/monitor.go:226` exec 退出后只等
+  2 s 就关流,但四种复现手段都没复现,之后 110 多轮(含直读 dockerd 对照 30 轮)全完整。现在每次 docker 流结束都在 INFO 记
+  "N bytes from the docker daemon",再出现时与命令实际输出量对比即可定位。CRI 路径无此现象。
+
+### 4.21 会话令牌签名、短时、一次性;wsproxy 前置 Envoy(2026-10-27)
+
+生产 wsproxy 改 DaemonSet(hostNetwork,每节点一份,胶囊路径才连得到 loopback 上的 containerd 流服务器)后,节点 IP 上的端口
+**租户网络可直达**(10-27 实测 daas-test 租户网络能连所有基础设施网段)。原来的问题:websockify **每个连接先 fork 再验令牌**;
+attach / 交互式 exec / logs 的令牌是库里的 UUID,**永不过期、可反复用**。用户定的原则:gateway 仍是默认入口,但 **wsproxy 自身
+必须安全,不能只靠防火墙**。做法(用户批准 Envoy 边车方案,不自己重写服务端模型):
+
+- **令牌改 JWT**(`zun/websocket/console_token.py`,ES256):zun-api 用 `[websocket_proxy] token_signing_key`(EC P-256 私钥 PEM)
+  签,声明 `iss=zun`、`aud=zun-wsproxy`、`sub`=容器 uuid、`knd`=attach/exec/logs/stream、`eid`=exec id、`tok`=原来的令牌、`exp`。
+  有效期:attach/exec/logs `console_token_ttl`(默认 60 s,只管"多久内必须连上",连上后跟会话走),流式 `exec_token_ttl`(30 s,
+  里面的 `tok` 仍是 Fernet 加密的运行时地址,不给调用方看)。公钥在谁手里谁就能验:Envoy、wsproxy。
+- **wsproxy**(`token_verify_key` 公钥 PEM):**所有会话都在 101 之前验**——签名、过期、`sub`/`knd`/`eid` 对得上;库里的会话
+  再比 `tok` 与行里的令牌,**原子清掉**(`db.api.consume_console_token`,`UPDATE … WHERE token=?`,并发两个连接只有一个成功)。
+  坏的、过期的、用过的、别的会话的 → **403 + 一句原因**,没有 101。没配公钥 = 老行为(裸 UUID、不过期),上游/devstack 不受影响。
+  ⚠ 没有 Envoy 时 fork-先于-验证 仍在:**暴露给不可信网络必须前置反向代理**。
+- **重连**:令牌一次性 → 重连要重新调 API(attach / execute interactive / logs)拿新地址。Horizon 刷新页面本来就重新 attach。
+  响应格式不变(令牌对客户端是不透明字符串),不加 microversion。
+- **Envoy 边车**(`tools/wsproxy-edge/envoy_config.py` 生成;JWKS 由 `python -m zun.websocket.console_token verify.pub` 导出):
+  TLS 终结(握手超时)、`jwt_authn`(从 `token` 参数取,验签名+exp,失败 401,**wsproxy 根本看不到**)、只放 websocket upgrade
+  (其余 404)、`request_headers_timeout`、按客户端地址限速(local_ratelimit 动态描述符)、全局连接上限(overload manager)、
+  到 wsproxy 的会话数上限(circuit breaker)、`stream_idle_timeout`/路由超时 0(不说话的命令不是空闲)。**两个连接池**:来源在
+  `TRUSTED`(gateway/节点地址)的走大池,其它来源(直连的租户)共用小池且头部超时更短——**直连洪水只能耗尽小池,碰不到 gateway
+  那条路**。Envoy **不能按单个来源限并发**,这一层留给主机防火墙(nftables `ct count`)。
+- **验证**(10-27,本机实验:Envoy 1.37.11 宿主网络 + 真 forking wsproxy + sqlite + 本机 dockerd/fork containerd):
+  端到端 16 项全过——docker/CRI 流式经 Envoy(wss)、attach/logs、同一 URL 第二次 403、过期/伪造/无令牌/裸 UUID 在 Envoy 401 且
+  wsproxy 日志 0 行、绕过 Envoy 直连 wsproxy:好令牌 101/复用 403/裸 UUID 403/流式令牌冒充 attach 403、浏览器 Origin 经 wss、
+  不说话的命令(20 s 与 400 s)最后照样拿到输出和 Success。洪水:127.0.0.2 同时 1500 慢速连接 + 200 路无令牌请求 + 500 半截 TLS
+  60 s,127.0.0.1 照常跑流式 exec——单池配置下 17 次失败 7 次(全局上限被占满),**分池后 16/16 成功、p50 0.159 s(无洪水 0.161 s)**,
+  wsproxy 子进程峰值 1(洪水一个都没 fork 出来)。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

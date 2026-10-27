@@ -115,6 +115,58 @@ class TestDockerFrames(base.TestCase):
         self.assertEqual(channel.frame(channel.STDOUT, b'z' * 42), got[0])
 
 
+class _SlowClient(object):
+    """websockify's queue for a client slower than the command.
+
+    New frames find the socket full and wait; a later call, made when the
+    socket is writable again, sends one.
+    """
+
+    def __init__(self):
+        self.send_parts = []
+        self.sent = []
+        self.request = mock.Mock()
+
+    def send_frames(self, bufs=None):
+        if bufs:
+            self.send_parts.extend(bufs)
+        elif self.send_parts:
+            self.sent.append(self.send_parts.pop(0))
+        return bool(self.send_parts)
+
+
+class TestTheEnd(base.TestCase):
+
+    @mock.patch('select.select')
+    def test_what_is_queued_reaches_the_client_before_it_closes(self, sel):
+        """Lost before: 160 KiB from 32 MiB, and the Status after it."""
+        client = _SlowClient()
+        stream = exec_stream.ExecStream({'target': {}})
+        stream.close = mock.Mock()
+
+        def relay():
+            for i in range(5):
+                stream._to_client([b'\x01%d' % i])
+            stream._end_with(channel.exit_code(0))
+        stream.relay = relay
+
+        stream.run(client)
+
+        self.assertEqual(6, len(client.sent))
+        self.assertEqual(channel.ERROR, client.sent[-1][0])
+        stream.close.assert_called_once_with()
+
+    @mock.patch.object(exec_stream, 'DRAIN_TIMEOUT', 0)
+    def test_a_client_that_never_reads_is_not_waited_for_forever(self):
+        client = _SlowClient()
+        client.send_frames = lambda bufs=None: True
+        client.send_parts = [b'x']
+        stream = exec_stream.ExecStream({'target': {}})
+        stream.handler = client
+
+        stream._drain()
+
+
 class TestCriStream(base.TestCase):
 
     def _stream(self, protocol, stdin=True):
@@ -175,6 +227,17 @@ class TestDockerStream(base.TestCase):
 
         e = self.assertRaises(exec_stream.StreamRefused, stream.connect)
         self.assertEqual(403, e.code)
+
+    def test_a_failed_connection_is_not_a_success(self):
+        """Lost output said to be whole is what this must never do."""
+        stream = exec_stream.DockerExecStream(
+            {'host': 'node1', 'target': {'kind': 'docker', 'url': 'x',
+                                         'exec_id': 'e'}})
+        stream.exec_id = 'e'
+        stream.sock = mock.Mock()
+        stream.sock.recv.side_effect = ConnectionResetError()
+
+        self.assertRaises(exec_stream.StreamBroken, stream._read)
 
     @mock.patch('zun.compute.rpcapi.API')
     def test_the_node_is_asked_to_kill_it(self, rpc):
@@ -243,6 +306,28 @@ class TestHandshake(base.TestCase):
 
         self.assertEqual(['hub', 'dial'], order)
 
+    def test_the_connection_ends_with_a_close_frame(self):
+        handler = mock.Mock(exec_stream=mock.Mock(spec=exec_stream.ExecStream))
+        handler.CClose = websockifyserver.WebSockifyRequestHandler.CClose
+
+        e = self.assertRaises(
+            handler.CClose,
+            websocketproxy.ZunProxyRequestHandlerBase.new_websocket_client,
+            handler)
+
+        handler.exec_stream.run.assert_called_once_with(handler)
+        self.assertEqual(1000, e.args[0])
+
+    def test_a_v4_client_is_served_by_a_v5_runtime(self):
+        """What qinling asks for: v4 framing, no stdin to close."""
+        handler = mock.Mock(exec_stream=mock.Mock(protocol=channel.V5))
+        ws = websocketproxy.ExecStreamWebSocket(handler)
+
+        self.assertEqual('v4.channel.k8s.io',
+                         ws.select_subprotocol(['v4.channel.k8s.io']))
+        self.assertEqual('v5.channel.k8s.io', ws.select_subprotocol(
+            ['v4.channel.k8s.io', 'v5.channel.k8s.io']))
+
     def test_the_answer_says_what_was_negotiated(self):
         handler = mock.Mock(exec_stream=mock.Mock(protocol=channel.V4))
         ws = websocketproxy.ExecStreamWebSocket(handler)
@@ -250,6 +335,8 @@ class TestHandshake(base.TestCase):
         self.assertEqual(' v4.channel.k8s.io', ws.select_subprotocol(
             ['v5.channel.k8s.io', ' v4.channel.k8s.io']))
         self.assertEqual('binary', ws.select_subprotocol(['binary']))
+        # Nothing newer than the runtime speaks is chosen.
+        self.assertEqual('', ws.select_subprotocol(['v5.channel.k8s.io']))
         ws.end_headers()
         handler.send_header.assert_called_once_with('X-Zun-Exec-Protocol',
                                                     channel.V4)

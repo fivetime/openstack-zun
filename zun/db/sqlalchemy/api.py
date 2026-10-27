@@ -1410,6 +1410,28 @@ class Connection(object):
                     exec_id=values['exec_id'])
             return exec_inst
 
+    _CONSOLE_TOKEN_FIELDS = {'attach': 'websocket_token',
+                             'logs': 'logs_token'}
+
+    @oslo_db_api.retry_on_deadlock
+    def consume_console_token(self, context, container_uuid, kind, token,
+                              exec_id=None):
+        if not token:
+            return False
+        with _session_for_write() as session:
+            if kind == 'exec':
+                container_id = session.query(models.Container.id).filter_by(
+                    uuid=container_uuid).scalar()
+                query = session.query(models.ExecInstance).filter_by(
+                    container_id=container_id, exec_id=exec_id, token=token)
+                field = 'token'
+            else:
+                field = self._CONSOLE_TOKEN_FIELDS[kind]
+                query = session.query(models.Container).filter_by(
+                    uuid=container_uuid, **{field: token})
+            return query.update({field: None},
+                                synchronize_session=False) == 1
+
     def count_usage(self, context, container_type, project_id, flag):
         with _session_for_read() as session:
             if flag == 'containers':

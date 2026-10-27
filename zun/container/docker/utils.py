@@ -33,7 +33,41 @@ from zun.container import exec_output
 CONF = zun.conf.CONF
 
 
-def read_exec_output(sock, timeout, limit=None):
+def start_exec(docker, exec_id):
+    """Start a non-tty exec and take its connection over: (sock, head).
+
+    exec_start(socket=True) hands back the socket under the HTTP response,
+    but the response read its headers through a buffered reader, and that
+    read takes whatever the socket already holds -- up to
+    io.DEFAULT_BUFFER_SIZE, 128 KiB from Python 3.14 -- which can be the
+    start of the command's output when the command is quick to write it.
+    Read from the socket, those bytes are gone. `head` is them: the stream
+    starts with it.
+    """
+    response = docker._post_json(
+        docker._url('/exec/{0}/start', exec_id),
+        headers={'Connection': 'Upgrade', 'Upgrade': 'tcp'},
+        data={'Tty': False, 'Detach': False}, stream=True)
+    sock = docker._get_raw_response_socket(response)
+    raw = getattr(sock, '_sock', sock)
+    try:
+        reader = response.raw._fp.fp
+    except AttributeError:
+        return sock, b''
+    # What the reader holds and nothing more: with the socket not
+    # blocking, an empty buffer is not filled by waiting on it.
+    timeout = raw.gettimeout()
+    raw.setblocking(False)
+    try:
+        head = reader.peek() or b''
+    except (OSError, ValueError):
+        head = b''
+    finally:
+        raw.settimeout(timeout)
+    return sock, head
+
+
+def read_exec_output(sock, timeout, limit=None, head=b''):
     """What a non-tty exec writes, or socket.timeout after `timeout` seconds.
 
     `sock` is what exec_start(socket=True) hands back: docker's multiplexed
@@ -63,13 +97,18 @@ def read_exec_output(sock, timeout, limit=None):
     left = 0    # payload bytes of the current frame still to come
     try:
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise socket.timeout('exec did not finish in %ss' % timeout)
-            raw.settimeout(remaining)
-            data = raw.recv(65536)
-            if not data:
-                break
+            if head:
+                # Read already, see start_exec.
+                data, head = head, b''
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise socket.timeout(
+                        'exec did not finish in %ss' % timeout)
+                raw.settimeout(remaining)
+                data = raw.recv(65536)
+                if not data:
+                    break
             offset = 0
             while offset < len(data):
                 if left:

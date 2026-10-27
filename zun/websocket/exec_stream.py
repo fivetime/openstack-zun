@@ -59,8 +59,15 @@ EXIT_CODE_WAIT = 5
 # How long a command asked to be killed at its deadline may take to end
 # before its client is told anyway.
 KILL_GRACE = 10
+# How long a client that has stopped reading is waited for, at the end,
+# to take what is still queued for it.
+DRAIN_TIMEOUT = 30
 # Frames of stdin waiting for a runtime that is not reading them yet.
 STDIN_QUEUE = 64
+
+
+class StreamBroken(Exception):
+    """The runtime's connection failed mid-stream."""
 
 
 class StreamRefused(Exception):
@@ -130,9 +137,28 @@ class ExecStream(object):
         self._start_deadline()
         try:
             self.relay()
+            self._drain()
         finally:
             self._stop_deadline()
             self.close()
+
+    def _drain(self):
+        """Send the client what is still queued for it, the end included.
+
+        The client's socket does not block: what it has not taken waits in
+        websockify's queue, and the connection ending first loses it --
+        output from the middle, and the Status that says how it ended.
+        """
+        deadline = time.time() + DRAIN_TIMEOUT
+        while self.handler.send_parts:
+            left = deadline - time.time()
+            if left <= 0:
+                LOG.info('Gave up on a streamed exec client that stopped '
+                         'reading its last %d bytes', self._pending(
+                             self.handler))
+                return
+            select.select([], [self.handler.request], [], min(left, 1))
+            self.handler.send_frames()
 
     @staticmethod
     def _pending(handler):
@@ -354,8 +380,7 @@ class DockerExecStream(ExecStream):
         self._started = False
 
     def _start(self):
-        sock = self.docker.exec_start(self.exec_id, detach=False, tty=False,
-                                      stream=False, socket=True)
+        sock, self.head = docker_utils.start_exec(self.docker, self.exec_id)
         self._keep = sock
         # docker-py hands back the TLS socket itself, or a SocketIO around
         # a plain one.
@@ -385,7 +410,12 @@ class DockerExecStream(ExecStream):
             time.sleep(0.1)
 
     def _read(self):
-        """What the daemon has sent, b'' at its end, None for nothing yet."""
+        """What the daemon has sent, b'' at its end, None for nothing yet.
+
+        A connection that fails is not an end: what the command wrote after
+        it is lost, and saying Success would hand the client a truncated
+        output as a whole one. StreamBroken says it was cut.
+        """
         try:
             data = self.sock.recv(65536)
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError,
@@ -394,7 +424,9 @@ class DockerExecStream(ExecStream):
         except OSError as e:
             if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                 return None
-            return b''
+            LOG.warning('Reading streamed exec %(id)s failed: %(err)r',
+                        {'id': self.exec_id, 'err': e})
+            raise StreamBroken()
         return data
 
     def _write(self, data):
@@ -426,6 +458,14 @@ class DockerExecStream(ExecStream):
                                            'started'))
             return
         frames = _DockerFrames()
+        # The start of the output, read with the upgrade's headers.
+        self._to_client(frames.feed(self.head))
+        # What the daemon sent, said when it ends: the daemon has been seen
+        # to end a stream short of what the command wrote, with the exec's
+        # exit code still 0, and this is what tells that apart from a loss
+        # anywhere after it.
+        self.received = len(self.head)
+        self.started_at = time.time()
         stdin = bytearray()
         close_stdin = False
         while True:
@@ -470,11 +510,19 @@ class DockerExecStream(ExecStream):
                 self._close_stdin()
                 close_stdin = False
             if readable_backend and (self.sock in ins or wait == 0):
-                data = self._read()
+                try:
+                    data = self._read()
+                except StreamBroken:
+                    self.end_command()
+                    self._end_with(channel.failure(
+                        'the connection to the container runtime failed; '
+                        'the output is incomplete'))
+                    return
                 if data == b'':
                     self._finish()
                     return
                 if data:
+                    self.received += len(data)
                     self._to_client(frames.feed(data))
 
     def _finish(self):
@@ -487,6 +535,10 @@ class DockerExecStream(ExecStream):
             LOG.warning('Could not read the exit code of streamed exec '
                         '%(id)s: %(err)s', {'id': self.exec_id, 'err': e})
             code = None
+        LOG.info('Streamed exec %(id)s ended after %(secs).1f s: '
+                 '%(bytes)d bytes from the docker daemon, exit code %(code)s',
+                 {'id': self.exec_id, 'secs': time.time() - self.started_at,
+                  'bytes': self.received, 'code': code})
         if code is None:
             self._end_with(channel.failure(
                 'the command ended but its exit code could not be read'))

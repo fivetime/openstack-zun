@@ -104,6 +104,39 @@ Seconds a streamed exec's token may be used for once handed out. The
 command does not start until the token is used, so this bounds only how
 long a caller may take to connect.
 """),
+    cfg.StrOpt('token_signing_key',
+               help="""
+Path to the PEM private key (EC P-256) zun-api signs a console token with.
+
+When set, every url zun-api answers for a session -- attach, interactive
+exec, logs and streamed exec -- carries a JWT (ES256) instead of the bare
+token: signed, valid for ``console_token_ttl`` seconds, and good for one
+connection. Whatever stands in front of zun-wsproxy can check it with the
+public key alone, before a connection costs the proxy anything. Unset, the
+token is the bare one, and never expires.
+
+Related options:
+
+* ``token_verify_key``, the public half, read by zun-wsproxy.
+"""),
+    cfg.StrOpt('token_verify_key',
+               help="""
+Path to the PEM public key zun-wsproxy checks a console token with.
+
+When set, zun-wsproxy accepts a session only with a token signed by the
+matching ``token_signing_key``, unexpired, and not used before; anything
+else is refused before the websocket is upgraded. Set it together with
+``token_signing_key`` on zun-api.
+"""),
+    cfg.IntOpt('console_token_ttl',
+               default=60,
+               min=5,
+               help="""
+Seconds a signed attach, interactive exec or logs token may be used for once
+handed out. It bounds only how long a caller may take to connect; a session
+lasts as long as it is connected. Reconnecting takes a new one from the API.
+A streamed exec's token lasts ``exec_token_ttl`` instead.
+"""),
     cfg.IntOpt('stream_buffer_limit',
                default=1048576,
                min=65536,

@@ -768,23 +768,26 @@ class TestDockerDriver(base.DriverTestCase):
         self.mock_docker.exec_create.assert_called_once_with(
             mock_container.container_id, 'ls', stdin=False, tty=False)
 
+    @mock.patch('zun.container.docker.utils.start_exec',
+                return_value=('sock', b'he'))
     @mock.patch('zun.container.docker.utils.read_exec_output')
-    def test_execute_run(self, mock_read):
+    def test_execute_run(self, mock_read, mock_start):
         mock_read.return_value = b'test'
-        self.mock_docker.exec_start = mock.Mock(return_value='sock')
         self.mock_docker.exec_inspect = mock.Mock(
             return_value={'ExitCode': 0})
         self.assertEqual((b'test', 0), self.driver.execute_run('test', 'ls'))
-        self.mock_docker.exec_start.assert_called_once_with(
-            'test', detach=False, tty=False, stream=False, socket=True)
+        mock_start.assert_called_once_with(self.mock_docker, 'test')
+        # What arrived with the upgrade's headers is read first.
         mock_read.assert_called_once_with('sock',
-                                          CONF.docker.execute_timeout)
+                                          CONF.docker.execute_timeout,
+                                          head=b'he')
         self.mock_docker.exec_inspect.assert_called_once()
 
+    @mock.patch('zun.container.docker.utils.start_exec',
+                return_value=('sock', b''))
     @mock.patch('zun.container.docker.utils.read_exec_output')
-    def test_execute_run_timeout(self, mock_read):
+    def test_execute_run_timeout(self, mock_read, mock_start):
         mock_read.side_effect = socket.timeout()
-        self.mock_docker.exec_start = mock.Mock(return_value='sock')
         self.mock_docker.exec_inspect = mock.Mock()
         self.mock_docker.exec_inspect.return_value = {'Running': False}
         self.assertRaises(exception.Conflict,

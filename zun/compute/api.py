@@ -28,6 +28,7 @@ from zun.container import exec_output
 from zun import objects
 from zun.scheduler.client import query as scheduler_client
 from zun.websocket import channel
+from zun.websocket import console_token
 from zun.websocket import exec_token
 
 
@@ -196,8 +197,10 @@ class API(object):
         base = answer.get('proxy_base') or CONF.websocket_proxy.base_url
         # Same shape attach answers with, plus what tells the proxy which of
         # a container's two sessions this is.
+        token = console_token.wrap(console_token.LOGS, container.uuid,
+                                   answer.get('token'))
         return '%s?token=%s&uuid=%s&stream=logs' % (
-            base, answer.get('token'), container.uuid)
+            base, token, container.uuid)
 
     def container_exec(self, context, container, *args, **kwargs):
         data = self.rpcapi.container_exec(context, container, *args,
@@ -216,6 +219,8 @@ class API(object):
         # single-host deployment working, and is wrong on any other.
         base = data.pop('proxy_base', None) or CONF.websocket_proxy.base_url
         if token:
+            token = console_token.wrap(console_token.EXEC, container.uuid,
+                                       token, exec_id=exec_id)
             data['proxy_url'] = '%s?token=%s&uuid=%s&exec_id=%s' % (
                 base, token, container.uuid, exec_id)
         else:
@@ -241,6 +246,8 @@ class API(object):
             'stdin': bool(stdin),
             'timeout': timeout,
         })
+        token = console_token.wrap(console_token.STREAM, container.uuid, token,
+                                   ttl=CONF.websocket_proxy.exec_token_ttl)
         base = data.get('proxy_base') or CONF.websocket_proxy.base_url
         return {
             'output': None,
@@ -273,6 +280,7 @@ class API(object):
             base = answer.get('proxy_base') or CONF.websocket_proxy.base_url
         else:
             token, base = answer, CONF.websocket_proxy.base_url
+        token = console_token.wrap(console_token.ATTACH, container.uuid, token)
         return '%s?token=%s&uuid=%s' % (base, token, container.uuid)
 
     def container_resize(self, context, container, *args):
