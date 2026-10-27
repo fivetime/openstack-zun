@@ -68,7 +68,13 @@ def chain(name, max_connections, headers_timeout, per_client_rate, match):
                  'http_connection_manager.v3.HttpConnectionManager',
         'stat_prefix': name,
         'codec_type': 'HTTP1',
-        'use_remote_address': True,
+        # Only where nothing in front can be trusted: as the edge, Envoy
+        # rewrites X-Forwarded-Proto to its own downstream's scheme, and
+        # behind the gateway that is the gateway's TLS, not the client's --
+        # zun-wsproxy then refuses every client that sends an Origin. From
+        # the trusted pool the gateway's X-Forwarded-For/-Proto are kept,
+        # and the per-client rate is the gateway's client's.
+        'use_remote_address': not match,
         'request_headers_timeout': headers_timeout,
         # A session lasts as long as it is connected; a silent command is
         # not an idle one.

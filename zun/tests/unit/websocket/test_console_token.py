@@ -297,6 +297,18 @@ class TestTheProxyChecksFirst(_Keys, base.TestCase):
 
         self.handler.send_response.assert_called_once_with(403)
 
+    def test_a_wrong_origin_does_not_use_the_token_up(self):
+        self.handler._claim = self._claim
+        self.handler._verify_origin.side_effect = exception.ValidationError(
+            detail='Origin header does not match this host.')
+
+        self.assertRaises(websockifyserver.WebSockifyServer.EClose,
+                          self._validate,
+                          console_token.wrap('attach', UUID, 'bare'))
+
+        self.handler.send_response.assert_called_once_with(400)
+        self.consume.assert_not_called()
+
     def test_a_forged_one_never_reaches_the_database(self):
         self.assertRaises(websockifyserver.WebSockifyServer.EClose,
                           self._validate, 'garbage', '&stream=logs')

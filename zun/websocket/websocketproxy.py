@@ -293,6 +293,9 @@ class ZunProxyRequestHandlerBase(object):
                                     CONF.websocket_proxy.base_url)
                 self.exec_stream = exec_stream.open_stream(payload)
             else:
+                # Before the token is used up: a client turned away for its
+                # Origin keeps a token it can still come back with.
+                self._verify_origin(CONF.websocket_proxy.base_url)
                 self.session = (self._claim(kind, uuid, token, exec_id),
                                 token)
         except (exception.ZunException, exec_stream.StreamRefused) as e:
