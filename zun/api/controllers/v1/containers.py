@@ -258,6 +258,34 @@ def _exec_timeout(timeout, run, interactive, detach):
     return timeout
 
 
+def _stream_options(stream, stdin, run, interactive, detach=False):
+    """Whether to stream the command, and with stdin open (1.59).
+
+    Only a command that is run and not waited for here: an interactive
+    session already is a stream, with a terminal, and a detached command has
+    nobody reading it. stdin without stream has nowhere to come from.
+    """
+    try:
+        stream = strutils.bool_from_string(stream, strict=True)
+        stdin = strutils.bool_from_string(stdin, strict=True)
+    except ValueError:
+        bools = ', '.join(strutils.TRUE_STRINGS + strutils.FALSE_STRINGS)
+        raise exception.InvalidValue(_('Valid stream or stdin values are: '
+                                       '%s') % bools)
+    if stream or stdin:
+        api_utils.version_check('stream', '1.59')
+    if stdin and not stream:
+        raise exception.InvalidValue(_(
+            'stdin is written through a streamed exec; ask for stream=true '
+            'as well'))
+    if stream and (not run or interactive or detach):
+        raise exception.InvalidValue(_(
+            'stream runs the command and hands back where to read it; it '
+            'cannot be combined with detach, run=false or an interactive '
+            'session, which is a stream of its own'))
+    return stream, stdin
+
+
 class ContainersController(base.Controller):
     """Controller for Containers."""
 
@@ -1205,7 +1233,8 @@ class ContainersController(base.Controller):
     @validation.validate_query_param(pecan.request,
                                      schema.query_param_execute_command)
     def execute(self, container_ident, run=True, interactive=False,
-                detach=False, timeout=None, **kwargs):
+                detach=False, timeout=None, stream=False, stdin=False,
+                **kwargs):
         """Execute command in a running container.
 
         :param container_ident: UUID or Name of a container.
@@ -1214,6 +1243,9 @@ class ContainersController(base.Controller):
                             pseudo-TTY for interactive.
         :param timeout: Seconds to wait for the command to finish (1.57),
                         up to [api] max_execute_timeout.
+        :param stream: Answer a proxy url at once; the command starts when
+                       a client connects there (1.59).
+        :param stdin: With stream, keep the command's stdin open (1.59).
         """
         container = api_utils.get_resource('Container', container_ident)
         check_policy_on_container(container.as_dict(), "container:execute")
@@ -1230,6 +1262,8 @@ class ContainersController(base.Controller):
             raise exception.InvalidValue(_(
                 'detach starts a command and does not wait for it; it cannot '
                 'be combined with an interactive session'))
+        stream, stdin = _stream_options(stream, stdin, run, interactive,
+                                        detach)
         if timeout is not None:
             api_utils.version_check('timeout', '1.57')
             timeout = _exec_timeout(timeout, run, interactive, detach)
@@ -1238,6 +1272,9 @@ class ContainersController(base.Controller):
                   {'uuid': container.uuid, 'command': kwargs['command']})
         context = pecan.request.context
         compute_api = pecan.request.compute_api
+        if stream:
+            return compute_api.container_exec_stream(
+                context, container, kwargs['command'], stdin, timeout)
         if detach:
             return compute_api.container_exec(context, container,
                                               kwargs['command'],

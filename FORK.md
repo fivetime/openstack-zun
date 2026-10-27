@@ -1010,6 +1010,43 @@ compute 节点上抛出的异常经 oslo.messaging 回到 API 时,`deserialize_r
 - 测试 `zun/tests/unit/api/controllers/v1/test_remote_traceback.py`:用 oslo.messaging 真实的 `serialize_remote_exception` /
   `deserialize_remote_exception` 造出节点回来的异常,只 mock RPC 这一层,走完整 API 栈;旧 hook 上失败(detail 带 traceback)。
 
+### 4.20 API 1.59:流式 exec——API 立即返回,命令输出经 wsproxy 边产生边转发(2026-10-27)
+
+同步 exec(1.57/1.58)让 API 线程一直等到命令结束,qinling 的函数执行和 kubezun 的 `kubectl exec -i`/`kubectl cp` 都被它
+卡住;而把结果存进数据库或缓存再让客户端来取,用户否决了(输出可能是任意二进制,体积不可控,"代价不可评估")。所以改成:
+**Zun 不存任何东西,输出边产生边转发,有背压**。
+
+- **发起**:`execute?run=true&stream=true[&stdin=true][&timeout=N]`(容器与胶囊都有;胶囊的 timeout 只随 stream 提供)。
+  compute 只**建**不**启动**命令(docker `exec_create`,CRI `Exec` 拿流 URL,都不带 tty,stdout/stderr 分开),API 立即回
+  `{exec_id, proxy_url, protocol: v5.channel.k8s.io, output: null, exit_code: null}`。`stream` 不能与 interactive/detach/run=false
+  同用,`stdin` 必须随 `stream`。
+- **令牌**(`zun/websocket/exec_token.py`):Fernet 加密 + 签名,`[websocket_proxy] exec_token_key`(API 与 wsproxy 共用,未设
+  则流式被拒 409)、`exec_token_ttl`(默认 30 s)。里面是容器 uuid、节点、运行时目标(CRI 的 loopback URL / dockerd 地址与 exec id)、
+  stdin、timeout。**不写数据库**;只能用一次靠运行时(docker exec 只能 start 一次,CRI 流 URL 一次性)。加密而不只是签名:
+  运行时的内部地址不给调用方看。
+- **协议**(`zun/websocket/channel.py`):Kubernetes 通道协议,每条 websocket 消息 = 1 字节通道号 + 数据;0 stdin、1 stdout、
+  2 stderr、3 结束状态、255 关闭(`[255,0]` = stdin EOF,v5 才有)。结束时通道 3 发 `metav1.Status`:Success /
+  NonZeroExitCode + ExitCode cause(同 kubelet)/ **Timeout(本 API 自定义)**。
+- **握手**(`websocketproxy.validate_connection`):wsproxy **先拨通运行时再回 101**,所以 101 里的 `X-Zun-Exec-Protocol`
+  是实际协商结果(v5 = 能关 stdin);客户端按名字要 v5/v4.channel.k8s.io 子协议时也按实际结果选,否则仍是 websockify 的
+  `binary`。令牌无效/过期/别的容器的 → 403,运行时拒绝/拨不通 → 502,body 一句原因,不含地址,不在日志里打 traceback。
+- **CRI(胶囊)**:原样转发运行时的帧,向运行时先提 v5、只给 v4 时退回 v4;v4 下客户端发 `[255,…]` 立即回 BadRequest 并结束
+  (转过去会被忽略,命令永远等不到 EOF)。stdin 由单独线程写,命令不读 stdin 也不会堵住输出。客户端断开或超时 → 硬断后端连接,
+  运行时随之结束命令(fork containerd main.20261027 保证;实测上游 2.2.2 对硬断也会结束)。
+- **docker**:wsproxy 用节点 dockerd 的远程地址(生产即 mTLS 2376)`exec_start` 劫持连接,把 8 字节头的复用流翻译成通道帧,
+  stdin 原样写入,`[255,0]` → 半关闭写方向(经 dup 的 fd,TLS 状态不丢;dockerd 对 exec 设了 CloseStdin);结束后
+  `exec_inspect` 取退出码。dockerd 不会因连接断开而结束 exec,所以**超时或客户端断开时 wsproxy cast `container_exec_kill`**
+  给节点,节点用 4.18 的 `ctr tasks kill --exec-id` 杀掉(kata 下也有效)。杀了还不结束的,10 s 后照样回 Timeout 给客户端。
+- **背压**:发给客户端未取走的超过 `[websocket_proxy] stream_buffer_limit`(默认 1 MiB)就停读运行时。超时由独立定时线程执行
+  (主循环可能卡在向不读的客户端发送),它只负责结束命令,结束状态由主循环发出。
+- **不变**:同步 exec、交互式(tty)exec、1.58 的字段;不带 stream 的请求与以前完全一样。RPC 新增 `container_exec_stream`
+  (call,短)与 `container_exec_kill`(cast,来自 wsproxy)。
+- **部署**:`exec_token_key` 进 zun-values-secret;生产 wsproxy 在控制节点,能拨各节点 dockerd(mTLS),但**拨不到 containerd
+  只听 loopback 的流服务器**——生产上胶囊的流式(以及现有交互式)exec 要等 wsproxy 上计算节点(DaemonSet,kubezun 会话跟进)。
+- **验证**:单测 `zun/tests/unit/{api/controllers/v1,compute,websocket}/test_exec_stream.py`。端到端用真 wsproxy:本机 dockerd
+  (stdout/stderr、退出码、stdin 关闭、二进制、32 MiB 慢读者下处理进程内存不涨、超时 3.1 s 杀掉、断开即杀、令牌拒绝/复用/过期、
+  32 并发 sleep 2 共 2.7 s)、本机上游 containerd 2.2.2(v4)与 fork main.20261027(v5:`wc -c` 收到 `[255,0]` 后输出 70000)。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

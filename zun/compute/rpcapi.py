@@ -73,6 +73,9 @@ class API(rpc_service.API):
                 of one host in one call.
         * 1.3 - Add host_sample: a reading of every object of the asked
                 types on one host.
+        * 1.4 - Add container_exec_stream, which makes an exec for
+                zun-wsproxy to start and stream, and container_exec_kill,
+                which the proxy casts when it gives up on one.
     """
 
     def __init__(self, context=None, topic=None):
@@ -156,6 +159,17 @@ class API(rpc_service.API):
         return self._call(container.host, 'container_exec',
                           container=container, command=command, run=run,
                           interactive=interactive, **extra)
+
+    @check_container_host
+    def container_exec_stream(self, context, container, command, stdin):
+        # Short: the command is made, not started -- the proxy starts it.
+        return self._call(container.host, 'container_exec_stream',
+                          container=container, command=command, stdin=stdin)
+
+    def container_exec_kill(self, context, host, exec_id):
+        # From zun-wsproxy, which holds no container object, only what the
+        # exec's token says: the node and the runtime's id for the exec.
+        self._cast(host, 'container_exec_kill', exec_id=exec_id)
 
     @check_container_host
     def container_exec_resize(self, context, container, exec_id, height,

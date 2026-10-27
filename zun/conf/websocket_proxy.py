@@ -86,6 +86,32 @@ Possible values:
     cfg.StrOpt('key',
                default='',
                help="SSL key file (if separate from cert)."),
+    cfg.StrOpt('exec_token_key',
+               secret=True,
+               help="""
+The secret a streamed exec's token is sealed with (API 1.59).
+
+zun-api seals what the proxy needs to reach the command into the token it
+hands out, and zun-wsproxy opens it; nothing is stored. Both services read
+this option, so it has to be the same on each of them. Any string; it is
+hashed into the key. Streamed exec is refused while it is unset.
+"""),
+    cfg.IntOpt('exec_token_ttl',
+               default=30,
+               min=1,
+               help="""
+Seconds a streamed exec's token may be used for once handed out. The
+command does not start until the token is used, so this bounds only how
+long a caller may take to connect.
+"""),
+    cfg.IntOpt('stream_buffer_limit',
+               default=1048576,
+               min=65536,
+               help="""
+Bytes of a streamed exec's output held for a client that reads slower than
+the command writes. Past it the proxy stops reading from the container, and
+the command blocks on its own output until the client catches up.
+"""),
 ]
 
 ALL_OPTS = (wsproxy_opts)

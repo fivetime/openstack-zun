@@ -202,6 +202,9 @@ query_param_execute_command = {
         'detach': parameter_types.boolean,
         # 1.57: how long to wait for it, in seconds.
         'timeout': parameter_types.positive_integer,
+        # 1.59: answer a proxy url at once and stream it there.
+        'stream': parameter_types.boolean,
+        'stdin': parameter_types.boolean,
     },
     'additionalProperties': False
 }

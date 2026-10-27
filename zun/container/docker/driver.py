@@ -1822,6 +1822,25 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                         'may still be running: %(err)s',
                         {'id': exec_id, 'err': e})
 
+    @check_container_id
+    @wrap_docker_error
+    def execute_create_stream(self, context, container, command, stdin):
+        with docker_utils.docker_client() as docker:
+            exec_id = docker.exec_create(
+                container.container_id, command, stdin=stdin, tty=False)['Id']
+        # The daemon's address as seen from off this node, like attach's and
+        # logs' (see _stream_url): zun-wsproxy starts the exec there.
+        scheme = 'https' if self._stream_tls() else 'http'
+        return {'kind': 'docker',
+                'url': '%s://%s:%s' % (scheme,
+                                       CONF.docker.docker_remote_api_host,
+                                       CONF.docker.docker_remote_api_port),
+                'exec_id': exec_id}
+
+    def execute_kill(self, exec_id):
+        with docker_utils.docker_client() as docker:
+            self._kill_exec(docker, exec_id)
+
     def execute_resize(self, exec_id, height, width):
         height = int(height)
         width = int(width)
@@ -1881,6 +1900,14 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                                 LOGS_FLAG % (int(bool(stdout)),
                                              int(bool(stderr))))
 
+    @staticmethod
+    def _stream_tls():
+        """Whether the daemon's remote address is reached over TLS."""
+        return bool(not CONF.docker.api_insecure and
+                    CONF.docker.ca_file and
+                    CONF.docker.key_file and
+                    CONF.docker.cert_file)
+
     def _stream_url(self, container, flag):
         """Where the daemon serves a stream for this container.
 
@@ -1889,10 +1916,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         elsewhere, so it has to be an address that resolves off this node --
         which is why the daemon is told to listen on a port as well.
         """
-        protocol = "wss" if (not CONF.docker.api_insecure and
-                             CONF.docker.ca_file and
-                             CONF.docker.key_file and
-                             CONF.docker.cert_file) else "ws"
+        protocol = "wss" if self._stream_tls() else "ws"
         version = CONF.docker.docker_remote_api_version
         remote_api_host = CONF.docker.docker_remote_api_host
         remote_api_port = CONF.docker.docker_remote_api_port

@@ -700,6 +700,21 @@ class ContainerDriver(object):
         """Resizes the tty session used by the exec."""
         raise NotImplementedError()
 
+    def execute_create_stream(self, context, container, command, stdin):
+        """Make, without starting, a command for zun-wsproxy to stream.
+
+        Answers what the proxy needs to start it and read it, as a dict with
+        'kind' (which of the proxy's ways of reaching a runtime), 'url'
+        (where) and, when the runtime names its exec, 'exec_id'. No
+        terminal: stdout and stderr stay apart.
+        """
+        raise exception.OperationNotSupported(message=_(
+            'this container runtime cannot stream an exec'))
+
+    def execute_kill(self, exec_id):
+        """Kill a command started through exec, given up on by its caller."""
+        raise NotImplementedError()
+
     def kill(self, context, container, signal):
         """Kill a container with specified signal."""
         raise NotImplementedError()

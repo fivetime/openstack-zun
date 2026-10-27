@@ -27,6 +27,8 @@ import zun.conf
 from zun.container import exec_output
 from zun import objects
 from zun.scheduler.client import query as scheduler_client
+from zun.websocket import channel
+from zun.websocket import exec_token
 
 
 CONF = zun.conf.CONF
@@ -219,6 +221,38 @@ class API(object):
         else:
             data['proxy_url'] = None
         return data
+
+    def container_exec_stream(self, context, container, command, stdin,
+                              timeout):
+        """Make an exec and answer where it is streamed from (1.59).
+
+        The node makes the command and does not start it; zun-wsproxy does,
+        once a client connects with the token answered here. What the proxy
+        needs is sealed into that token rather than stored, see exec_token.
+        """
+        # Refused before anything is made on the node.
+        exec_token.ensure_enabled()
+        data = self.rpcapi.container_exec_stream(context, container,
+                                                 command, stdin)
+        token = exec_token.seal({
+            'uuid': container.uuid,
+            'host': container.host,
+            'target': data['target'],
+            'stdin': bool(stdin),
+            'timeout': timeout,
+        })
+        base = data.get('proxy_base') or CONF.websocket_proxy.base_url
+        return {
+            'output': None,
+            'exit_code': None,
+            'exec_id': data['exec_id'],
+            'proxy_url': '%s?stream=exec&uuid=%s&token=%s' % (
+                base, container.uuid, token),
+            # The framing the proxy speaks to its client. Whether stdin can
+            # be closed (255) is the runtime's to say, and the proxy says it
+            # in the X-Zun-Exec-Protocol header of its 101 answer.
+            'protocol': channel.V5,
+        }
 
     def container_exec_resize(self, context, container, *args):
         return self.rpcapi.container_exec_resize(context, container, *args)

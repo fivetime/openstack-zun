@@ -1288,6 +1288,36 @@ class Manager(periodic_task.PeriodicTasks):
             raise
 
     @translate_exception
+    def container_exec_stream(self, context, container, command, stdin):
+        """Make a command for zun-wsproxy to start and stream (1.59).
+
+        Made, not started: nothing runs until a client reaches the proxy,
+        so a caller that never connects costs the runtime an exec record
+        and no process.
+        """
+        LOG.debug('Making a streamed exec in container: %s', container.uuid)
+        driver = self._get_driver(container)
+        target = driver.execute_create_stream(context, container, command,
+                                              stdin)
+        return {'exec_id': target.get('exec_id'),
+                'target': target,
+                # This node's proxy, as for an interactive session.
+                'proxy_base': CONF.websocket_proxy.base_url}
+
+    def container_exec_kill(self, context, exec_id):
+        """Kill a streamed command its client left, or that ran too long.
+
+        Cast by zun-wsproxy for the runtimes that do not end a command when
+        its stream ends -- docker -- with the exec id the token carried.
+        """
+        LOG.debug('Killing streamed exec %s', exec_id)
+        try:
+            self.driver.execute_kill(exec_id)
+        except Exception as e:
+            LOG.warning('Could not kill streamed exec %(id)s: %(err)s',
+                        {'id': exec_id, 'err': e})
+
+    @translate_exception
     def container_exec_resize(self, context, exec_id, height, width):
         LOG.debug('Resizing the tty session used by the exec: %s', exec_id)
         try:

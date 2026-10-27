@@ -1,0 +1,25 @@
+---
+features:
+  - |
+    API 1.59: ``execute`` with ``stream=true`` (and ``run=true``) answers at
+    once with an ``exec_id`` and a ``proxy_url`` instead of holding the
+    request until the command ends. The command starts when a websocket
+    client connects to the proxy url, and its stdout and stderr are relayed
+    as they are written, in Kubernetes' channel protocol (one byte naming the
+    channel, then data; ``v5.channel.k8s.io`` framing). ``stdin=true`` opens
+    stdin, which a client closes with ``[255, 0]`` where the runtime allows
+    it; ``zun-wsproxy`` says whether it does in the ``X-Zun-Exec-Protocol``
+    header of its upgrade answer. The command's end is a Kubernetes Status on
+    channel 3: ``Success``, ``NonZeroExitCode`` with the code, or ``Timeout``
+    when ``timeout`` was given and passed. A client that disconnects, or a
+    timeout, ends the command. Capsules take the same parameters. Nothing is
+    stored: the proxy url carries a sealed token, valid for
+    ``[websocket_proxy] exec_token_ttl`` seconds.
+upgrade:
+  - |
+    Streamed exec needs ``[websocket_proxy] exec_token_key`` set to the same
+    secret on ``zun-api`` and ``zun-wsproxy``; until it is, a streamed exec
+    is refused with 409. Upgrade ``zun-compute`` and ``zun-wsproxy`` before
+    callers start using API 1.59. For capsules, ``zun-wsproxy`` has to reach
+    the runtime's streaming server, which by default listens on the compute
+    node's loopback only.

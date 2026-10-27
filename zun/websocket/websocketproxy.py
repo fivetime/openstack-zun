@@ -27,6 +27,7 @@ from oslo_log import log as logging
 from oslo_utils import uuidutils
 from urllib import parse as urlparse
 import websockify
+from websockify import websockifyserver
 
 from zun.common import context
 from zun.common import exception
@@ -34,6 +35,8 @@ from zun.common.i18n import _
 import zun.conf
 from zun import monkey_patch
 from zun import objects
+from zun.websocket import exec_stream
+from zun.websocket import exec_token
 from zun.websocket.websocketclient import WebSocketClient
 
 LOG = logging.getLogger(__name__)
@@ -76,6 +79,34 @@ def _as_websocket_url(url):
     if url.startswith('http'):
         return 'ws' + url[len('http'):]
     return url
+
+
+class ExecStreamWebSocket(websockifyserver.CompatibleWebSocket):
+    """The client side of the upgrade, told what a streamed exec speaks.
+
+    By the time it answers, the runtime has been dialled (see
+    validate_connection), so the answer is what was negotiated there and not
+    a guess: the X-Zun-Exec-Protocol header always, and the subprotocol too
+    for a client that asks for the channel protocol by name, the way
+    client-go does. Everything else is websockify's 'binary' as before.
+    """
+
+    def _stream(self):
+        return getattr(self.request_handler, 'exec_stream', None)
+
+    def select_subprotocol(self, protocols):
+        stream = self._stream()
+        if stream is not None:
+            for offered in protocols:
+                if offered.strip() == stream.protocol:
+                    return offered
+        return super(ExecStreamWebSocket, self).select_subprotocol(protocols)
+
+    def end_headers(self):
+        stream = self._stream()
+        if stream is not None:
+            self.send_header('X-Zun-Exec-Protocol', stream.protocol)
+        super(ExecStreamWebSocket, self).end_headers()
 
 
 class ZunProxyRequestHandlerBase(object):
@@ -209,13 +240,54 @@ class ZunProxyRequestHandlerBase(object):
 
             self._handle_ins_outs(target, ins, outs)
 
-    def new_websocket_client(self):
-        """Called after a new WebSocket connection has been established."""
+    def validate_connection(self):
+        """Before the upgrade: a streamed exec is dialled here (1.59).
+
+        So that what the runtime negotiated can be in the answer to the
+        upgrade, and so that a token that opens nothing, or a runtime that
+        will not take the exec, is an HTTP error with a reason the client
+        can read instead of a connection dropped after it was accepted.
+        """
+        self.exec_stream = None
+        query = urlparse.parse_qs(urlparse.urlparse(self.path).query)
+        if query.get('stream', [''])[0] != 'exec':
+            return super(ZunProxyRequestHandlerBase,
+                         self).validate_connection()
+        # The runtime is dialled from here, so the hub has to be this
+        # child's own before it is (see new_websocket_client).
+        ZunProxyRequestHandlerBase._own_hub()
+        token = query.get('token', [''])[0]
+        uuid = query.get('uuid', [''])[0]
+        try:
+            payload = exec_token.open_token(token)
+            if payload.get('uuid') != uuid:
+                raise exception.InvalidWebsocketToken()
+            self._verify_origin('%s?stream=exec' %
+                                CONF.websocket_proxy.base_url)
+            self.exec_stream = exec_stream.open_stream(payload)
+        except (exception.ZunException, exec_stream.StreamRefused) as e:
+            exec_stream.refuse(self, e)
+            # Answered: what is left is to end the connection, which this
+            # is how websockify is told to do without logging a traceback.
+            raise websockifyserver.WebSockifyServer.EClose(
+                'refused a streamed exec: %s' % e)
+
+    @staticmethod
+    def _own_hub():
         if not monkey_patch.concurrency_mode_threading():
             # Reopen the eventlet hub to make sure we don't share an epoll
             # fd with parent and/or siblings, which would be bad
             from eventlet import hubs
             hubs.use_hub()
+
+    def new_websocket_client(self):
+        """Called after a new WebSocket connection has been established."""
+        stream = getattr(self, 'exec_stream', None)
+        if isinstance(stream, exec_stream.ExecStream):
+            # Dialled, and on its own hub, in validate_connection.
+            stream.run(self)
+            return
+        ZunProxyRequestHandlerBase._own_hub()
 
         # The zun expected behavior is to have token
         # passed to the method GET of the request
@@ -395,6 +467,8 @@ class ZunProxyRequestHandlerBase(object):
 
 class ZunProxyRequestHandler(ZunProxyRequestHandlerBase,
                              websockify.ProxyRequestHandler):
+    SocketClass = ExecStreamWebSocket
+
     def __init__(self, *args, **kwargs):
         websockify.ProxyRequestHandler.__init__(self, *args, **kwargs)
 

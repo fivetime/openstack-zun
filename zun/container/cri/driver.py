@@ -1781,6 +1781,17 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         return self._streaming_exec_url(container, command,
                                         stdin=True, tty=True)
 
+    def execute_create_stream(self, context, container, command, stdin):
+        """A URL on the runtime's streaming server, for zun-wsproxy.
+
+        Made with no terminal, so stdout and stderr come apart, and run
+        when the proxy connects to it, not before. The runtime names no exec
+        id; the URL is single use and is the exec.
+        """
+        url = self._streaming_exec_url(container, command, stdin=stdin,
+                                       tty=False)
+        return {'kind': 'cri', 'url': url, 'exec_id': None}
+
     def exec_stream_url(self, exec_id):
         """Where an interactive session made by execute_create is served.
 

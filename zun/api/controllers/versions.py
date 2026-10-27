@@ -129,6 +129,13 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              streams cut at [compute] exec_output_limit or not UTF-8. The
              X-Zun-Output-Truncated and X-Zun-Output-Replaced headers say
              the same to callers of any version.
+    * 1.59 - execute stream=true (with run=true, not interactive or
+             detach) starts nothing and waits for nothing: it answers an
+             exec_id and a proxy_url at once, and the command starts when
+             a websocket client connects there (v5.channel.k8s.io frames:
+             0 stdin, 1 stdout, 2 stderr, 3 a Status at the end, 255 to
+             close stdin). stdin=true opens stdin. timeout, if given, is
+             enforced by the proxy. The capsule execute takes the same.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -141,7 +148,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.58'
+CURRENT_MAX_VER = '1.59'
 
 
 class Version(object):

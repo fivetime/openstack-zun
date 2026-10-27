@@ -23,6 +23,7 @@ import pecan
 from zun.api.controllers import base
 from zun.api.controllers import link
 from zun.api.controllers.v1 import collection
+from zun.api.controllers.v1 import containers as container_controller
 from zun.api.controllers.v1.schemas import capsules as schema
 from zun.api.controllers.v1.schemas import parameter_types
 from zun.api.controllers.v1.views import capsules_view as view
@@ -673,7 +674,8 @@ class CapsuleController(base.Controller):
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception
     def execute(self, capsule_ident, container=None, run=True,
-                interactive=False, **kwargs):
+                interactive=False, stream=False, stdin=False, timeout=None,
+                **kwargs):
         """Run a command in a container of the given capsule.
 
         :param capsule_ident: UUID or Name of a capsule.
@@ -682,6 +684,9 @@ class CapsuleController(base.Controller):
         :param interactive: Keep stdin open and allocate a terminal. The
             answer is then a proxy url to attach to rather than output: there
             is no output yet, and there will not be until someone types.
+        :param stream: Answer a proxy url at once; the command starts when
+            a client connects there (1.59), stdin open with stdin=true and
+            ended after timeout seconds if given.
         """
         capsule = api_utils.get_resource('Capsule', capsule_ident)
         check_policy_on_capsule(capsule.as_dict(), "capsule:execute")
@@ -706,6 +711,16 @@ class CapsuleController(base.Controller):
                 'run and interactive are mutually exclusive: one waits for '
                 'the command to finish, the other hands back a session to '
                 'type into'))
+        stream, stdin = container_controller._stream_options(
+            stream, stdin, run, interactive)
+        if timeout is not None:
+            # Only a streamed command has one here: the capsule execute
+            # never took the 1.57 one.
+            if not stream:
+                raise exception.InvalidValue(_(
+                    'timeout is taken with stream=true here'))
+            timeout = container_controller._exec_timeout(
+                timeout, run, interactive, False)
 
         if not capsule.host:
             raise exception.Invalid(
@@ -716,6 +731,9 @@ class CapsuleController(base.Controller):
 
         context = pecan.request.context
         compute_api = pecan.request.compute_api
+        if stream:
+            return compute_api.container_exec_stream(
+                context, target, command, stdin, timeout)
         return api_utils.exec_reply(compute_api.container_exec(
             context, target, command, run, interactive))
 
