@@ -1,0 +1,7 @@
+---
+security:
+  - |
+    An error raised on a compute node no longer reaches the caller with the
+    node's traceback in the error's ``detail``: the hook that removed it
+    from the title left the description, which the API answers as the
+    detail, untouched.

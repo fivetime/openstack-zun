@@ -999,6 +999,17 @@ docker 没有停止 exec 的接口。qinling 的 Zun 后端一个容器一次只
 - 测试 `zun/tests/unit/compute/test_exec_timeout.py`(3 条,mock 的是 `utils.execute` 和 docker 客户端这两个边界),旧代码上
   "超时后会杀"失败;`test_docker_driver.test_execute_run_timeout` 原断言"超时后不 inspect",改为只 inspect 一次。
 
+### 4.19 节点上的错误不再把 traceback 返回给调用方(2026-10-27)
+
+compute 节点上抛出的异常经 oslo.messaging 回到 API 时,`deserialize_remote_exception` 把节点的 traceback 拼进了异常消息。
+`NoExceptionTracebackHook` 本来就是为了切掉它(注释写明是安全问题),但只切 `title`;错误中间件(`parsable_error`)把
+`description` 原样作为 `detail` 返回,于是每个来自节点的错误(exec 超时 409、运行时拒发 400 等)都把节点的文件路径和源码行
+带给了租户。生产实测(rev 64,`timeout=2` 的 `sleep 30`):`detail` 1927 字节,大部分是 traceback。kubezun 会话在测试床发现。
+
+- hook 对 `title` 和 `description` 都切。`CONF.debug` 时保留的规则不变。
+- 测试 `zun/tests/unit/api/controllers/v1/test_remote_traceback.py`:用 oslo.messaging 真实的 `serialize_remote_exception` /
+  `deserialize_remote_exception` 造出节点回来的异常,只 mock RPC 这一层,走完整 API 栈;旧 hook 上失败(detail 带 traceback)。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

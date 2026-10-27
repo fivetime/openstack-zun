@@ -107,13 +107,19 @@ class NoExceptionTracebackHook(hooks.PecanHook):
         if CONF.debug and json_body.get('faultcode') != 'Server':
             return
 
-        title = json_body.get('title')
+        # Both fields carry the message: the error middleware answers the
+        # description as `detail`. Only the title used to be cut, so every
+        # error raised on a compute node reached the caller with the node's
+        # traceback -- file paths and source lines -- in its detail.
         traceback_marker = 'Traceback (most recent call last):'
-        if title and (traceback_marker in title):
-            # Cut-off traceback.
-            title = title.split(traceback_marker, 1)[0]
-            # Remove trailing newlines and spaces if any.
-            json_body['title'] = title.rstrip()
+        changed = False
+        for field in ('title', 'description'):
+            value = json_body.get(field)
+            if isinstance(value, str) and traceback_marker in value:
+                # Cut-off traceback, and the newlines and spaces before it.
+                json_body[field] = value.split(traceback_marker, 1)[0].rstrip()
+                changed = True
+        if changed:
             # Replace the whole json. Cannot change original one beacause it's
             # generated on the fly.
             state.response.json = json_body
