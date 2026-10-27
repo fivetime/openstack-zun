@@ -716,8 +716,8 @@ class CapsuleController(base.Controller):
 
         context = pecan.request.context
         compute_api = pecan.request.compute_api
-        return compute_api.container_exec(context, target, command, run,
-                                          interactive)
+        return api_utils.exec_reply(compute_api.container_exec(
+            context, target, command, run, interactive))
 
     @staticmethod
     def _find_container(capsule, ident):

@@ -1243,13 +1243,11 @@ class ContainersController(base.Controller):
                                               kwargs['command'],
                                               run, interactive, detach=True)
         if timeout is not None:
-            return compute_api.container_exec(context, container,
-                                              kwargs['command'],
-                                              run, interactive,
-                                              timeout=timeout)
-        return compute_api.container_exec(context, container,
-                                          kwargs['command'],
-                                          run, interactive)
+            return api_utils.exec_reply(compute_api.container_exec(
+                context, container, kwargs['command'], run, interactive,
+                timeout=timeout))
+        return api_utils.exec_reply(compute_api.container_exec(
+            context, container, kwargs['command'], run, interactive))
 
     @pecan.expose('json')
     @exception.wrap_pecan_controller_exception

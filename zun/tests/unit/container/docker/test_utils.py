@@ -89,6 +89,9 @@ class TestReadExecOutput(base.DriverTestCase):
     def setUp(self):
         super().setUp()
         self.ours, self.docker_end = socket.socketpair()
+        # A reader that gives up early must not leave the writer blocked
+        # on a full socket, which the cleanup would then wait on forever.
+        self.docker_end.settimeout(5)
         self.addCleanup(self.docker_end.close)
         self.addCleanup(self.ours.close)
 
@@ -110,7 +113,7 @@ class TestReadExecOutput(base.DriverTestCase):
         self._write_later(_frame(1, b'out1 '), _frame(2, b'err '),
                           _frame(1, b'out2'))
         self.assertEqual(b'out1 err out2',
-                         docker_utils.read_exec_output(self.ours, 5))
+                         docker_utils.read_exec_output(self.ours, 5).combined)
 
     def test_frames_split_across_reads(self):
         stream = _frame(1, b'hello ') + _frame(2, b'world')
@@ -118,11 +121,12 @@ class TestReadExecOutput(base.DriverTestCase):
                             for i in range(0, len(stream), 3)],
                           delay=0.01)
         self.assertEqual(b'hello world',
-                         docker_utils.read_exec_output(self.ours, 5))
+                         docker_utils.read_exec_output(self.ours, 5).combined)
 
     def test_no_output(self):
         self._write_later()
-        self.assertEqual(b'', docker_utils.read_exec_output(self.ours, 5))
+        self.assertEqual(
+            b'', docker_utils.read_exec_output(self.ours, 5).combined)
 
     def test_gives_up_on_a_quiet_command(self):
         # Writes once and then neither writes nor closes: what docker-py
@@ -154,4 +158,50 @@ class TestReadExecOutput(base.DriverTestCase):
         sio = socket.SocketIO(self.ours, 'rb')
         self._write_later(_frame(1, b'via SocketIO'))
         self.assertEqual(b'via SocketIO',
-                         docker_utils.read_exec_output(sio, 5))
+                         docker_utils.read_exec_output(sio, 5).combined)
+
+    def test_streams_apart(self):
+        self._write_later(_frame(1, b'out1 '), _frame(2, b'err'),
+                          _frame(1, b'out2'))
+        output = docker_utils.read_exec_output(self.ours, 5)
+        self.assertEqual(b'out1 out2', output.stdout)
+        self.assertEqual(b'err', output.stderr)
+        self.assertEqual(set(), output.truncated)
+
+    def test_reads_to_the_end_and_keeps_the_limit(self):
+        # Far more than the limit, in frames docker would send: the
+        # command is read to its end (the writer closes, so the read
+        # returns rather than timing out) and only the limit is kept.
+        big = b'x' * 4096
+        self._write_later(*[_frame(1, big)] * 64, _frame(2, b'tail'),
+                          delay=0)
+        output = docker_utils.read_exec_output(self.ours, 5, limit=1024)
+        self.assertEqual(b'x' * 1024, output.stdout)
+        self.assertEqual(b'tail', output.stderr)
+        self.assertEqual({'stdout'}, output.truncated)
+
+    def test_one_huge_frame_is_not_held_whole(self):
+        # docker's frame header carries a 32-bit length. A payload is fed
+        # as it arrives, not gathered into one frame first.
+        payload = b'y' * (1024 * 1024)
+        seen = []
+        real_feed = docker_utils.exec_output.ExecOutput.feed
+
+        def feed(output, stream, data):
+            seen.append(len(data))
+            return real_feed(output, stream, data)
+        with mock.patch.object(docker_utils.exec_output.ExecOutput, 'feed',
+                               feed):
+            self._write_later(_frame(1, payload), delay=0)
+            output = docker_utils.read_exec_output(self.ours, 5, limit=1024)
+        self.assertEqual(b'y' * 1024, output.stdout)
+        self.assertLessEqual(max(seen), 65536)
+
+    def test_header_split_across_reads(self):
+        stream = _frame(2, b'ab') + _frame(1, b'cd')
+        self._write_later(*[stream[i:i + 1] for i in range(len(stream))],
+                          delay=0.001)
+        output = docker_utils.read_exec_output(self.ours, 5)
+        self.assertEqual(b'cd', output.stdout)
+        self.assertEqual(b'ab', output.stderr)
+        self.assertEqual(b'abcd', output.combined)

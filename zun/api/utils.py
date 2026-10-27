@@ -120,3 +120,21 @@ def version_check(action, version):
         raise exception.InvalidParamInVersion(param=action,
                                               req_version=req_version,
                                               min_version=min_version)
+
+
+def exec_reply(result):
+    """Say in headers what an exec's output lost, for every version.
+
+    A caller pinned to an old version reads only `output` and would take a
+    cut or altered output for the whole of it. The headers reach it
+    whatever version it asks for: X-Zun-Output-Truncated names the
+    streams cut at [compute] exec_output_limit, X-Zun-Output-Replaced
+    those that were not UTF-8 (base64 in their own field, replacement
+    characters in `output`).
+    """
+    for field, header in (('output_truncated', 'X-Zun-Output-Truncated'),
+                          ('output_replaced', 'X-Zun-Output-Replaced')):
+        streams = (result or {}).get(field)
+        if streams:
+            pecan.response.headers[header] = ','.join(streams)
+    return result

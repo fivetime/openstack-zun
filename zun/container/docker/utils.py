@@ -27,17 +27,25 @@ from zun.common import exception
 from zun.common.i18n import _
 from zun.common import utils
 import zun.conf
+from zun.container import exec_output
 
 
 CONF = zun.conf.CONF
 
 
-def read_exec_output(sock, timeout):
-    """All a non-tty exec writes, or socket.timeout after `timeout` seconds.
+def read_exec_output(sock, timeout, limit=None):
+    """What a non-tty exec writes, or socket.timeout after `timeout` seconds.
 
-    `sock` is what exec_start(socket=True) hands back. The result is what
-    exec_start would have returned without it: the payload of every frame
-    of the multiplexed stream, stdout and stderr in the order written.
+    `sock` is what exec_start(socket=True) hands back: docker's multiplexed
+    stream, frames of an 8-byte header (stream id, three bytes of padding,
+    payload length) and a payload. Returns an ExecOutput holding stdout and
+    stderr, each up to `limit` bytes ([compute] exec_output_limit when not
+    given), and the order they were written in.
+
+    The stream is taken apart as it arrives, so what is held at any moment
+    is what is kept plus less than one header: a command that writes
+    gigabytes is read to its end -- it finishes, and its exit code is real
+    -- and the rest is dropped as it comes in.
 
     docker-py cannot give up on its own: before each recv it polls the
     socket with no timeout at all, so a command that keeps quiet holds
@@ -46,10 +54,13 @@ def read_exec_output(sock, timeout):
     the deadline is kept here, as a timeout on every recv of whatever
     time is left.
     """
+    output = exec_output.ExecOutput(limit)
     # SocketIO over a unix or plain TCP socket; the socket itself for TLS
     raw = getattr(sock, '_sock', sock)
     deadline = time.monotonic() + timeout
-    received = []
+    header = b''
+    stream_id = None
+    left = 0    # payload bytes of the current frame still to come
     try:
         while True:
             remaining = deadline - time.monotonic()
@@ -59,7 +70,20 @@ def read_exec_output(sock, timeout):
             data = raw.recv(65536)
             if not data:
                 break
-            received.append(data)
+            offset = 0
+            while offset < len(data):
+                if left:
+                    chunk = data[offset:offset + left]
+                    output.feed(stream_id, chunk)
+                    left -= len(chunk)
+                    offset += len(chunk)
+                    continue
+                need = 8 - len(header)
+                header += data[offset:offset + need]
+                offset += need
+                if len(header) == 8:
+                    stream_id, left = struct.unpack('>BxxxL', header)
+                    header = b''
     finally:
         # Hang up for good: the response object still holds the socket,
         # and a plain close() leaves it open while anything does.
@@ -68,17 +92,7 @@ def read_exec_output(sock, timeout):
         except OSError:
             pass
         raw.close()
-
-    stream = b''.join(received)
-    payload = []
-    offset = 0
-    while offset + 8 <= len(stream):
-        # Frame header: stream id, three bytes of padding, payload length
-        _stream_id, length = struct.unpack_from('>BxxxL', stream, offset)
-        offset += 8
-        payload.append(stream[offset:offset + length])
-        offset += length
-    return b''.join(payload)
+    return output
 
 
 @contextlib.contextmanager

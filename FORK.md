@@ -944,6 +944,37 @@ DockerDriver 建容器前,只要 entrypoint 或 command 有一个没给,就把�
 - 测试 `zun/tests/unit/image/docker/test_image_digest.py` 从引用字符串经 `parse_image_name` 一直走到 docker 客户端
   (只 mock 客户端),旧代码上 6 条里 5 条失败(通过的那条是"tag 和以前一样")。
 
+### 4.17 API 1.58:同步 exec 的输出有上限、stdout/stderr 分开、截断看得见(2026-10-27)
+
+`execute?run=true`(以及胶囊的 `execute`)把命令的全部输出读进内存,经 RPC 原样带回 API。没有任何上限:
+一条 `cat` 大文件就能把 compute 节点和 API worker 撑大到文件那么大。另外输出不是 UTF-8 时(二进制、图片),
+compute 回 RPC 前做 JSON 序列化直接 `UnicodeDecodeError`,调用方只拿到 500。
+
+- 新选项 `[compute] exec_output_limit`(默认 65536 字节,最小 1024):stdout、stderr 各保留这么多。命令照常跑完、
+  退出码是真的,超出的部分边读边丢。docker 驱动的 `read_exec_output` 改成边收边拆帧(以前是全部收齐再拆),
+  任何时刻只持有已保留的部分加不到一个帧头。
+- CRI 驱动:containerd 的 `ExecSync` 自己攒满整段输出再一次性返回(每路最多 16 MiB,超出静默截断,
+  `maxStreamSize`),所以只能在收到后截;某一路恰好 16 MiB 也按"已截断"标记。gRPC 通道的
+  `max_receive_message_length` 从默认 4 MiB 调到 33 MiB:以前两路合计超过 4 MiB 时 `ExecSync` 直接
+  `RESOURCE_EXHAUSTED`,走不到任何截断逻辑(kubezun 会话指出)。这个通道探针也在用,只调大接收上限,探针行为不变;
+  截断只加在 `execute_run`(API 发起的同步执行)上,探针走的 `_exec_in_container` 没动。
+- 新模块 `zun/container/exec_output.py` 的 `ExecOutput`:两路分别保留,记住写入顺序,`combined` 按原顺序交错
+  (老字段 `output` 和以前一样;CRI 仍是 stdout 在前、stderr 在后)。
+- 回复新增字段(按本 fork 惯例对所有版本都返回,1.58 只记录出现的版本):`stdout`、`stderr`、
+  `stdout_encoding`/`stderr_encoding`(`utf-8`,或不是 UTF-8 时 `base64`,原样保真)、`output_truncated`
+  (被截断的流)、`output_replaced`(不是 UTF-8 的流)。截断切在多字节字符中间时丢掉那半个字符,仍按文本给。
+  `output` 必须是字符串,里面的非 UTF-8 字节换成替换字符。
+- 响应头 `X-Zun-Output-Truncated`、`X-Zun-Output-Replaced`(值为流名,逗号分隔)对任何版本都给:固定在老版本、
+  只读 `output` 的调用方(kubezun 固定 1.40)也能知道输出被截断或改过。交互式 exec(`run=false&interactive=true`)
+  回复和以前完全一样,不带这两个头。
+- 驱动仍可只返回一整块输出(老接口),manager 用 `ExecOutput.from_combined` 包一下。
+- **不做的**:不存任何执行结果(用户定:存储的代价不可评估,恶意调用能打爆存储)。不一直占着 API 的做法是
+  流式执行(非终端 exec 也走 wsproxy 多通道),另做。
+- 测试 `zun/tests/unit/compute/test_exec_output.py`、`zun/tests/unit/api/controllers/v1/test_exec_output.py`、
+  `zun/tests/unit/container/docker/test_utils.py`(`TestReadExecOutput`):只把新模块放进旧代码时,27 条里 16 条失败
+  (通过的是新模块自身、交互式不变这类)。compute 那组走真实的 RPC 序列化器:旧代码上二进制输出在这里抛
+  `UnicodeDecodeError`。读取测试的写入端加了超时:读取方提前出错时,写入线程不会卡在满的 socket 上让清理永远等。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

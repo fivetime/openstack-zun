@@ -54,10 +54,12 @@ class LazyChannelTest(base.TestCase):
             getattr(driver, name)
 
         self.insecure_channel.assert_called_once_with(
-            cri_driver.CONF.cri_containerd_address)
+            cri_driver.CONF.cri_containerd_address,
+            options=[('grpc.max_receive_message_length',
+                      cri_driver.MAX_RECEIVE_MESSAGE_LENGTH)])
 
     def test_first_users_at_once_make_one_channel(self):
-        def slow_channel(address):
+        def slow_channel(address, options=None):
             time.sleep(0.05)
             return mock.Mock()
         self.insecure_channel.side_effect = slow_channel

@@ -196,6 +196,22 @@ Possible values:
              'Asked of every node concerned at once; a node that does '
              'not answer in time is listed as failed and the others are '
              'answered as usual.'),
+    cfg.IntOpt(
+        'exec_output_limit',
+        default=65536, min=1024, max=4194304,
+        help='Bytes of stdout, and as many of stderr, kept from a command '
+             'that is run and waited for (execute with run=true). The '
+             'command still runs to its end; what it writes beyond this is '
+             'read and dropped, and the answer says which streams were '
+             'cut (output_truncated, and the X-Zun-Output-Truncated '
+             'header). The whole output travels in one RPC reply and is '
+             'held by the compute node and the API worker until it is '
+             'answered, so this bounds what one request can make them '
+             'hold. At most 4 MiB: both streams, base64 when they are '
+             'not UTF-8, have to fit in one message of the RPC broker '
+             '(RabbitMQ\'s max_message_size, 16 MiB by default). Exec '
+             'output is a channel for a command\'s result, not for files: '
+             'copy files with the archive API.'),
 ]
 
 service_opts = [

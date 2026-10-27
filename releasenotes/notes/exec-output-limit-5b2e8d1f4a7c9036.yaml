@@ -1,0 +1,24 @@
+---
+features:
+  - |
+    API 1.58: a command run and waited for (``execute`` with ``run=true``,
+    and the capsule ``execute``) answers ``stdout`` and ``stderr`` apart,
+    beside ``output``, with ``stdout_encoding``/``stderr_encoding``
+    (``utf-8``, or ``base64`` for bytes that are not UTF-8) and
+    ``output_truncated``/``output_replaced`` naming the streams that were
+    cut or were not UTF-8. The ``X-Zun-Output-Truncated`` and
+    ``X-Zun-Output-Replaced`` headers say the same to callers of any
+    version.
+upgrade:
+  - |
+    New option ``[compute] exec_output_limit`` (65536 bytes by default):
+    each stream of a synchronous exec keeps at most this much; the command
+    still runs to its end. Before, the whole output was held by the compute
+    node and the API worker whatever its size. Raise it where callers read
+    large outputs through exec; the output travels in one RPC reply.
+fixes:
+  - |
+    A synchronous exec whose output is not UTF-8 no longer fails with a
+    server error: such a stream is returned in base64. On the CRI driver a
+    command printing more than 4 MiB no longer fails with
+    ``RESOURCE_EXHAUSTED``.

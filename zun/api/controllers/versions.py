@@ -121,6 +121,14 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              waits that long plus a margin rather than the global
              rpc_response_timeout. Without it, [docker] execute_timeout
              or [container_driver] cri_exec_timeout as before.
+    * 1.58 - A command run and waited for (execute run=true, and the
+             capsule execute) answers stdout and stderr apart, beside
+             output, with stdout_encoding/stderr_encoding (utf-8, or
+             base64 for bytes that are not UTF-8, which used to fail the
+             request), and output_truncated/output_replaced naming the
+             streams cut at [compute] exec_output_limit or not UTF-8. The
+             X-Zun-Output-Truncated and X-Zun-Output-Replaced headers say
+             the same to callers of any version.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -133,7 +141,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.57'
+CURRENT_MAX_VER = '1.58'
 
 
 class Version(object):

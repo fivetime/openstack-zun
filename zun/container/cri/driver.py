@@ -44,6 +44,7 @@ from zun.common.i18n import _
 from zun.common import utils
 import zun.conf
 from zun.container import driver
+from zun.container import exec_output
 from zun.container import orphan
 from zun.container.cri import commit as cri_commit
 from zun.container.cri import hostio
@@ -135,6 +136,16 @@ _READ_CALLS = frozenset([
 # call has to outlast that, or it is abandoned before the runtime has done
 # what it was asked.
 _CALLS_WITH_THEIR_OWN_TIMEOUT = frozenset(['StopContainer', 'ExecSync'])
+
+# containerd keeps at most this much of each stream of a synchronous exec
+# and drops the rest without saying so (maxStreamSize in
+# internal/cri/server/container_execsync.go).
+RUNTIME_EXEC_STREAM_MAX = 16 * 1024 * 1024
+# gRPC's own default refuses any answer over 4 MiB, so a command printing
+# more than that failed with RESOURCE_EXHAUSTED instead of returning its
+# output. Large enough for both streams at the runtime's limit; the
+# connection is to the runtime on this node.
+MAX_RECEIVE_MESSAGE_LENGTH = 2 * RUNTIME_EXEC_STREAM_MAX + 1024 * 1024
 
 
 def _deadline_for(method, request):
@@ -636,7 +647,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             kept = {stub: self.__dict__[stub] for stub in _STUBS
                     if stub in self.__dict__}
             self._make_stubs(grpc.insecure_channel(
-                CONF.cri_containerd_address))
+                CONF.cri_containerd_address,
+                options=[('grpc.max_receive_message_length',
+                          MAX_RECEIVE_MESSAGE_LENGTH)]))
             self.__dict__.update(kept)
 
     def _make_stubs(self, channel):
@@ -1838,9 +1851,16 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     'be collected. Start background processes with their '
                     'output redirected, e.g. "cmd >/dev/null 2>&1 &"'))
             raise
-        # stderr is included because a caller running a command wants to see
-        # why it failed, and there is no second stream to send it down.
-        output = (out or b'') + (err or b'')
+        # The runtime collects everything before it answers, so the bound
+        # is applied to the answer, not while reading. It has a bound of
+        # its own: a stream it hands back at exactly that size was cut by
+        # it. stdout comes before stderr in the combined output, as before.
+        output = exec_output.ExecOutput()
+        for stream, data in ((exec_output.STDOUT, out or b''),
+                             (exec_output.STDERR, err or b'')):
+            output.feed(stream, data)
+            if len(data) >= RUNTIME_EXEC_STREAM_MAX:
+                output.mark_truncated(stream)
         return output, exit_code
 
     def _run_probe(self, container, probe):

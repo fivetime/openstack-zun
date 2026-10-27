@@ -38,6 +38,7 @@ from zun.compute import container_actions
 from zun.compute import notifications
 import zun.conf
 from zun.container import driver as driver_module
+from zun.container import exec_output
 from zun.image import driver as img_driver
 from zun.image.glance import driver as glance
 from zun.network import neutron
@@ -1227,10 +1228,15 @@ class Manager(periodic_task.PeriodicTasks):
                 extra = {'timeout': timeout} if timeout else {}
                 output, exit_code = driver.execute_run(exec_id, command,
                                                        **extra)
-                return {"output": output,
-                        "exit_code": exit_code,
-                        "exec_id": None,
-                        "token": None}
+                if not isinstance(output, exec_output.ExecOutput):
+                    # A driver that returns one blob, as all did before.
+                    output = exec_output.ExecOutput.from_combined(output)
+                # Text from here on: the reply crosses RPC as JSON.
+                reply = output.as_reply()
+                reply.update({"exit_code": exit_code,
+                              "exec_id": None,
+                              "token": None})
+                return reply
             else:
                 token = uuidutils.generate_uuid()
                 # Where the session actually lives. A runtime that serves its
