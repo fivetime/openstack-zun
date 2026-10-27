@@ -1090,6 +1090,13 @@ attach / 交互式 exec / logs 的令牌是库里的 UUID,**永不过期、可�
   不说话的命令(20 s 与 400 s)最后照样拿到输出和 Success。洪水:127.0.0.2 同时 1500 慢速连接 + 200 路无令牌请求 + 500 半截 TLS
   60 s,127.0.0.1 照常跑流式 exec——单池配置下 17 次失败 7 次(全局上限被占满),**分池后 16/16 成功、p50 0.159 s(无洪水 0.161 s)**,
   wsproxy 子进程峰值 1(洪水一个都没 fork 出来)。
+- **心跳保活(10-27 晚补)**:生产 gateway(Cilium operator 的 `proxy-stream-idle-timeout-seconds`,默认 300,写进所有监听器的
+  HCM,不能按路由覆盖;设 0 也回落到 Envoy 自己的 300)会切断 300 s 没有帧的流——`sleep 400` 的会话在 301 s 被断(OpenStack-2026.2-Upgrade
+  实测)。用户不放宽全集群。新增 `[websocket_proxy] heartbeat`(秒,默认 0 不发,上游行为不变;生产设 60):attach/logs/交互式 exec
+  经 websockify 自带的 heartbeat(`zun-wsproxy` 现在把它传进去),流式 exec 的两个 relay 循环在 heartbeat 秒内没给客户端发过任何帧、
+  且发送队列为空、socket 可写时发 ping。本机复现:Envoy 去掉路由级 `idle_timeout`、`stream_idle_timeout: 30s` 模拟 gateway,命令沉默
+  45–90 s——heartbeat=0 四种会话(attach、logs、docker 流式、CRI 流式)都在 ~31 s 被断;heartbeat=10 全部收到最后的输出和 Success。
+  ⚠ 实验时注意:Envoy 路由级 `idle_timeout` 会覆盖 HCM 的 `stream_idle_timeout`(边车配置里设 0 就是为此),拿它模拟 gateway 要去掉。
 
 ## 五、共享文件系统的信任边界
 

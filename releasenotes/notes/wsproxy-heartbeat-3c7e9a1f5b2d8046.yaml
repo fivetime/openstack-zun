@@ -1,0 +1,10 @@
+---
+features:
+  - |
+    ``[websocket_proxy] heartbeat`` (seconds, default 0: off) makes
+    ``zun-wsproxy`` ping a client it has sent nothing to for that long, on
+    every kind of session: attach, logs, interactive exec and streamed exec.
+    A proxy or load balancer between ``zun-wsproxy`` and its clients that
+    cuts streams idle for a while (Envoy's default is 300 seconds) then no
+    longer ends a session whose command is only quiet. Set it below that
+    idle timeout.

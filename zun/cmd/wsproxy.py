@@ -46,6 +46,7 @@ def main():
         cert=CONF.websocket_proxy.cert,
         key=CONF.websocket_proxy.key,
         ssl_only=CONF.websocket_proxy.ssl_only,
+        heartbeat=CONF.websocket_proxy.heartbeat,
         file_only=True,
         RequestHandlerClass=websocketproxy.ZunProxyRequestHandler
     ).start_server()

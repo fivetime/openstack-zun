@@ -137,6 +137,18 @@ handed out. It bounds only how long a caller may take to connect; a session
 lasts as long as it is connected. Reconnecting takes a new one from the API.
 A streamed exec's token lasts ``exec_token_ttl`` instead.
 """),
+    cfg.IntOpt('heartbeat',
+               default=0,
+               min=0,
+               help="""
+Seconds after which zun-wsproxy pings a client it has sent nothing to, on
+every kind of session; 0 never pings.
+
+Set it below the idle timeout of anything between the proxy and its
+clients -- a load balancer or a gateway that cuts a stream nothing has
+crossed for a while (Envoy's default is 300 seconds) would otherwise end a
+session whose command is merely quiet.
+"""),
     cfg.IntOpt('stream_buffer_limit',
                default=1048576,
                min=65536,

@@ -134,6 +134,7 @@ class ExecStream(object):
 
     def run(self, handler):
         self.handler = handler
+        self._last_sent = time.time()
         self._start_deadline()
         try:
             self.relay()
@@ -165,7 +166,31 @@ class ExecStream(object):
         return sum(len(p) for p in handler.send_parts)
 
     def _to_client(self, frames):
+        self._last_sent = time.time()
         self.handler.send_frames(frames)
+
+    def _keep_alive(self):
+        """Ping a client that has been sent nothing for a heartbeat.
+
+        A command can be silent for longer than whatever stands between the
+        proxy and its client lets a stream idle -- Envoy's default is five
+        minutes -- and a stream cut there loses the output that comes after
+        and the Status. Any frame resets such a timer; a ping is the one
+        every websocket client answers and none passes on as output.
+        """
+        interval = CONF.websocket_proxy.heartbeat
+        if (not interval or self.handler.send_parts or
+                time.time() - self._last_sent < interval):
+            return
+        # Only into a socket with room for it: a ping cut short would leave
+        # websockify a partial frame to finish before any other.
+        if not select.select([], [self.handler.request], [], 0)[1]:
+            return
+        try:
+            self.handler.send_ping()
+        except ssl.SSLWantWriteError:
+            return
+        self._last_sent = time.time()
 
     def _end_with(self, status):
         self._to_client([status])
@@ -253,6 +278,7 @@ class CriExecStream(ExecStream):
                     raise
             if outs:
                 self.handler.send_frames()
+            self._keep_alive()
             if self.timed_out:
                 self._end_with(channel.timeout(self.timeout))
                 return
@@ -491,6 +517,7 @@ class DockerExecStream(ExecStream):
                 return
             if self.handler.request in outs:
                 self.handler.send_frames()
+            self._keep_alive()
             if self.handler.request in ins:
                 messages, closed = self.handler.recv_frames()
                 for message in messages:

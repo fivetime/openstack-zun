@@ -340,3 +340,60 @@ class TestHandshake(base.TestCase):
         ws.end_headers()
         handler.send_header.assert_called_once_with('X-Zun-Exec-Protocol',
                                                     channel.V4)
+
+
+class TestKeepAlive(base.TestCase):
+    """A quiet command's client is pinged, so nothing between cuts it."""
+
+    def setUp(self):
+        super(TestKeepAlive, self).setUp()
+        self.stream = exec_stream.ExecStream({'target': {}})
+        self.stream.handler = mock.Mock(send_parts=[])
+        self.stream._last_sent = time.time() - 61
+        p = mock.patch('select.select',
+                       side_effect=lambda r, w, x, t: ([], w, []))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_silent_for_a_heartbeat_is_pinged(self):
+        self.config(heartbeat=60, group='websocket_proxy')
+
+        self.stream._keep_alive()
+
+        self.stream.handler.send_ping.assert_called_once_with()
+        self.assertLess(time.time() - self.stream._last_sent, 1)
+
+    def test_output_is_as_good_as_a_ping(self):
+        self.config(heartbeat=60, group='websocket_proxy')
+        self.stream._to_client([b'\x01out'])
+
+        self.stream._keep_alive()
+
+        self.stream.handler.send_ping.assert_not_called()
+
+    def test_not_while_frames_wait_to_be_sent(self):
+        self.config(heartbeat=60, group='websocket_proxy')
+        self.stream.handler.send_parts = [b'queued']
+
+        self.stream._keep_alive()
+
+        self.stream.handler.send_ping.assert_not_called()
+
+    def test_off_by_default(self):
+        self.stream._keep_alive()
+
+        self.stream.handler.send_ping.assert_not_called()
+
+
+class TestTheProxyIsToldTheHeartbeat(base.TestCase):
+
+    @mock.patch('zun.common.service.prepare_service', new=mock.Mock())
+    @mock.patch('zun.common.config.parse_args', new=mock.Mock())
+    @mock.patch.object(websocketproxy, 'ZunWebSocketProxy')
+    def test_attach_and_logs_are_pinged_too(self, proxy):
+        from zun.cmd import wsproxy
+        self.config(heartbeat=60, group='websocket_proxy')
+
+        wsproxy.main()
+
+        self.assertEqual(60, proxy.call_args.kwargs['heartbeat'])
