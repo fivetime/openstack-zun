@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    On the docker driver, a command run through ``execute`` that outlives
+    its timeout is now killed (through containerd, by the exec's id, which
+    reaches a process inside a kata VM too). Before, the caller was told it
+    timed out while the command ran on in the container.

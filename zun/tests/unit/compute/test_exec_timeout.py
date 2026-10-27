@@ -132,6 +132,7 @@ class TestDockerDriverWaitsAsAsked(base.TestCase):
                                    'docker_client')
         client.start().return_value.__enter__.return_value = docker
         self.addCleanup(client.stop)
+        self.docker = docker
 
     @mock.patch('zun.container.docker.utils.read_exec_output',
                 return_value=b'ok')
@@ -155,6 +156,47 @@ class TestDockerDriverWaitsAsAsked(base.TestCase):
                               'e1', 'sleep 900', timeout=240)
 
         self.assertIn('within 240 seconds', str(e))
+
+    @mock.patch('zun.common.utils.execute')
+    @mock.patch('zun.container.docker.utils.read_exec_output',
+                side_effect=socket.timeout())
+    def test_a_command_given_up_on_is_killed(self, read, execute):
+        """Before, it ran on after the caller was told it timed out."""
+        self.docker.exec_inspect.return_value = {'Running': True,
+                                                 'ContainerID': 'cid1'}
+
+        self.assertRaises(exception.Conflict, self.driver.execute_run,
+                          'e1', 'sleep 900', timeout=240)
+
+        execute.assert_called_once_with(
+            'ctr', '--namespace', 'moby', 'tasks', 'kill', '--exec-id',
+            'e1', '-s', 'SIGKILL', 'cid1', run_as_root=True)
+
+    @mock.patch('zun.common.utils.execute')
+    @mock.patch('zun.container.docker.utils.read_exec_output',
+                side_effect=socket.timeout())
+    def test_one_that_already_ended_is_left_alone(self, read, execute):
+        self.docker.exec_inspect.return_value = {'Running': False,
+                                                 'ContainerID': 'cid1'}
+
+        self.assertRaises(exception.Conflict, self.driver.execute_run,
+                          'e1', 'c', timeout=5)
+
+        execute.assert_not_called()
+
+    @mock.patch('zun.common.utils.execute',
+                side_effect=exception.CommandError(cmd='ctr', error='x'))
+    @mock.patch('zun.container.docker.utils.read_exec_output',
+                side_effect=socket.timeout())
+    def test_a_kill_that_fails_still_reports_the_timeout(self, read,
+                                                         execute):
+        self.docker.exec_inspect.return_value = {'Running': True,
+                                                 'ContainerID': 'cid1'}
+
+        e = self.assertRaises(exception.Conflict, self.driver.execute_run,
+                              'e1', 'c', timeout=5)
+
+        self.assertIn('within 5 seconds', str(e))
 
 
 class TestCriDriverWaitsAsAsked(base.TestCase):

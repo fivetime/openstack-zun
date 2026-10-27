@@ -1788,12 +1788,39 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             try:
                 output = docker_utils.read_exec_output(sock, timeout)
             except socket.timeout:
+                self._kill_exec(docker, exec_id)
                 raise exception.Conflict(_(
                     "Timeout on executing command: %(command)s did not "
                     "finish within %(timeout)d seconds") %
                     {'command': command, 'timeout': timeout})
             inspect_res = docker.exec_inspect(exec_id)
             return output, inspect_res['ExitCode']
+
+    @staticmethod
+    def _kill_exec(docker, exec_id):
+        """Kill a command run through exec that was given up on.
+
+        Giving up on the read is not the end of the command: docker has no
+        call that stops an exec, so it ran on, in the container whose next
+        caller -- a function runtime that serves one call at a time -- then
+        competed with it for CPU and memory. containerd has one: docker
+        starts each exec as a process of the container's task under the
+        exec's own id, in the moby namespace, and a kill there reaches the
+        process wherever it lives, inside a kata VM too.
+
+        Best effort: the caller is told about the timeout either way.
+        """
+        try:
+            inspect = docker.exec_inspect(exec_id)
+            if not inspect.get('Running'):
+                return
+            utils.execute('ctr', '--namespace', 'moby', 'tasks', 'kill',
+                          '--exec-id', exec_id, '-s', 'SIGKILL',
+                          inspect['ContainerID'], run_as_root=True)
+        except Exception as e:
+            LOG.warning('Could not kill exec %(id)s after its timeout, it '
+                        'may still be running: %(err)s',
+                        {'id': exec_id, 'err': e})
 
     def execute_resize(self, exec_id, height, width):
         height = int(height)

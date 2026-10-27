@@ -786,9 +786,11 @@ class TestDockerDriver(base.DriverTestCase):
         mock_read.side_effect = socket.timeout()
         self.mock_docker.exec_start = mock.Mock(return_value='sock')
         self.mock_docker.exec_inspect = mock.Mock()
+        self.mock_docker.exec_inspect.return_value = {'Running': False}
         self.assertRaises(exception.Conflict,
                           self.driver.execute_run, 'test', 'sleep 60')
-        self.mock_docker.exec_inspect.assert_not_called()
+        # Asked only whether the command is still running, to kill it.
+        self.mock_docker.exec_inspect.assert_called_once_with('test')
 
     def test_kill_successful_signal_is_none(self):
         self.mock_docker.kill = mock.Mock()

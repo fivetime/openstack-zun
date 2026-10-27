@@ -986,6 +986,19 @@ compute 回 RPC 前做 JSON 序列化直接 `UnicodeDecodeError`,调用方只拿
   经真实序列化后二进制和整块输出、CRI 拒发)。compute 那组走真实的 RPC 序列化器:旧代码上二进制输出在这里抛
   `UnicodeDecodeError`。读取测试的写入端加了超时:读取方提前出错时,写入线程不会卡在满的 socket 上让清理永远等。
 
+### 4.18 docker 路径 exec 超时后真正杀掉命令(2026-10-27)
+
+docker 驱动的同步 exec 超时(`[docker] execute_timeout` 或 1.57 的 `timeout`)只是不再读、回 409,命令在容器里继续跑:
+docker 没有停止 exec 的接口。qinling 的 Zun 后端一个容器一次只跑一个执行,超时没杀掉的命令会和下一个执行抢 CPU 和内存。
+
+- `DockerDriver._kill_exec`:超时后 `exec_inspect` 还在跑,就 `ctr --namespace moby tasks kill --exec-id <exec id> -s SIGKILL <容器 id>`。
+  docker 把每个 exec 作为容器 task 的一个进程、以 exec 自己的 id 交给 containerd(moby 命名空间),kill 走 shim,kata 虚机里的进程也能杀到。
+  生产实测(zun-worker1,kata-qemu):`detach` 起的 `sleep 300` 被杀,exec 退出码 137,容器主进程不受影响。
+- 尽力而为:杀不掉只记 WARNING,调用方照样拿到超时。`ctr` 的用法与孤儿清扫相同(`run_as_root`)。
+- CRI 驱动不受影响:`ExecSync` 的超时由运行时自己杀命令。
+- 测试 `zun/tests/unit/compute/test_exec_timeout.py`(3 条,mock 的是 `utils.execute` 和 docker 客户端这两个边界),旧代码上
+  "超时后会杀"失败;`test_docker_driver.test_execute_run_timeout` 原断言"超时后不 inspect",改为只 inspect 一次。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
