@@ -203,6 +203,69 @@ class TestDockerDriverWaitsAsAsked(base.TestCase):
         self.assertIn('within 5 seconds', str(e))
 
 
+class TestTheWholeCommandIsKilled(base.TestCase):
+    """Not just the exec's own process.
+
+    sh -c 'echo started; sleep 125' killed alone left the sleep to the
+    container's init, running to its end (qinling, in production).
+    """
+
+    STAT = {4242: '4242 (sh) S 4000 4242 4242 0 -1 4194560',
+            4243: '4243 (a b) c) S 4242 4242 4242 0 -1 4194560'}
+
+    def setUp(self):
+        super(TestTheWholeCommandIsKilled, self).setUp()
+        self.docker = mock.Mock()
+        self.docker.inspect_container.return_value = {'State': {'Pid': 4000}}
+        self.ns = {'4242': 'pid:[4026532901]', '4243': 'pid:[4026532901]',
+                   '4000': 'pid:[4026532901]', 'self': 'pid:[4026531836]'}
+        mock.patch('os.readlink', side_effect=lambda p: self.ns[
+            p.split('/')[2]]).start()
+        mock.patch('builtins.open', side_effect=lambda p: mock.mock_open(
+            read_data=self.STAT[int(p.split('/')[2])])()).start()
+        self.execute = mock.patch('zun.common.utils.execute').start()
+        self.addCleanup(mock.patch.stopall)
+
+    def kill(self, pid):
+        self.docker.exec_inspect.return_value = {
+            'Running': True, 'ContainerID': 'cid1', 'Pid': pid}
+        docker_driver.DockerDriver._kill_exec(self.docker, 'e1')
+
+    def test_a_runc_exec_has_its_process_group_killed(self):
+        self.kill(4242)
+
+        self.execute.assert_called_once_with(
+            'kill', '-s', 'KILL', '--', '-4242', run_as_root=True)
+
+    def test_under_kata_the_pid_is_not_this_nodes(self):
+        # The container's init is a process of the node's own namespace:
+        # the exec's pid is the guest's.
+        self.ns['4000'] = self.ns['self']
+
+        self.kill(4242)
+
+        self.assertEqual('ctr', self.execute.call_args[0][0])
+
+    def test_a_pid_of_another_namespace_is_not_signalled(self):
+        self.ns['4242'] = 'pid:[4026539999]'
+
+        self.kill(4242)
+
+        self.assertEqual('ctr', self.execute.call_args[0][0])
+
+    def test_a_process_that_leads_no_group_is_killed_alone(self):
+        self.kill(4243)
+
+        self.assertEqual('ctr', self.execute.call_args[0][0])
+
+    def test_a_pid_already_gone_is_killed_as_before(self):
+        self.ns.pop('4242')
+        with mock.patch('os.readlink', side_effect=FileNotFoundError()):
+            self.kill(4242)
+
+        self.assertEqual('ctr', self.execute.call_args[0][0])
+
+
 class TestCriDriverWaitsAsAsked(base.TestCase):
 
     def setUp(self):

@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    A command run through exec on the docker driver that times out, or
+    whose streamed exec client goes away, is now killed with everything it
+    started where the container runs on runc: the exec's process group is
+    killed. Before, only the exec's own process was, and what it had started
+    -- the ``sleep`` of ``sh -c 'echo started; sleep 125'`` -- ran on to its
+    end. Under kata only the exec's own process is still killed.

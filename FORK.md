@@ -1139,6 +1139,25 @@ chroot 里,所以没暴露。修法:
   带变量后宿主上 MemoryMax 268435456、CPUQuotaPerSecUSec 500ms、IOWeight 100,一个 systemd 不接受的值被拒绝,释放后
   drop-in 清零。
 
+### 4.23 docker 路径杀 exec 时连它起的子进程一起杀(2026-10-28)
+
+qinling 在生产测流式 exec 发现:`sh -c 'echo started; sleep 125'`,客户端断开后 `sleep` 还在跑,`timeout=60` 也没杀掉它。
+原因不在 wsproxy:断开它看到了,也让节点杀了(本机复现,日志有 "Client left" 和 kill)。是 §4.18 的 `ctr tasks kill --exec-id`
+**只杀 exec 自己那个进程**——`sh` 死了,`sleep` 被过继给容器的 init,一直跑到自己结束。超时那条路一样(会话结束时看门狗
+随之取消是对的:命令已经让杀过了)。
+
+- docker exec(非 tty)起的进程自成一个进程组(pgid = 它自己的 pid),它起的子进程都在组里(本机实测)。
+  `DockerDriver._kill_exec` 改成:exec 的 pid 是这个节点能直接看到的(和容器 init 同一个 pid 命名空间,且不是节点自己的
+  命名空间——即 runc),并且它是组长,就 `kill -s KILL -- -<pgid>` 杀整组;否则照旧 `ctr tasks kill`。
+- kata 下 docker 报的 pid 是虚机里的,不能拿来在宿主上发信号(同号的宿主进程是别的东西),所以不碰,照旧 `ctr`。
+  ⚠ **kata 下仍然只杀顶层进程**:kata agent 的 `do_signal_process` 对 exec 只 `kill(pid)`。要修得改 agent(对 exec 的
+  SIGKILL 杀进程组),不在 zun。
+- 自己 `setsid` 出去的进程(守护进程化)不在组里,杀不到——和 `kubectl exec` 断开的行为一样。
+- CRI 路径(fork containerd + runc)本机实测断开和超时都已连子进程一起杀,不用改。
+- 同步 exec(1.57 超时)和流式 exec(断开、超时)都走 `_kill_exec`,一起修好。
+- 测试 `test_exec_timeout.TestTheWholeCommandIsKilled`(5 条:runc 杀组、kata 不碰、别的命名空间不碰、不是组长单杀、pid 已没了
+  照旧),旧代码上"杀组"那条失败;本机经 Envoy 端到端:断开后 3 s 子进程没了,`timeout=5` 5.2 s 回 Timeout、子进程没了。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

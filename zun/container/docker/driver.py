@@ -1808,11 +1808,22 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         exec's own id, in the moby namespace, and a kill there reaches the
         process wherever it lives, inside a kata VM too.
 
+        That kill reaches the exec's own process only. What it started --
+        `sleep` under `sh -c 'echo started; sleep 125'` -- is handed to the
+        container's init and runs to its end. Where the exec's processes are
+        this node's (runc), the exec leads a process group of its own, which
+        holds them all, and the group is killed instead.
+
         Best effort: the caller is told about the timeout either way.
         """
         try:
             inspect = docker.exec_inspect(exec_id)
             if not inspect.get('Running'):
+                return
+            group = DockerDriver._exec_process_group(docker, inspect)
+            if group:
+                utils.execute('kill', '-s', 'KILL', '--', '-%d' % group,
+                              run_as_root=True)
                 return
             utils.execute('ctr', '--namespace', 'moby', 'tasks', 'kill',
                           '--exec-id', exec_id, '-s', 'SIGKILL',
@@ -1821,6 +1832,34 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
             LOG.warning('Could not kill exec %(id)s after its timeout, it '
                         'may still be running: %(err)s',
                         {'id': exec_id, 'err': e})
+
+    @staticmethod
+    def _exec_process_group(docker, inspect):
+        """The process group the exec leads, if it can be killed from here.
+
+        Only for a pid that is a process of this container as this node
+        sees it: in the pid namespace of the container's init, one that is
+        not this node's own. Under kata the pid docker reports is the
+        guest's, and a number that means some other process here is not
+        to be signalled. None says the exec is to be killed as before.
+        """
+        pid = inspect.get('Pid')
+        if not pid:
+            return None
+        try:
+            init = docker.inspect_container(
+                inspect['ContainerID'])['State']['Pid']
+            ns = os.readlink('/proc/%d/ns/pid' % pid)
+            if (not init or ns != os.readlink('/proc/%d/ns/pid' % init) or
+                    ns == os.readlink('/proc/self/ns/pid')):
+                return None
+            with open('/proc/%d/stat' % pid) as f:
+                # pid (comm) state ppid pgrp ...; comm may hold anything.
+                pgrp = int(f.read().rsplit(')', 1)[1].split()[2])
+        except (OSError, KeyError, ValueError, IndexError, TypeError,
+                errors.APIError):
+            return None
+        return pgrp if pgrp == pid else None
 
     @check_container_id
     @wrap_docker_error
