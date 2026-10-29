@@ -1084,3 +1084,127 @@ class TestResolvConfForAVmRuntime(base.DriverTestCase):
 
     def test_removing_one_that_was_never_written_is_quiet(self):
         self.driver._remove_resolv_conf(self._container())
+
+    def test_the_subnets_resolvers_are_written_when_none_was_asked_for(self):
+        path = self.driver._write_resolv_conf(
+            self._container(), ['2001:4860:4860::8888'])
+
+        written = open(path).read()
+        self.assertIn('nameserver 2001:4860:4860::8888', written)
+        self.assertIn('options ndots:1', written)
+
+    def test_the_containers_own_resolver_wins_over_the_subnets(self):
+        path = self.driver._write_resolv_conf(
+            self._container(dns=['1.1.1.1']), ['10.0.0.2'])
+
+        written = open(path).read()
+        self.assertIn('nameserver 1.1.1.1', written)
+        self.assertNotIn('10.0.0.2', written)
+
+
+class TestSubnetResolvers(base.DriverTestCase):
+    """A container docker's resolver cannot serve gets its subnets'.
+
+    Under kata-qemu, the default runtime, a container that passed no --dns
+    kept docker's resolv.conf, 127.0.0.11, and resolved nothing; a capsule
+    on the same network, given its subnets' resolvers, resolved fine.
+    """
+
+    @mock.patch('zun.container.docker.driver.DockerDriver.'
+                '_get_host_storage_info')
+    def setUp(self, mock_get):
+        super(TestSubnetResolvers, self).setUp()
+        self.driver = DockerDriver()
+        patcher = mock.patch('zun.network.neutron.NeutronAPI')
+        self.neutron = patcher.start().return_value
+        self.addCleanup(patcher.stop)
+        dfc_patcher = mock.patch.object(docker_utils, 'docker_client')
+        self.mock_docker = mock.MagicMock()
+        dfc_patcher.start().return_value.__enter__.return_value = (
+            self.mock_docker)
+        self.addCleanup(dfc_patcher.stop)
+        self.mock_default_container = obj_utils.get_test_container(
+            self.context)
+        self.subnets = {
+            'net-1': [{'dns_nameservers': []},
+                      {'dns_nameservers': ['2001:4860:4860::8888']}],
+            'net-2': [{'dns_nameservers': ['10.0.0.2',
+                                           '2001:4860:4860::8888']}],
+        }
+        self.neutron.list_subnets.side_effect = (
+            lambda network_id: {'subnets': self.subnets[network_id]})
+
+    def _resolvers(self, runtime, dns=None, networks=('net-1', 'net-2')):
+        return self.driver._subnet_resolvers(
+            self.context, mock.Mock(uuid='c-1', dns=dns), runtime,
+            [{'network': n} for n in networks])
+
+    def test_a_vm_runtime_gets_every_subnets_resolvers_once_in_order(self):
+        self.assertEqual(['2001:4860:4860::8888', '10.0.0.2'],
+                         self._resolvers('kata-qemu'))
+
+    def test_gvisor_is_out_of_reach_too(self):
+        self.assertEqual(['2001:4860:4860::8888', '10.0.0.2'],
+                         self._resolvers('runsc'))
+
+    def test_runc_keeps_dockers_resolver_and_neutron_is_not_asked(self):
+        for runtime in ('runc', 'crun', 'io.containerd.runc.v2'):
+            self.assertEqual([], self._resolvers(runtime))
+        self.neutron.list_subnets.assert_not_called()
+
+    def test_the_daemons_default_runtime_keeps_dockers_resolver(self):
+        """None is what the driver uses when docker cannot be told one."""
+        self.assertEqual([], self._resolvers(None))
+
+    def test_a_container_that_asked_for_a_resolver_keeps_it(self):
+        self.assertEqual([], self._resolvers('kata-qemu', dns=['1.1.1.1']))
+        self.neutron.list_subnets.assert_not_called()
+
+    def test_the_runtimes_said_to_reach_it_are_configurable(self):
+        conf.CONF.set_override('docker_resolver_runtimes',
+                               ['runc', 'kata-qemu'])
+        self.assertEqual([], self._resolvers('kata-qemu'))
+
+    @mock.patch('zun.network.kuryr_network.KuryrNetwork'
+                '.connect_container_to_network')
+    @mock.patch('zun.network.kuryr_network.KuryrNetwork'
+                '.process_networking_config')
+    @mock.patch('zun.network.kuryr_network.KuryrNetwork'
+                '.get_or_create_network')
+    @mock.patch('zun.common.utils.get_security_group_ids')
+    @mock.patch('zun.objects.container.Container.save')
+    def test_create_mounts_it_over_the_containers_resolv_conf(
+            self, mock_save, mock_sg, mock_get_net, mock_process,
+            mock_connect):
+        conf.CONF.set_override(
+            'state_path', self.useFixture(fixtures.TempDir()).path)
+        self.mock_docker.create_host_config = mock.Mock(return_value={})
+        self.mock_docker.create_container = mock.Mock(
+            return_value={'Id': 'c-id'})
+        self.mock_docker.inspect_image = mock.Mock(
+            return_value={'Config': {'Cmd': ['sh']}})
+        self.mock_docker.inspect_container = mock.Mock(
+            return_value={'State': 'created', 'Config': {'Cmd': ['sh']}})
+        container = self.mock_default_container
+        container.runtime = 'kata-qemu'
+        container.dns = None
+        container.healthcheck = {}
+
+        self.driver.create(self.context, container,
+                           {'repo': 'test', 'tag': 'test'},
+                           [{'network': 'net-2'}], {})
+
+        binds = self.mock_docker.create_host_config.call_args[1]['binds']
+        source = [path for path, bind in binds.items()
+                  if bind['bind'] == '/etc/resolv.conf']
+        self.assertEqual(1, len(source))
+        with open(source[0]) as f:
+            self.assertIn('nameserver 10.0.0.2', f.read())
+
+    @mock.patch('zun.container.docker.driver.LOG')
+    def test_no_subnet_naming_one_is_said(self, mock_log):
+        self.subnets['net-1'] = [{'dns_nameservers': []}]
+
+        self.assertEqual([], self._resolvers('kata-qemu',
+                                             networks=('net-1',)))
+        self.assertTrue(mock_log.warning.called)

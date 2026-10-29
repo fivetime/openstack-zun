@@ -466,6 +466,9 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 runtime = None
             else:
                 runtime = container.runtime or CONF.container_runtime
+            # Read before the networks are taken off the list below.
+            subnet_resolvers = self._subnet_resolvers(
+                context, container, runtime, requested_networks)
 
             host_config = {}
             host_config['privileged'] = container.privileged
@@ -514,7 +517,8 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 host_config['dns'] = container.dns
             if container.dns_search:
                 host_config['dns_search'] = container.dns_search
-            resolv_conf = self._write_resolv_conf(container)
+            resolv_conf = self._write_resolv_conf(container,
+                                                  subnet_resolvers)
             if resolv_conf:
                 binds[resolv_conf] = {'bind': '/etc/resolv.conf',
                                       'ro': True}
@@ -964,7 +968,42 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
                 network_driver.get_or_create_network(context,
                                                      rq_network['network'])
 
-    def _write_resolv_conf(self, container):
+    def _subnet_resolvers(self, context, container, runtime,
+                          requested_networks):
+        """Resolvers for a container docker's own resolver cannot serve.
+
+        A container that asked for none, under a runtime that cannot reach
+        127.0.0.11 (docker_resolver_runtimes), was left with docker's
+        resolv.conf and resolved nothing at all -- under the default
+        runtime, kata-qemu, that was every container that did not pass
+        --dns. A capsule on the same network was fine, because the CRI
+        path hands the sandbox its subnets' dns_nameservers; this gives the
+        container the same.
+
+        Empty when the container asked for its own, when docker's resolver
+        is within reach, or when no subnet names a resolver.
+        """
+        if container.dns or runtime is None:
+            return []
+        if runtime in CONF.docker_resolver_runtimes:
+            return []
+        neutron_api = neutron.NeutronAPI(context)
+        resolvers = []
+        for requested in requested_networks:
+            subnets = neutron_api.list_subnets(
+                network_id=requested['network']).get('subnets', [])
+            for subnet in subnets:
+                for nameserver in subnet.get('dns_nameservers') or []:
+                    if nameserver not in resolvers:
+                        resolvers.append(nameserver)
+        if not resolvers:
+            LOG.warning('Container %s runs under %s, which cannot reach '
+                        'docker\'s resolver, and no subnet of its networks '
+                        'names one: it will resolve nothing',
+                        container.uuid, runtime)
+        return resolvers
+
+    def _write_resolv_conf(self, container, subnet_resolvers=None):
         """A resolver the container can actually reach, or None.
 
         docker puts its own resolver at 127.0.0.11 in the resolv.conf of
@@ -983,16 +1022,19 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         that it is reachable from inside the guest, which 127.0.0.11 is
         not.
 
-        Only when the container asked for a resolver. Without that there
-        is nothing better than docker's own arrangement to offer.
+        The container's own resolvers when it asked for some, else those of
+        its subnets when docker's resolver is out of its reach
+        (_subnet_resolvers). With neither there is nothing better than
+        docker's own arrangement to offer.
         """
-        if not container.dns:
+        servers = container.dns or subnet_resolvers
+        if not servers:
             return None
         directory = os.path.join(CONF.state_path, 'resolv',
                                  container.uuid)
         fileutils.ensure_tree(directory)
         path = os.path.join(directory, 'resolv.conf')
-        lines = ['nameserver %s' % server for server in container.dns]
+        lines = ['nameserver %s' % server for server in servers]
         if container.dns_search:
             lines.append('search %s' % ' '.join(container.dns_search))
         # A service name is one label, and it must be tried in the search

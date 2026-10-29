@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    A container on the docker driver that asked for no resolver, under a
+    runtime that cannot reach docker's own resolver at 127.0.0.11 -- a VM
+    runtime such as ``kata-qemu`` or gVisor's ``runsc`` -- resolved no name
+    at all. It is now given the ``dns_nameservers`` of its networks'
+    subnets, as a capsule already was. The runtimes that can reach docker's
+    resolver keep it; they are listed by the new ``docker_resolver_runtimes``
+    option, ``runc``, ``crun`` and ``io.containerd.runc.v2`` by default.

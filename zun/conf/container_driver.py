@@ -59,6 +59,18 @@ Interdependencies to other options:
     cfg.StrOpt('container_runtime', default='runc',
                help='Define the runtime to create container with. '
                     'Default value in Zun is ``runc``.'),
+    cfg.ListOpt('docker_resolver_runtimes',
+                default=['runc', 'crun', 'io.containerd.runc.v2'],
+                help='Runtimes whose containers can reach the resolver docker '
+                     'puts at 127.0.0.11 on a user-defined network. It '
+                     'listens in the container\'s network namespace, which a '
+                     'process run by runc shares. A process in a VM (kata-*) '
+                     'or behind gVisor\'s own network stack (runsc) does not: '
+                     'its 127.0.0.11 has nothing behind it and every lookup '
+                     'fails. A container whose runtime is not listed, and '
+                     'which asked for no resolver of its own, is given the '
+                     'dns_nameservers of its networks\' subnets instead, as '
+                     'a capsule is.'),
     cfg.IntOpt('default_memory_swap',
                default=-1,
                help='The default memory swap size in MB (default is -1 '

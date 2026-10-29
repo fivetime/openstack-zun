@@ -1158,6 +1158,24 @@ qinling 在生产测流式 exec 发现:`sh -c 'echo started; sleep 125'`,客户�
 - 测试 `test_exec_timeout.TestTheWholeCommandIsKilled`(5 条:runc 杀组、kata 不碰、别的命名空间不碰、不是组长单杀、pid 已没了
   照旧),旧代码上"杀组"那条失败;本机经 Envoy 端到端:断开后 3 s 子进程没了,`timeout=5` 5.2 s 回 Timeout、子进程没了。
 
+### 4.24 docker 路径 VM/gVisor 运行时的容器默认解析不了 DNS(2026-10-29)
+
+zun-worker4 接入时端到端测出来,zun-worker1 上一样:没带 `--dns` 的容器,runc 下解析正常,kata-qemu 和 runsc 下
+`nslookup` 一律失败,网络本身是通的(能 ping 网关,capsule 同网络 DNS 正常)。默认运行时就是 kata-qemu,所以**没带
+`--dns` 的容器基本都解析不了**。
+
+- 原因:用户自定义网络(kuryr)上 docker 把 resolv.conf 写成 `nameserver 127.0.0.11`,内置解析器在容器的网络命名空间里
+  监听。runc 的进程就在那个命名空间里;kata 的进程在虚机里,runsc 的进程在 gVisor 自己的网络栈后面,它们的 127.0.0.11
+  后面什么都没有。提交 e8545239 早就为这种情况绑挂了自己的 resolv.conf,但**只在容器自己要了解析器时**才写。
+- 修法:新选项 `docker_resolver_runtimes`(默认 `runc, crun, io.containerd.runc.v2`)列出够得着 127.0.0.11 的运行时;
+  不在单子上、容器又没要解析器的,`DockerDriver._subnet_resolvers` 取它所在网络各子网的 `dns_nameservers`(去重、按顺序),
+  交给 `_write_resolv_conf` 写成绑挂的 resolv.conf——和 CRI 路径给 capsule 沙箱的是同一份。容器自己要的(`--dns`)仍然优先。
+- 子网都没写 `dns_nameservers` 时没有可给的,照旧用 docker 的并记 WARNING。
+- runc 不变:它够得着内置解析器,同网络容器按名字互相解析靠的就是它,换成子网的会丢掉这个能力。
+- 测试 `test_docker_driver.TestSubnetResolvers`(8 条)+ `TestResolvConfForAVmRuntime` 加 2 条。
+- 未改:runc 容器的 search 域里混着 dockerd 所在 Pod 的 `kube-infra.svc.cluster.local` 等,是 docker 从 dockerd 自己的
+  resolv.conf 继承的,另说。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
