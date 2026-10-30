@@ -36,7 +36,9 @@ class ComputeNode(base.ZunPersistentObject, base.ZunObject):
     # Version 1.12: Add runtimes field
     # Version 1.13: Add enable_cpu_pinning field
     # Version 1.14: Add rp_uuid field
-    VERSION = '1.14'
+    # Version 1.15: Add capsule_runtimes field -- the runtimes a capsule can
+    #               ask for, which are not the container driver's
+    VERSION = '1.15'
 
     fields = {
         'uuid': fields.UUIDField(read_only=True, nullable=False),
@@ -66,6 +68,7 @@ class ComputeNode(base.ZunPersistentObject, base.ZunObject):
         'disk_used': fields.IntegerField(nullable=False),
         'disk_quota_supported': fields.BooleanField(nullable=False),
         'runtimes': fields.ListOfStringsField(nullable=True),
+        'capsule_runtimes': fields.ListOfStringsField(nullable=True),
         'enable_cpu_pinning': fields.BooleanField(nullable=False),
     }
 

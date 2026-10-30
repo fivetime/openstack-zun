@@ -47,6 +47,7 @@ class HostState(object):
         self.pci_stats = None
         self.disk_quota_supported = False
         self.runtimes = []
+        self.capsule_runtimes = None
         self.enable_cpu_pinning = False
 
         # Resource oversubscription values for the compute host:
@@ -89,6 +90,10 @@ class HostState(object):
             stats=compute_node.pci_device_pools)
         self.disk_quota_supported = compute_node.disk_quota_supported
         self.runtimes = compute_node.runtimes
+        # Unset reads as unreported, which RuntimeFilter judges by runtimes.
+        self.capsule_runtimes = (
+            compute_node.capsule_runtimes
+            if compute_node.obj_attr_is_set('capsule_runtimes') else None)
         self.enable_cpu_pinning = compute_node.enable_cpu_pinning
         self.updated = compute_node.updated_at
 

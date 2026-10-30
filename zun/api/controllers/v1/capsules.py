@@ -320,9 +320,10 @@ class CapsuleController(base.Controller):
 
         # The tier the caller asked for; absent means the node's configured
         # default, the same contract as the Container API's runtime field.
-        # Validity is the compute node's to judge -- an unknown handler fails
-        # the capsule there with the runtime's own error, and this API cannot
-        # know which handlers a node it has not chosen yet will offer.
+        # Not checked here: the scheduler's RuntimeFilter places the capsule
+        # on a host whose capsule driver reports the handler (the host's
+        # capsule_runtimes, not its container runtimes), and a name no host
+        # offers is NoValidHost.
         if template_json.get('runtime'):
             new_capsule.runtime = template_json['runtime']
 

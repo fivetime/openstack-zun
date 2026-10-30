@@ -73,6 +73,9 @@ class ComputeNodeTracker(object):
         # We allow 'cpu_used' to be missing from the container driver,
         # but the DB requires it to be non-null so just initialize it to 0.
         resources.setdefault('cpu_used', 0)
+        capsule_runtimes = self._capsule_runtimes()
+        if capsule_runtimes is not None:
+            resources['capsule_runtimes'] = capsule_runtimes
 
         # Check if the compute_node is already registered
         node = self._get_compute_node(context)
@@ -91,13 +94,28 @@ class ComputeNodeTracker(object):
         # NOTE(sbiswas7): Consider removing the return statement if not needed
         return node
 
+    def _capsule_runtimes(self):
+        """What the capsule driver offers, or None to keep the last record.
+
+        Asked of the capsule driver, not taken from the container driver's
+        resources: on a docker host the two are different programs and their
+        runtime lists differ. A failure to ask must not fail the whole
+        resource update -- the rest of it is still true.
+        """
+        try:
+            return self.capsule_driver.capsule_runtimes()
+        except Exception as e:
+            LOG.warning('Could not list the runtimes the capsule driver '
+                        'offers; keeping the last ones recorded: %s', e)
+            return None
+
     def _copy_resources(self, node, resources):
         keys = ["numa_topology", "mem_total", "mem_free", "mem_available",
                 "mem_used", "total_containers", "running_containers",
                 "paused_containers", "stopped_containers", "cpus",
                 "architecture", "os_type", "os", "kernel_version", "cpu_used",
                 "labels", "disk_total", "disk_quota_supported", "runtimes",
-                "enable_cpu_pinning"]
+                "capsule_runtimes", "enable_cpu_pinning"]
         for key in keys:
             if key in resources:
                 setattr(node, key, resources[key])

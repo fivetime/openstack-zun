@@ -2274,6 +2274,11 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
 
         return data
 
+    def capsule_runtimes(self):
+        # A capsule this driver creates is created by dockerd, so it has the
+        # runtimes every other container here has.
+        return self.get_host_info()['runtimes']
+
     @wrap_docker_error
     def _refuse_hotplug_on_a_vm(self, container, verb):
         """Refuse to change a running sandbox's interfaces, and say why.

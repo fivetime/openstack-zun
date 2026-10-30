@@ -1627,7 +1627,21 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         data['runtimes'] = self._available_runtimes()
         return data
 
+    def capsule_runtimes(self):
+        """The handlers a capsule can name, or None if CRI did not answer.
+
+        None rather than an empty list: the tracker then leaves the last
+        list it recorded in place, where an empty one would turn every
+        capsule that names a runtime away from this host until containerd
+        answers again.
+        """
+        return self._runtime_handlers()
+
     def _available_runtimes(self):
+        handlers = self._runtime_handlers()
+        return [] if handlers is None else handlers
+
+    def _runtime_handlers(self):
         """The runtime handlers this node actually offers, from the runtime.
 
         ⚠️ Without this the node reports an empty list, and the scheduler's
@@ -1641,7 +1655,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             resp = self.runtime_stub.Status(api_pb2.StatusRequest())
         except grpc.RpcError as e:
             LOG.warning('Could not list runtime handlers: %s', e)
-            return []
+            return None
         names = sorted({h.name for h in resp.runtime_handlers if h.name})
         if names:
             return names

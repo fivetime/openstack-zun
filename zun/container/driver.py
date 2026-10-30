@@ -808,6 +808,20 @@ class ContainerDriver(object):
 class CapsuleDriver(object):
     """Interface for container driver."""
 
+    def capsule_runtimes(self):
+        """The runtimes a capsule on this host can ask for.
+
+        Reported apart from the container driver's runtimes because a capsule
+        is not created by the container driver: on a docker host it goes to
+        containerd's CRI, whose handlers are configured separately from
+        dockerd's runtimes and need not match them by name or by number.
+
+        Returns a list of names, or None when it cannot be told -- which the
+        scheduler reads as "judge by the host's runtimes", the behaviour
+        before the two were told apart, rather than as "offers none".
+        """
+        return None
+
     def create_capsule(self, context, capsule, **kwargs):
         raise NotImplementedError()
 

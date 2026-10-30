@@ -1,0 +1,21 @@
+---
+features:
+  - |
+    A host reports ``capsule_runtimes`` (API 1.60) beside ``runtimes``: the
+    runtimes a capsule can name there, from the capsule driver -- on a host
+    whose capsule driver is ``cri``, containerd's CRI runtime handlers.
+fixes:
+  - |
+    A capsule's ``runtime`` was scheduled against the container driver's
+    runtimes. On a host whose container driver is ``docker`` and whose
+    capsule driver is ``cri`` those are two separately configured lists
+    (dockerd's ``daemon.json`` and containerd's CRI handlers), so a capsule
+    naming a handler that dockerd does not have was refused with no valid
+    host, and one naming a dockerd runtime that is not a handler was placed
+    on a host where it then failed. ``RuntimeFilter`` now judges a capsule by
+    the host's ``capsule_runtimes``.
+upgrade:
+  - |
+    A database migration adds ``compute_node.capsule_runtimes``. Until a
+    host's ``zun-compute`` is upgraded and reports it, the column is null and
+    capsules are scheduled to that host by its ``runtimes``, as before.

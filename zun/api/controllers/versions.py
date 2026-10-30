@@ -136,6 +136,12 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              0 stdin, 1 stdout, 2 stderr, 3 a Status at the end, 255 to
              close stdin). stdin=true opens stdin. timeout, if given, is
              enforced by the proxy. The capsule execute takes the same.
+    * 1.60 - A host reports capsule_runtimes beside runtimes: the runtimes
+             a capsule can name there, which come from the capsule driver
+             (containerd's CRI handlers) rather than the container driver
+             (dockerd's daemon.json), and which the scheduler now places a
+             capsule's runtime by. null for a host whose zun-compute has
+             not reported them yet; such a host is judged by runtimes.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -148,7 +154,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.59'
+CURRENT_MAX_VER = '1.60'
 
 
 class Version(object):
