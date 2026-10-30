@@ -15,8 +15,8 @@
 On a docker host the container driver is dockerd and the capsule driver is
 containerd's CRI; their runtime lists are configured apart and need not
 match. Measured on zun-worker4: kata-dragonball was a CRI handler, not yet
-a dockerd runtime, and a capsule naming it was NoValidHost; gVisor is runsc
-to dockerd and gvisor to the CRI.
+a dockerd runtime, and a capsule naming it was NoValidHost; gVisor was runsc
+to dockerd and gvisor to the CRI (gVisor's own docs name both runsc).
 """
 
 from unittest import mock
@@ -63,7 +63,8 @@ class TestRuntimeFilterByRequestType(base.TestCase):
             self.host, self._capsule('kata-dragonball'), {}))
 
     def test_capsule_fails_on_a_dockerd_only_name(self):
-        # runsc is dockerd's name for gVisor; the CRI handler is gvisor.
+        # A host whose dockerd names gVisor runsc and whose CRI names it
+        # gvisor.
         self.assertFalse(self.filt.host_passes(
             self.host, self._capsule('runsc'), {}))
         self.assertTrue(self.filt.host_passes(

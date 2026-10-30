@@ -1197,6 +1197,10 @@ gVisor 在 dockerd 叫 `runsc`,在 CRI 叫 `gvisor`;写 `gvisor` 的则从来调
   `runsc` 的 capsule 立即 NoValidHost,`gvisor`(内核 4.19.0-gvisor)和 `kata-dragonball`(kata 虚机内核)的跑起来、DNS 通。
 - 顺带看到:gVisor capsule 的 shim 在共用的 `/var/log/zun/capsules/` 下建 `gvisor.log`、`gvisor_panic.log`(所有 capsule
   共用一个日志目录),未改。
+- 同日后续:gVisor 的 CRI handler 按官方做法改名 `runsc`(gvisor-installer v0.1.2,kata-containers 会话做;RuntimeClass
+  仍叫 `gvisor`,`handler: runsc`)。四台 `capsule_runtimes` 现为 crun、kata-clh、kata-dragonball、kata-qemu、runc、runsc,
+  容器和 capsule 都写 `runsc`;过渡期两名并存时实测 `runsc` 的 capsule(worker7,CRI handler runsc)和容器(worker5)
+  内核 4.19.0-gvisor、DNS 通。上面"写 `runsc` 的 NoValidHost"是改名前的结果。zun 代码未改。
 
 ## 五、共享文件系统的信任边界
 
