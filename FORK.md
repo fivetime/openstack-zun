@@ -1176,6 +1176,28 @@ zun-worker4 接入时端到端测出来,zun-worker1 上一样:没带 `--dns` 的
 - 未改:runc 容器的 search 域里混着 dockerd 所在 Pod 的 `kube-infra.svc.cluster.local` 等,是 docker 从 dockerd 自己的
   resolv.conf 继承的,另说。
 
+### 4.25 capsule 的 runtime 按 capsule 驱动的列表调度(API 1.60,2026-10-30)
+
+给 dockerd 加 kata-dragonball 之前,写 `runtime: kata-dragonball` 的 capsule 一律 "There are not enough hosts available",
+而 zun-worker4 宿主 containerd 的 CRI 早就有这个 handler。反过来,写 `runsc` 的 capsule 能调度上去,到节点才失败——
+gVisor 在 dockerd 叫 `runsc`,在 CRI 叫 `gvisor`;写 `gvisor` 的则从来调度不上去。
+
+- 原因:`RuntimeFilter` 拿 `host_state.runtimes` 判断,而它只来自 container 驱动(`ComputeNodeTracker` 只取
+  `container_driver.get_available_resources()`)。container 驱动是 docker 时,capsule 却由 capsule 驱动(CRI,宿主
+  containerd)创建,两边的运行时是分开配置的。CRI 驱动其实早会列 handler(`_available_runtimes`),只是没人用它。
+- 修法:`CapsuleDriver.capsule_runtimes()`(CRI:Status 里的 handler;docker:dockerd 的运行时;基类 None=说不清);
+  tracker 写进 `compute_node.capsule_runtimes`(新列,迁移 `a7c3e9d2b4f1`,对象 ComputeNode 1.15);`RuntimeFilter` 对
+  capsule 查这一张。container 照旧查 `runtimes`。
+- None 不是空列表:CRI 没应答时 tracker 留着上次的记录,不清空(清空会把所有指定运行时的 capsule 拒在这台之外);
+  从来没上报过的节点(升级前的 zun-compute)值为 null,调度按老办法查 `runtimes`,所以先换 API、后换节点不会拒 capsule。
+- `host show` 多一个 `capsule_runtimes`(像本分支其它新字段一样不按微版本门控,1.60 只记它出现的时间)。
+- 测试 `test_capsule_runtimes`(13 条:过滤器按类型选表、null 回落、空列表拒绝、tracker 记录/保留/出错不影响其余、
+  CRI 未应答为 None);MariaDB 上实跑迁移。
+- 生产 2026-10-30 rev 83/84:四台 `capsule_runtimes` = crun、gvisor、kata-clh、kata-dragonball、kata-qemu、runc;
+  `runsc` 的 capsule 立即 NoValidHost,`gvisor`(内核 4.19.0-gvisor)和 `kata-dragonball`(kata 虚机内核)的跑起来、DNS 通。
+- 顺带看到:gVisor capsule 的 shim 在共用的 `/var/log/zun/capsules/` 下建 `gvisor.log`、`gvisor_panic.log`(所有 capsule
+  共用一个日志目录),未改。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。
