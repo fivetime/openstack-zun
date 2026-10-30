@@ -119,6 +119,12 @@ class TestTrackerRecordsCapsuleRuntimes(base.TestCase):
 
     def setUp(self):
         super(TestTrackerRecordsCapsuleRuntimes, self).setUp()
+        # The real SchedulerClient builds a placement client from keystone
+        # options that only some earlier test in the run has set.
+        patcher = mock.patch.object(
+            compute_node_tracker.scheduler_client, 'SchedulerClient')
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.container_driver = fake_driver.FakeDriver()
         self.capsule_driver = fake_driver.FakeDriver()
         self.tracker = compute_node_tracker.ComputeNodeTracker(
