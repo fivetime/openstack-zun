@@ -744,6 +744,8 @@ capsule_probe = {
 capsule_security_context = {
     'type': ['object'],
     'properties': {
+        # Whether a caller may have it is the capsule:create:privileged rule.
+        'privileged': {'type': ['boolean']},
         'runAsUser': non_negative_integer,
         'runAsGroup': non_negative_integer,
         # Pod-level in Kubernetes; per-container here because the runtime
@@ -906,6 +908,9 @@ capsule_spec = {
     'type': ['object'],
     "properties": {
         "containers": capsule_containers_list,
+        # Held to the same fields as a main container. Unlisted, its fields
+        # went into the record unchecked, privileged among them.
+        "initContainers": capsule_containers_list,
         "volumes": capsule_volumes_list,
         "restartPolicy": capsule_restart_policy,
     },

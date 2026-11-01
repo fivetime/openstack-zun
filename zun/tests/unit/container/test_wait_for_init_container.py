@@ -29,7 +29,7 @@ from zun.tests import base
 
 class WaitForInitContainerTest(base.TestCase):
 
-    def _wait(self, drv, show, statuses):
+    def _wait(self, drv, show, statuses, *capsule):
         answers = iter(statuses)
         calls = []
 
@@ -39,14 +39,16 @@ class WaitForInitContainerTest(base.TestCase):
 
         with mock.patch.object(drv, show, side_effect=answer), \
                 mock.patch('time.sleep'):
-            drv._wait_for_init_container({}, mock.Mock(), timeout=30)
+            drv._wait_for_init_container({}, *capsule,
+                                         mock.Mock(status_detail=None),
+                                         timeout=30)
         return len(calls)
 
     def test_cri_waits_until_it_stops(self):
         drv = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
         self.assertEqual(3, self._wait(
             drv, '_show_container',
-            [consts.RUNNING, consts.RUNNING, consts.STOPPED]))
+            [consts.RUNNING, consts.RUNNING, consts.STOPPED], mock.Mock()))
 
     def test_docker_waits_until_it_stops(self):
         drv = docker_driver.DockerDriver.__new__(docker_driver.DockerDriver)

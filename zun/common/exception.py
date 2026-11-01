@@ -324,6 +324,10 @@ class RuntimeTimeout(ZunException):
     code = 504
 
 
+class CapsuleCreateAbandoned(ZunException):
+    message = _("Capsule %(capsule)s was deleted while it was being created.")
+
+
 class Invalid(ZunException):
     message = _("Unacceptable parameters.")
     code = 400

@@ -808,6 +808,17 @@ class ContainerDriver(object):
 class CapsuleDriver(object):
     """Interface for container driver."""
 
+    def abandon_create(self, capsule_uuid):
+        """Ask a create of this capsule still in progress to give up.
+
+        Called as a delete arrives, ahead of the lock the create holds.
+        A driver whose create cannot be interrupted need do nothing: the
+        delete then waits for the create, as it always has.
+        """
+
+    def forget_abandoned(self, capsule_uuid):
+        """The delete abandon_create announced has finished."""
+
     def capsule_runtimes(self):
         """The runtimes a capsule on this host can ask for.
 

@@ -142,6 +142,9 @@ REST_API_VERSION_HISTORY = """REST API Version History:
              (dockerd's daemon.json), and which the scheduler now places a
              capsule's runtime by. null for a host whose zun-compute has
              not reported them yet; such a host is judged by runtimes.
+    * 1.61 - A capsule's initContainers are held to the same fields as its
+             containers, and securityContext takes privileged, allowed by
+             the capsule:create:privileged policy rule (admin by default).
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -154,7 +157,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.60'
+CURRENT_MAX_VER = '1.61'
 
 
 class Version(object):

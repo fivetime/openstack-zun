@@ -35,6 +35,22 @@ rules = [
     # reference:
     # https://docs.openstack.org/api-ref/application-container/
     policy.DocumentedRuleDefault(
+        name=CAPSULE % 'create:privileged',
+        check_str=base.RULE_ADMIN_API,
+        description=('Create a capsule with a container whose '
+                     'securityContext.privileged is true. On a runtime that '
+                     'shares the host kernel, such a container has the host.'),
+        operations=[
+            {
+                'path': '/v1/capsules/',
+                'method': 'POST'
+            }
+        ]
+    ),
+    # FIXME(lbragstad): This API call isn't actually listed in zun's API
+    # reference:
+    # https://docs.openstack.org/api-ref/application-container/
+    policy.DocumentedRuleDefault(
         name=CAPSULE % 'delete',
         check_str=base.RULE_ADMIN_OR_OWNER,
         description='Delete a capsule',

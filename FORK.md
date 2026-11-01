@@ -1202,6 +1202,26 @@ gVisor 在 dockerd 叫 `runsc`,在 CRI 叫 `gvisor`;写 `gvisor` 的则从来调
   容器和 capsule 都写 `runsc`;过渡期两名并存时实测 `runsc` 的 capsule(worker7,CRI handler runsc)和容器(worker5)
   内核 4.19.0-gvisor、DNS 通。上面"写 `runsc` 的 NoValidHost"是改名前的结果。zun 代码未改。
 
+### 4.26 胶囊 init 容器:校验、删除打断等待、失败语义、securityContext.privileged(API 1.61,2026-11-01)
+
+kubezoo-deploy 反馈原生 sidecar 跑不起来且能被滥用,查下来是几个独立缺陷:
+
+- **init 容器不校验**:`capsule_spec` 里没有 `initContainers`,又是 `additionalProperties: True`,字段不经检查直接进
+  `CapsuleInitContainer(**dict)`。现在和 `containers` 同一份 schema,多余字段 400。
+- **`securityContext.privileged`**:用户定 zun 保持中性,像 kubelet+containerd,允不允许由部署的 oslo.policy 决定。
+  新规则 `capsule:create:privileged`,默认只给管理员,拒绝发生在写任何记录之前。存进容器已有的 `privileged` 字段。
+  沙箱也要标 privileged(`_has_privileged_member`),否则 containerd 拒绝。⚠️ zun 不限制胶囊运行时(用户定,由上层控制)。
+- **删除被创建堵住**:创建等 init 时持胶囊的锁,删除排队;每个 init 单独算 3600 秒,轮询间隔不封顶翻倍,单个实际约
+  68 分钟(推算)。现在 `manager.container_delete` 在 spawn 之前调 `abandon_create`(RPC 线程里,线程池满也不受影响),
+  等待循环和每个成员创建前检查,抛 `CapsuleCreateAbandoned`,走已有的 `_undo_create`,再由排队的删除收尾。
+  用内存标记而不是读记录,因为创建保存 task_state 可能盖掉 API 写的 DELETING。轮询封顶 5 秒。
+- **init 非零退出**:`STOPPED` 一律算结束,后面的容器照常启动。现在失败即创建失败;读不到退出码不算失败。没有按
+  restartPolicy 重试,这和 kubelet 不同。
+- **用量**:`_update_usage_from_container` 对未跟踪的容器做移除时会当成新容器加一次用量;创建失败的胶囊走删除就会这样。
+  现在什么都不做。
+- docker 胶囊驱动的等待未改(生产胶囊驱动是 cri)。
+- 未解决:沙箱重建也等 init(`_rebuild_capsule`,sweep 里调用),可能卡住巡检;原生 sidecar 未做。
+
 ## 五、共享文件系统的信任边界
 
 **2026-08-11 落成控制。**之前这条只写在文档里,而文档不是控制。

@@ -1,0 +1,25 @@
+---
+features:
+  - |
+    A capsule container's ``securityContext`` takes ``privileged``, as in a
+    Kubernetes pod, on both ``containers`` and ``initContainers``. It is
+    allowed by the new ``capsule:create:privileged`` policy rule, admin only
+    by default. The sandbox holding such a container is marked privileged,
+    which containerd requires.
+fixes:
+  - |
+    A capsule's ``initContainers`` were not validated: unknown fields went
+    into the record unchecked. They are now held to the same fields as
+    ``containers``, and anything else is a 400.
+  - |
+    Deleting a capsule no longer waits for a running init container. The
+    create holding the capsule's lock gives up and undoes what it made, then
+    the delete goes on. A wait on an init container looks every 5 seconds at
+    most; the interval used to double without limit.
+  - |
+    An init container that exits non-zero now fails the capsule's create.
+    The remaining containers used to start anyway.
+upgrade:
+  - |
+    A template whose ``initContainers`` carry a field ``containers`` would
+    not accept is now refused with a 400.

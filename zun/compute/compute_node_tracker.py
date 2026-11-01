@@ -254,8 +254,11 @@ class ComputeNodeTracker(object):
         """Update usage for a single container."""
 
         uuid = container.uuid
-        is_new_container = uuid not in self.tracked_containers
-        is_removed_container = not is_new_container and is_removed
+        # Removing one that is not tracked has nothing to give back: a failed
+        # create's claim was already aborted by the time its delete gets here.
+        is_new_container = (uuid not in self.tracked_containers and
+                            not is_removed)
+        is_removed_container = uuid in self.tracked_containers and is_removed
 
         if is_new_container:
             self.tracked_containers[uuid] = \

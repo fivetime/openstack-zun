@@ -18,6 +18,7 @@ from webtest.app import AppError
 
 from zun.api.controllers.v1 import capsules
 from zun.common import exception
+from zun.common import policies
 from zun import objects
 from zun.tests.unit.api import base as api_base
 from zun.tests.unit.db import utils
@@ -207,6 +208,71 @@ class TestCapsuleController(api_base.FunctionalTest):
             "Container image is needed")
         self.assertRaises(AppError, self.post, '/v1/capsules/',
                           params=params, content_type='application/json')
+        self.assertFalse(mock_container_create.called)
+
+    def _post_privileged(self, member):
+        spec = {'containers': [{'image': 'test'}]}
+        privileged = {'image': 'test-p',
+                      'securityContext': {'privileged': True}}
+        if member == 'init':
+            spec['initContainers'] = [privileged]
+        else:
+            spec['containers'] = [privileged]
+        return self.post_json(
+            '/capsules/',
+            {'template': {'kind': 'capsule', 'spec': spec,
+                          'metadata': {'name': 'capsule-example'}}},
+            expect_errors=True)
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_privileged_refused_by_policy_leaves_nothing(
+            self, mock_neutron_get_network, mock_container_create):
+        # capsule:create too: set_rules replaces, and a 403 from a missing
+        # rule would pass this for the wrong reason.
+        self.policy.set_rules({'capsule:create': '@',
+                               'capsule:create:privileged': '!'})
+        for member in ('container', 'init'):
+            response = self._post_privileged(member)
+            self.assertEqual(403, response.status_int, member)
+        self.assertFalse(mock_container_create.called)
+        self.assertEqual(
+            [], objects.Capsule.list(self.context))
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_privileged_allowed_by_policy_reaches_the_record(
+            self, mock_neutron_get_network, mock_container_create):
+        self.policy.set_rules({'capsule:create': '@',
+                               'capsule:create:privileged': '@'})
+        for member, field in (('container', 'containers'),
+                              ('init', 'init_containers')):
+            response = self._post_privileged(member)
+            self.assertEqual(202, response.status_int, member)
+            capsule = mock_container_create.call_args[0][1]
+            self.assertIs(True, getattr(capsule, field)[0].privileged)
+
+    def test_privileged_rule_defaults_to_admin(self):
+        rules = {r.name: r.check_str for r in policies.list_rules()}
+        self.assertEqual('rule:context_is_admin',
+                         rules['capsule:create:privileged'])
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_create_capsule_init_container_is_validated(
+            self, mock_neutron_get_network, mock_container_create):
+        # The same fields as a main container: unlisted in the schema, these
+        # went straight into the record, and the driver honours privileged.
+        for field in ('"privileged": true', '"restartPolicy": "Always"',
+                      '"runtime": "runc"'):
+            params = ('{"template": {"kind": "capsule", "spec": {'
+                      ' "initContainers": [{"image": "test-init", %s}],'
+                      ' "containers": [{"image": "test"}]},'
+                      ' "metadata": {"name": "capsule-example"}}}' % field)
+            response = self.post('/v1/capsules/', params=params,
+                                 content_type='application/json',
+                                 expect_errors=True)
+            self.assertEqual(400, response.status_int, field)
         self.assertFalse(mock_container_create.called)
 
     @patch('zun.compute.api.API.container_create')

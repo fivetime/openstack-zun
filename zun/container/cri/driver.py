@@ -75,6 +75,9 @@ LOG = logging.getLogger(__name__)
 # this below [DEFAULT] rpc_response_timeout, or the API answers 504 first.
 EXEC_REPLY_MARGIN = 15
 
+# The longest wait between looks at a running init container, in seconds.
+INIT_CONTAINER_POLL_MAX = 5
+
 
 def _grpc_on_native_threads():
     """Give gRPC back the real threading primitives.
@@ -614,8 +617,13 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
     # TODO(hongbin): define a list of capabilities of this driver.
     capabilities = {}
 
+    # Capsules with a delete on its way; see abandon_create(). Empty and
+    # immutable until __init__ gives this instance its own.
+    _abandoned = frozenset()
+
     def __init__(self):
         super(CriDriver, self).__init__()
+        self._abandoned = set()
         # Filled on first use by _runtime_snapshotter().
         self._snapshotter = None
         # Filled on first use by _can_limit_host_io()/_io_device().
@@ -729,12 +737,14 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
             # TODO(hongbin): handle init containers
             for container in capsule.init_containers:
+                self._stop_if_abandoned(capsule)
                 self._create_container(context, capsule, container,
                                        requested_volumes)
-                self._wait_for_init_container(context, container)
+                self._wait_for_init_container(context, capsule, container)
                 container.save(context)
 
             for container in capsule.containers:
+                self._stop_if_abandoned(capsule)
                 self._create_container(context, capsule, container,
                                        requested_volumes)
                 container.status = consts.RUNNING
@@ -745,6 +755,26 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
         capsule.status = consts.RUNNING
         return capsule
+
+    def abandon_create(self, capsule_uuid):
+        """Let a delete interrupt the create it would otherwise queue behind.
+
+        ⚠️ A create holds the capsule's lock while an init container runs, and
+        the delete queues for that lock, so an init container that does not
+        exit keeps the capsule, its address and a thread of the compute pool
+        until the wait times out, once per init container. Held in memory
+        rather than read from the record: the create's own save of its task
+        state can overwrite the DELETING the API wrote, and this is called
+        from the RPC handler, so it does not queue for the pool either.
+        """
+        self._abandoned.add(capsule_uuid)
+
+    def forget_abandoned(self, capsule_uuid):
+        self._abandoned.discard(capsule_uuid)
+
+    def _stop_if_abandoned(self, capsule):
+        if capsule.uuid in self._abandoned:
+            raise exception.CapsuleCreateAbandoned(capsule=capsule.uuid)
 
     def _undo_create(self, context, capsule):
         """Remove the sandbox and ports a failed create has already made.
@@ -926,6 +956,11 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # --total-memory 31G for a capsule limited to 1 cpu / 256Mi.
             config.linux.resources.CopyFrom(
                 api_pb2.LinuxContainerResources(**agg))
+        if self._has_privileged_member(capsule):
+            # containerd refuses a privileged container in a sandbox not
+            # marked so ("no privileged container allowed in sandbox"), and
+            # kubelet marks the sandbox the same way.
+            config.linux.security_context.privileged = True
         if labels:
             # What ties a sandbox back to whoever owns it. A container records
             # its container id, not its sandbox id -- there is one field and
@@ -1041,6 +1076,19 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             members = [capsule]
         return [(getattr(m, 'cpu', None), getattr(m, 'memory', None))
                 for m in members]
+
+    @staticmethod
+    def _has_privileged_member(capsule):
+        # Read as _member_resources reads them. A list that cannot be loaded
+        # leaves the sandbox unmarked, and containerd then refuses a
+        # privileged member: it fails closed.
+        try:
+            members = list(getattr(capsule, 'containers', None) or [])
+            members += list(getattr(capsule, 'init_containers', None) or [])
+        except Exception:
+            members = []
+        return any(getattr(m, 'privileged', None) is True
+                   for m in members or [capsule])
 
     def _sandbox_cgroup_parent(self, capsule):
         """Where this sandbox's own accounting lives on the host.
@@ -1494,13 +1542,16 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 readonly=bool(getattr(volume, 'read_only', False))))
         return mounts
 
-    def _wait_for_init_container(self, context, container, timeout=3600):
+    def _wait_for_init_container(self, context, capsule, container,
+                                 timeout=3600):
         def retry_if_result_is_false(result):
             return result is False
 
         def check_init_container_stopped():
+            self._stop_if_abandoned(capsule)
             status = self._show_container(context, container).status
             if status == consts.STOPPED:
+                self._refuse_a_failed_init(container)
                 return True
             elif status == consts.RUNNING:
                 return False
@@ -1508,14 +1559,31 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 raise exception.ZunException(
                     _("Container has unexpected status: %s") % status)
 
+        # Capped: uncapped, the doubling had an init container that ran for
+        # two minutes noticed at 255 seconds, and a delete would be noticed
+        # no sooner.
         r = tenacity.Retrying(
             stop=tenacity.stop_after_delay(timeout),
-            wait=tenacity.wait_exponential(),
+            wait=tenacity.wait_exponential(max=INIT_CONTAINER_POLL_MAX),
             retry=tenacity.retry_if_result(retry_if_result_is_false))
         # Not r.call(): deprecated in tenacity 7 and removed in 8. Not
         # r(...) either: Retrying is only callable since 7, and 6 is still
         # allowed. wraps() works across all of them.
         r.wraps(check_init_container_stopped)()
+
+    @staticmethod
+    def _refuse_a_failed_init(container):
+        """Stop the create at an init container that failed, as a pod does.
+
+        An exit that could not be read leaves the detail empty, and is not
+        read as a failure: a runtime that could not be asked says nothing
+        about the container.
+        """
+        detail = container.status_detail or ''
+        if detail.startswith('exit:') and detail != 'exit:0':
+            raise exception.ZunException(
+                _("Init container %(name)s failed with %(detail)s")
+                % {'name': container.name, 'detail': detail})
 
     def _show_container(self, context, container):
         container_id = container.container_id
@@ -2658,8 +2726,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         for member in list(capsule.init_containers or []):
             volumes = {member.uuid: objects.VolumeMapping.list_by_container(
                 context, member.uuid)}
+            self._stop_if_abandoned(capsule)
             self._create_container(context, capsule, member, volumes)
-            self._wait_for_init_container(context, member)
+            self._wait_for_init_container(context, capsule, member)
             member.save(context)
         for member in list(capsule.containers or []):
             volumes = {member.uuid: objects.VolumeMapping.list_by_container(

@@ -760,8 +760,17 @@ class Manager(periodic_task.PeriodicTasks):
 
     @translate_exception
     def container_delete(self, context, container, force=False):
+        capsule = isinstance(container, objects.Capsule)
+
         @utils.synchronized(container.uuid)
         def do_container_delete():
+            try:
+                do_it()
+            finally:
+                if capsule:
+                    self.capsule_driver.forget_abandoned(container.uuid)
+
+        def do_it():
             if not self._caught_up(container):
                 return
             last, children = self._do_container_delete(
@@ -776,6 +785,10 @@ class Manager(periodic_task.PeriodicTasks):
                 children_extra={uuid: {'last_reading': reading}
                                 for uuid, reading in children.items()})
 
+        # Before the spawn: a full pool would hold the delete back too, and
+        # a create waiting on an init container is what fills it.
+        if capsule:
+            self.capsule_driver.abandon_create(container.uuid)
         utils.spawn_n(do_container_delete)
 
     def _do_container_delete(self, context, container, force):

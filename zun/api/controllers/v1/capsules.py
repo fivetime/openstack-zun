@@ -62,7 +62,8 @@ def _validate_security_context(sc):
 
       capabilities.add  A tenant that can add SYS_ADMIN, NET_ADMIN and the like
                         has, inside its Kata guest, most of what "privileged"
-                        would grant -- and privileged is refused outright. Only
+                        would grant -- and privileged has its own policy rule,
+                        capsule:create:privileged. Only
                         the capabilities in [container_driver] allowed_capabilities
                         (by default the single one PodSecurity "restricted"
                         permits) may be added. Dropping is never restricted.
@@ -287,6 +288,13 @@ class CapsuleController(base.Controller):
             utils.capsule_get_container_spec(spec_content)
         volumes_spec = utils.capsule_get_volume_spec(spec_content)
 
+        # Before anything is recorded: a refusal leaves no capsule behind.
+        for container_spec in containers_spec + init_containers_spec:
+            if (container_spec.get('securityContext') or {}).get('privileged'):
+                policy.enforce(context, "capsule:create:privileged",
+                               action="capsule:create:privileged")
+                break
+
         # Create the capsule Object
         new_capsule = objects.Capsule(context, **capsule_dict)
         new_capsule.project_id = context.project_id
@@ -452,6 +460,9 @@ class CapsuleController(base.Controller):
             security_context = container_dict.pop('securityContext', None)
             if security_context:
                 _validate_security_context(security_context)
+                # Into the field the driver and the view already read.
+                if security_context.pop('privileged', False):
+                    container_dict['privileged'] = True
                 healthcheck = container_dict.get('healthcheck') or {}
                 healthcheck['k8s_security_context'] = security_context
                 container_dict['healthcheck'] = healthcheck
