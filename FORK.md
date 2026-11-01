@@ -1220,7 +1220,14 @@ kubezoo-deploy 反馈原生 sidecar 跑不起来且能被滥用,查下来是几�
 - **用量**:`_update_usage_from_container` 对未跟踪的容器做移除时会当成新容器加一次用量;创建失败的胶囊走删除就会这样。
   现在什么都不做。
 - docker 胶囊驱动的等待未改(生产胶囊驱动是 cri)。
+- 生产 2026-11-01 rev 85/86(镜像 ef8a8b71):顶层 `privileged` 的 init 400;临时 member 账号 `securityContext.privileged`
+  403(`capsule:create:privileged`);管理员 runc 胶囊的特权 init `CapEff=000001ffffffffff`,同胶囊主容器仍是默认权限;
+  `exit 3` 的 init:胶囊 Error、host 清空、状态原因 "Init container ... failed with exit:3"(kubezun 按这段文字判断,别改)、
+  端口释放;kata-clh 上 `sleep 3000` 的 init 创建 6 分多钟后删除,21 秒删完,节点用量 0、placement 无分配。
+  改前实测:init 顶层 `privileged` API 放行,但 containerd 报 "no privileged container allowed in sandbox",没跑起来。
+- 已知:失败的 init 成员记录停在 Creating、退出码只在胶囊状态原因里;打断时日志是 ERROR 带栈(预期路径,只是吵)。
 - 未解决:沙箱重建也等 init(`_rebuild_capsule`,sweep 里调用),可能卡住巡检;原生 sidecar 未做。
+  ⚠️ init 失败没有退避重试:kubezun 下 Pod 变 Failed,Deployment 立刻补新 Pod,会循环建胶囊。kubezoo 胶囊档接生产前要先做。
 
 ## 五、共享文件系统的信任边界
 
