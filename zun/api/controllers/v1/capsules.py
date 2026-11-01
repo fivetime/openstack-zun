@@ -779,7 +779,9 @@ class CapsuleController(base.Controller):
 
     @staticmethod
     def _find_container(capsule, ident):
-        containers = capsule.containers + capsule.init_containers
+        # As lists: the two fields hold different object types, and adding the
+        # fields themselves raises, for every member of such a capsule.
+        containers = list(capsule.containers) + list(capsule.init_containers)
         if not containers:
             raise exception.Invalid(_('Capsule has no containers'))
         if ident is None:

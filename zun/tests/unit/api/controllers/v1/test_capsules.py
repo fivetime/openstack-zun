@@ -838,3 +838,40 @@ class TestCapsuleController(api_base.FunctionalTest):
         self.assertEqual(1, len(actual_capsules))
         self.assertEqual(actual_capsules[-1].get('uuid'),
                          actual_capsules[0].get('uuid'))
+
+
+class TestFindContainer(api_base.FunctionalTest):
+    """A capsule's members are found across both lists, on real objects.
+
+    The two list fields hold different object types, so adding them directly
+    raises, for any capsule with an init container and whichever member asked
+    for: mocks of them add up happily.
+    """
+
+    def _capsule(self):
+        capsule = objects.Capsule(self.context, **utils.get_test_container())
+        self.main = objects.CapsuleContainer(
+            self.context, **utils.get_test_container(
+                uuid=uuidutils.generate_uuid(), name='main'))
+        self.init = objects.CapsuleInitContainer(
+            self.context, **utils.get_test_container(
+                uuid=uuidutils.generate_uuid(), name='init'))
+        capsule.containers = [self.main]
+        capsule.init_containers = [self.init]
+        return capsule
+
+    def test_a_main_container_of_a_capsule_with_an_init_container(self):
+        found = capsules.CapsuleController._find_container(
+            self._capsule(), 'main')
+        self.assertEqual(self.main.uuid, found.uuid)
+
+    def test_an_init_container_by_uuid(self):
+        capsule = self._capsule()
+        found = capsules.CapsuleController._find_container(
+            capsule, self.init.uuid)
+        self.assertIsInstance(found, objects.CapsuleInitContainer)
+
+    def test_two_members_have_to_be_told_apart(self):
+        self.assertRaises(exception.Invalid,
+                          capsules.CapsuleController._find_container,
+                          self._capsule(), None)
