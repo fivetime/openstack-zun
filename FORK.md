@@ -1250,6 +1250,8 @@ kubezoo-deploy 反馈原生 sidecar 跑不起来且能被滥用,查下来是几�
   沙箱死了不重建。生产实测 sidecar 被杀后不重启才发现。现在胶囊交给胶囊驱动。
 - **运行中的 init 记录是 Running**(kubezun 报的):原来一直 Creating,上层分不清"还在初始化"和"卡住",kubezun 的超时因此误判。
   exec 改为按成员状态判断(胶囊 Creating/Stopped 时),可以进运行中的 init 和 sidecar,同 pod。
+- **并发建沙箱时 CNI 报 NetlinkDumpInterrupted**(kubezun 报的,实测 4 个并发 Pod 中 2 个):读宿主 link 表时另一个 veth 正在建,
+  内核标 NLM_F_DUMP_INTR,胶囊直接 Error。现在 `base_bridge_connect` 退避重试 6 次(0.1 秒起翻倍),每次先清掉上次留下的。
 - **顺手修的**:`_find_container` 把两种列表字段直接相加,带 init 的胶囊按 container 查日志/exec 都 500(kubezun 报的)。
   `always` 胶囊只要有 init,主容器的策略被改成 `on-failure:10`(API 循环里覆盖了共享变量),主容器正常退出
   后不重启。

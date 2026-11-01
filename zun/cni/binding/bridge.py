@@ -11,9 +11,11 @@
 #    under the License.
 
 import os
+import time
 
 from neutron_lib import constants as neutron_constants
 from oslo_log import log
+from pyroute2.netlink import exceptions as netlink_exceptions
 
 from zun.cni.binding import base as b_base
 from zun.cni import utils as cni_utils
@@ -23,9 +25,42 @@ from zun.network import linux_net as net_utils
 
 LOG = log.getLogger(__name__)
 
+# How many times to read the host's links again when the read was interrupted,
+# and the wait before the first of them, doubling.
+DUMP_ATTEMPTS = 6
+DUMP_RETRY_WAIT = 0.1
+
 
 @privileged.cni.entrypoint
 def base_bridge_connect(vif_dict, ifname, netns, container_id, **kwargs):
+    _connect_retrying(vif_dict, ifname, netns, container_id, **kwargs)
+
+
+def _connect_retrying(vif_dict, ifname, netns, container_id, **kwargs):
+    """Connect, reading the host's links again if they changed meanwhile.
+
+    The kernel marks a dump NLM_F_DUMP_INTR when the table changed while it
+    was being read, and pyroute2 raises for it. That is the kernel's way of
+    saying to read again, and it happens whenever another veth is being made
+    on the host: two sandboxes starting together on a node, which is what a
+    rollout and a scaled-up Deployment do, and the capsule went to Error.
+
+    Starting over is safe: a connect begins by removing what an earlier
+    attempt left.
+    """
+    for attempt in range(DUMP_ATTEMPTS):
+        try:
+            return _connect(vif_dict, ifname, netns, container_id,
+                            retrying=attempt > 0, **kwargs)
+        except netlink_exceptions.NetlinkDumpInterrupted:
+            if attempt == DUMP_ATTEMPTS - 1:
+                raise
+            LOG.debug('Reading links was interrupted connecting %s; trying '
+                      'again', vif_dict['vif_name'])
+            time.sleep(DUMP_RETRY_WAIT * 2 ** attempt)
+
+
+def _connect(vif_dict, ifname, netns, container_id, retrying=False, **kwargs):
     host_ifname = vif_dict['vif_name']
     mtu = vif_dict['network']['mtu']
     address = vif_dict['address']
@@ -41,6 +76,13 @@ def base_bridge_connect(vif_dict, ifname, netns, container_id, **kwargs):
                       'connecting.', host_ifname)
             with h_ipdb.interfaces[host_ifname] as h_iface:
                 h_iface.remove()
+
+    if retrying and netns:
+        # The pair not yet moved to the host, which the removal above misses.
+        with b_base.get_ipdb(netns) as c_ipdb:
+            if ifname in c_ipdb.interfaces:
+                with c_ipdb.interfaces[ifname] as c_iface:
+                    c_iface.remove()
 
     if mtu:
         interface_mtu = mtu
