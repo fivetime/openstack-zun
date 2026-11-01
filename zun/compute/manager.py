@@ -2445,10 +2445,14 @@ class Manager(periodic_task.PeriodicTasks):
         if isinstance(self.driver, driver_module.ContainerDriver):
             containers = objects.Container.list_by_host(ctx, self.host)
             self.driver.update_containers_states(ctx, containers, self)
-            # TODO(hongbin): use capsule driver to update capsules status
-            self.driver.update_containers_states(ctx, capsules, self)
-        elif hasattr(self.capsule_driver, 'update_containers_states'):
+        # By the capsule driver. ⚠️ Given to the container driver, as they
+        # were, on a host where the two differ: docker knows nothing of a CRI
+        # capsule, finds none of its ids and does nothing, so no exit was
+        # recorded and no restart policy or dead sandbox ever acted on.
+        if hasattr(self.capsule_driver, 'update_containers_states'):
             self.capsule_driver.update_containers_states(ctx, capsules, self)
+        elif isinstance(self.driver, driver_module.ContainerDriver):
+            self.driver.update_containers_states(ctx, capsules, self)
         else:
             # Capsule-only host whose capsule driver cannot report state yet:
             # capsule status stays as recorded at the end of the last

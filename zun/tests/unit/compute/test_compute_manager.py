@@ -147,6 +147,34 @@ class TestManager(base.TestCase):
 
         api.delete_port.assert_called_once_with('port-of-gone-1')
 
+    def _sync(self, driver, capsule_driver):
+        mgr = self.compute_manager
+        mgr.driver = driver
+        mgr.capsule_driver = capsule_driver
+        with mock.patch.object(manager.objects.Capsule, 'list_by_host',
+                               return_value=['capsule']), \
+                mock.patch.object(manager.objects.Container, 'list_by_host',
+                                  return_value=['container']):
+            mgr.sync_container_state(self.context)
+
+    def test_capsules_are_synced_by_the_capsule_driver(self):
+        # docker for containers and CRI for capsules. Given to docker, a
+        # capsule's exit was never seen and its restart policy never acted on.
+        docker = mock.Mock(spec=manager.driver_module.ContainerDriver)
+        docker.update_containers_states = mock.Mock()
+        cri = mock.Mock()
+        self._sync(docker, cri)
+        docker.update_containers_states.assert_called_once_with(
+            self.context, ['container'], self.compute_manager)
+        cri.update_containers_states.assert_called_once_with(
+            self.context, ['capsule'], self.compute_manager)
+
+    def test_a_capsule_driver_that_cannot_falls_back(self):
+        docker = mock.Mock(spec=manager.driver_module.ContainerDriver)
+        docker.update_containers_states = mock.Mock()
+        self._sync(docker, mock.Mock(spec=[]))
+        self.assertEqual(2, docker.update_containers_states.call_count)
+
     def _init_containers(self, *containers):
         calls = mock.Mock()
         mgr = self.compute_manager

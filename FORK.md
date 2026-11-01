@@ -1245,7 +1245,11 @@ kubezoo-deploy 反馈原生 sidecar 跑不起来且能被滥用,查下来是几�
   Pending)后交给 worker,巡检跳过 Rebuilding。失败回到 Stopped,下一轮再试。删除可打断。
 - **zun-compute 重启**:Creating(task_state 是 creating)和 Rebuilding 的胶囊,原来没人管,一直卡住。现在启动时恢复:
   有沙箱就重建再跑一遍,没有就失败并放回分配。没有 task_state 的是创建请求还在队列里,不碰。为此建好沙箱后立即存记录。
-- **顺手修的**:`always` 胶囊只要有 init,主容器的策略被改成 `on-failure:10`(API 循环里覆盖了共享变量),主容器正常退出
+- **巡检交错了驱动**(`2e7fbab1` 之后):容器驱动是 docker、胶囊驱动是 cri 的节点(默认配置,生产就是),`sync_container_state`
+  把胶囊交给 docker 驱动,docker 找不到这些 id,什么都不做。所以这种节点上 CRI 巡检从没跑过:退出不记录、重启策略不生效、
+  沙箱死了不重建。生产实测 sidecar 被杀后不重启才发现。现在胶囊交给胶囊驱动。
+- **顺手修的**:`_find_container` 把两种列表字段直接相加,带 init 的胶囊按 container 查日志/exec 都 500(kubezun 报的)。
+  `always` 胶囊只要有 init,主容器的策略被改成 `on-failure:10`(API 循环里覆盖了共享变量),主容器正常退出
   后不重启。
 
 ## 五、共享文件系统的信任边界
