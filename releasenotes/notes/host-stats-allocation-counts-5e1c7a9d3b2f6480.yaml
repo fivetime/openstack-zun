@@ -1,0 +1,10 @@
+---
+features:
+  - |
+    ``GET /v1/hosts/{host}/stats`` now says of each container and capsule
+    whether its allocation counts: ``allocation_counts`` is false during the
+    first start and after a first start that failed. A container or capsule
+    the runtime cannot read, a stopped container or a capsule on a dead
+    sandbox, still holds its allocation, so its row in ``unavailable`` now
+    carries the whole description and a ``read_at``. The ``uuid``,
+    ``container_type`` and ``reason`` of a row are unchanged.

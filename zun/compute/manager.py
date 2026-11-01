@@ -1746,6 +1746,9 @@ class Manager(periodic_task.PeriodicTasks):
             'labels': {k: v for k, v in (obj.labels or {}).items()
                        if k.startswith('metering.')},
         }
+        if capsule is None:
+            entry['allocation_counts'] = self._allocation_counts(
+                obj, container_type)
         if container_type == 'capsule':
             entry['children'] = [c.uuid for c in
                                  list(obj.containers) +
@@ -1757,6 +1760,26 @@ class Manager(periodic_task.PeriodicTasks):
             entry['capsule_uuid'] = capsule.uuid
             entry['allocation_included_in_parent'] = True
         return entry
+
+    @staticmethod
+    def _allocation_counts(obj, container_type):
+        """Whether what this object holds counts as held, for a reader.
+
+        Not whether it runs: a stopped container keeps its room on the node.
+        Left out are the first start, which nobody has had any use of yet,
+        and a first start that failed, whose create gave the allocation back
+        though the record keeps its host.
+        """
+        if obj.status == consts.DELETED:
+            return False
+        if obj.status not in (consts.CREATING, consts.ERROR):
+            return True
+        members = [obj]
+        if container_type == 'capsule':
+            # A member started is enough: an init container is the workload
+            # already, however long it goes on failing.
+            members += list(obj.containers) + list(obj.init_containers)
+        return any(m.started_at for m in members)
 
     def _sample_kinds(self, context, kinds):
         readings = {}
@@ -1783,7 +1806,10 @@ class Manager(periodic_task.PeriodicTasks):
         autoscales, for instance).
 
         Answers {'results': [entry + 'reading' + 'previous'],
-        'unavailable': [{'uuid', 'container_type', 'reason'}]}.
+        'unavailable': [{'uuid', 'container_type', 'reason'}]}. A container
+        or a capsule without a reading (stopped, its sandbox dead) still has
+        an allocation, so its row is the whole entry and 'read_at'; each says
+        in 'allocation_counts' whether that allocation is to be counted.
         """
         types = [t for t in (types or ('container', 'capsule'))
                  if t in self.SAMPLE_TYPES]
@@ -1818,13 +1844,18 @@ class Manager(periodic_task.PeriodicTasks):
             time.sleep(interval)
             second = self._sample_kinds(context, kinds)
         results, unavailable = [], []
+        read_at = timeutils.utcnow(with_timezone=True).isoformat()
         for uuid, entry in described.items():
             current = (second if second is not None else first).get(uuid)
             if not current:
-                unavailable.append({'uuid': uuid,
-                                    'container_type':
-                                        entry['container_type'],
-                                    'reason': 'the runtime gave no reading'})
+                row = {'uuid': uuid,
+                       'container_type': entry['container_type'],
+                       'reason': 'the runtime gave no reading'}
+                if 'allocation_counts' in entry:
+                    # It holds as much without a reading as with one, and
+                    # a child's is counted in its capsule's.
+                    row = dict(entry, read_at=read_at, **row)
+                unavailable.append(row)
                 continue
             entry['reading'] = current
             entry['previous'] = first.get(uuid) if second is not None else None

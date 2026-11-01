@@ -1296,6 +1296,8 @@ Zun→Kata direct-volume 通道,见 DESIGN §8.2 P3)。
   全部工作在 ceilometer 侧,Zun 不用动。数据源就是 §3.3 的 capsule stats,而且
   CPU 本来就是累计值,正好对上 ceilometer 的 cumulative 样本类型。
 
+- **计费看是否占额度(2026-11-01 用户定):** 占着计算额度就收费,没有运行也收;最开始的启动、拉镜像阶段除外;释放了就不收。原来是否有样本取决于 runtime 有没有读数,结果已停止的 docker 容器占着额度不收费,胶囊却在拉第一个镜像时就开始收费。现在 `GET /v1/hosts/{host}/stats` 每个容器和胶囊带 `allocation_counts`:`Creating` 或 `Error` 且没有任何成员启动过、或记录已标 `Deleted` 时为 false,其余为 true;读不到数的对象在 `unavailable` 里带完整描述和 `read_at`。胶囊子容器的行不变,它的分配量算在胶囊里。docker 容器的记录没有 `started_at`,所以跑过的容器后来转成 `Error` 也按没启动过算,不收费。ceilometer 的 `container.cpu/memory/disk`、`capsule.cpu/memory/disk` 按这个字段出样本。
+
 ## 七、验证
 
 改了 capsule schema / driver 加载 / CRI 版本,需要证明 API 契约没破:

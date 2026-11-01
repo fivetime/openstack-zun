@@ -19,11 +19,14 @@ k8s does and is not the sum of its containers, so a capsule's container
 names its capsule and says its allocation is already counted there.
 """
 
+import datetime
 from unittest import mock
 
 from zun.compute import manager
 from zun.container import driver as driver_module
 from zun.tests import base
+
+THEN = datetime.datetime(2026, 11, 1, 12, 0, 0)
 
 
 def _obj(uuid, labels=None, memory='512', **kw):
@@ -127,9 +130,10 @@ class HostSampleTest(base.TestCase):
 
         answer = self.mgr.host_sample({})
 
-        self.assertEqual([{'uuid': 'cap-1', 'container_type': 'capsule',
-                           'reason': 'the runtime gave no reading'}],
-                         answer['unavailable'])
+        self.assertEqual(['cap-1'], [r['uuid'] for r in answer['unavailable']])
+        self.assertEqual('the runtime gave no reading',
+                         answer['unavailable'][0]['reason'])
+        self.assertNotIn('reading', answer['unavailable'][0])
         self.assertNotIn('cap-1', self._by_uuid(answer))
 
     def test_an_interval_reads_twice_and_returns_both(self):
@@ -148,3 +152,114 @@ class HostSampleTest(base.TestCase):
         for text, mib in (('512', 512), ('512M', 512), ('1G', 1024),
                           ('2048m', 2048), (None, None), ('', None)):
             self.assertEqual(mib, manager.Manager._memory_mb(text), text)
+
+
+class AllocationCountsTest(HostSampleTest):
+    """A bill follows what is held, not what the runtime can read.
+
+    Sampling went by the reading: a stopped container holding its allocation
+    gave none and cost nothing, and a capsule still pulling its first image
+    had a sandbox to read and was charged. Only the first start is left out.
+    """
+
+    def _no_readings(self):
+        self.mgr.driver.sample_counters.return_value = {}
+        self.mgr.capsule_driver.sample_capsules.return_value = {}
+
+    def _row(self, answer, uuid):
+        rows = answer['results'] + answer['unavailable']
+        return next(r for r in rows if r['uuid'] == uuid)
+
+    def test_a_stopped_container_still_says_what_it_holds(self):
+        self._no_readings()
+        self.plain.status = 'Stopped'
+
+        answer = self.mgr.host_sample({})
+
+        self.assertEqual([], answer['results'])
+        row = self._row(answer, 'c-1')
+        self.assertTrue(row['allocation_counts'])
+        self.assertEqual(1.0, row['allocation']['cpu'])
+        self.assertEqual('p-1', row['project_id'])
+        self.assertTrue(row['read_at'])
+        self.assertEqual('the runtime gave no reading', row['reason'])
+
+    def test_a_capsule_rebuilding_on_a_dead_sandbox_counts(self):
+        self._no_readings()
+        self.capsule.status = 'Rebuilding'
+        self.child.started_at = THEN
+
+        row = self._row(self.mgr.host_sample({}), 'cap-1')
+
+        self.assertTrue(row['allocation_counts'])
+
+    def test_a_capsule_pulling_its_first_image_does_not_count(self):
+        """It has a sandbox to read, and has run nothing yet."""
+        self.capsule.status = 'Creating'
+
+        row = self._row(self.mgr.host_sample({}), 'cap-1')
+
+        self.assertFalse(row['allocation_counts'])
+        self.assertIn('reading', row)
+
+    def test_a_capsule_whose_init_container_ran_counts_while_creating(self):
+        """Init containers retrying are a workload, however long it takes."""
+        self.capsule.status = 'Creating'
+        self.init.started_at = THEN
+
+        row = self._row(self.mgr.host_sample({}), 'cap-1')
+
+        self.assertTrue(row['allocation_counts'])
+
+    def test_a_container_being_created_does_not_count(self):
+        self._no_readings()
+        self.plain.status = 'Creating'
+
+        row = self._row(self.mgr.host_sample({}), 'c-1')
+
+        self.assertFalse(row['allocation_counts'])
+
+    def test_a_container_created_and_left_counts(self):
+        """Nothing is starting: it is only holding the room."""
+        self._no_readings()
+        self.plain.status = 'Created'
+
+        row = self._row(self.mgr.host_sample({}), 'c-1')
+
+        self.assertTrue(row['allocation_counts'])
+
+    def test_a_failed_first_start_does_not_count(self):
+        """A failed create gives its allocation back but keeps its host."""
+        self._no_readings()
+        self.plain.status = 'Error'
+
+        row = self._row(self.mgr.host_sample({}), 'c-1')
+
+        self.assertFalse(row['allocation_counts'])
+
+    def test_an_error_after_it_ran_counts(self):
+        self._no_readings()
+        self.plain.status = 'Error'
+        self.plain.started_at = THEN
+
+        row = self._row(self.mgr.host_sample({}), 'c-1')
+
+        self.assertTrue(row['allocation_counts'])
+
+    def test_a_record_marked_deleted_does_not_count(self):
+        self._no_readings()
+        self.plain.status = 'Deleted'
+        self.plain.started_at = THEN
+
+        row = self._row(self.mgr.host_sample({}), 'c-1')
+
+        self.assertFalse(row['allocation_counts'])
+
+    def test_a_child_without_a_reading_stays_a_plain_row(self):
+        """Its allocation is its capsule's, and must not be counted again."""
+        self.mgr.capsule_driver.sample_counters.return_value = {}
+
+        answer = self.mgr.host_sample({}, types=['capsule_container'])
+
+        for row in answer['unavailable']:
+            self.assertEqual({'uuid', 'container_type', 'reason'}, set(row))
