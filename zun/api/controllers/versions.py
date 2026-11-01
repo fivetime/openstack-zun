@@ -145,6 +145,10 @@ REST_API_VERSION_HISTORY = """REST API Version History:
     * 1.61 - A capsule's initContainers are held to the same fields as its
              containers, and securityContext takes privileged, allowed by
              the capsule:create:privileged policy rule (admin by default).
+    * 1.62 - An init container takes restartPolicy: Always, which makes it a
+             native sidecar, as in a pod. A failed init container under
+             OnFailure or Always is run again with back-off instead of
+             failing the capsule.
 
     ⚠️ The fields this fork adds are served to every caller rather than
     gated on the requested version: a client asking for 1.40 still receives
@@ -157,7 +161,7 @@ REST_API_VERSION_HISTORY = """REST API Version History:
 """
 
 BASE_VER = '1.1'
-CURRENT_MAX_VER = '1.61'
+CURRENT_MAX_VER = '1.62'
 
 
 class Version(object):

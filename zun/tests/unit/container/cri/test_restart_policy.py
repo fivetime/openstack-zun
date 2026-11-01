@@ -311,15 +311,64 @@ class SandboxDeathTest(RestartOnExitTest):
         self.member_capsule = mock.Mock(uuid='cap-1', container_id='sb-1',
                                         containers=[self.container])
 
-    def test_a_dead_sandbox_is_rebuilt_not_restarted_into(self):
+    def _dies(self):
+        """The sweep's part: it hands the capsule over and moves on."""
         self._policy('always')
         self.sandbox_alive.return_value = False
+        with mock.patch.object(cri_driver.utils, 'spawn_worker') as spawn:
+            self.assertFalse(self.driver._restart_on_exit(
+                {}, self.member_capsule, self.container))
+        return spawn
 
-        self.assertTrue(self.driver._restart_on_exit(
-            {}, self.member_capsule, self.container))
+    def test_a_dead_sandbox_is_rebuilt_not_restarted_into(self):
+        spawn = self._dies()
 
-        self.rebuilt.assert_called_once_with({}, self.member_capsule)
+        spawn.assert_called_once_with(self.driver._rebuild_under_lock, {},
+                                      'cap-1', None)
+        self.rebuilt.assert_not_called()
         self.capsule_restarted.assert_not_called()
+        self.assertEqual(consts.REBUILDING, self.member_capsule.status)
+        self.member_capsule.save.assert_called_once()
+
+    def _rebuild(self, capsule):
+        with mock.patch.object(cri_driver.objects.Capsule, 'get_by_uuid',
+                               return_value=capsule):
+            self.driver._rebuild_under_lock({}, 'cap-1', None)
+
+    def test_the_rebuild_works_on_a_copy_of_its_own(self):
+        fresh = mock.Mock(status=consts.REBUILDING, task_state=None)
+        self._rebuild(fresh)
+        self.rebuilt.assert_called_once_with({}, fresh)
+
+    def test_a_rebuild_finding_a_delete_leaves_it(self):
+        fresh = mock.Mock(status=consts.REBUILDING,
+                          task_state=consts.CONTAINER_DELETING)
+        self._rebuild(fresh)
+        self.rebuilt.assert_not_called()
+
+    def test_a_rebuild_that_fails_goes_back_to_the_sweep(self):
+        fresh = mock.Mock(status=consts.REBUILDING, task_state=None)
+        self.rebuilt.side_effect = exception.ZunException('no network')
+        self._rebuild(fresh)
+        self.assertEqual(consts.STOPPED, fresh.status)
+        fresh.save.assert_called_once()
+
+    def test_a_rebuild_stopped_by_a_delete_leaves_the_record_alone(self):
+        fresh = mock.Mock(status=consts.REBUILDING, task_state=None)
+        self.rebuilt.side_effect = exception.CapsuleCreateAbandoned(
+            capsule='cap-1')
+        self._rebuild(fresh)
+        self.assertEqual(consts.REBUILDING, fresh.status)
+        fresh.save.assert_not_called()
+
+    def test_a_sidecar_does_not_ask_for_a_rebuild(self):
+        # A finished pod stays finished: its main containers' policy decides.
+        self._policy('always')
+        self.sandbox_alive.return_value = False
+        self.member_capsule.init_containers = [self.container]
+        self.assertFalse(self.driver._restart_on_exit(
+            {}, self.member_capsule, self.container))
+        self.assertNotEqual(consts.REBUILDING, self.member_capsule.status)
 
     def test_a_live_sandbox_is_not_rebuilt(self):
         self._policy('always')

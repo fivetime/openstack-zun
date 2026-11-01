@@ -819,6 +819,13 @@ class CapsuleDriver(object):
     def forget_abandoned(self, capsule_uuid):
         """The delete abandon_create announced has finished."""
 
+    def resume_capsule(self, context, capsule, on_done):
+        """Pick up a capsule a zun-compute restart caught starting.
+
+        Returns False when it cannot be, and the capsule has failed.
+        """
+        return False
+
     def capsule_runtimes(self):
         """The runtimes a capsule on this host can ask for.
 

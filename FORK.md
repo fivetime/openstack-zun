@@ -1226,8 +1226,27 @@ kubezoo-deploy 反馈原生 sidecar 跑不起来且能被滥用,查下来是几�
   端口释放;kata-clh 上 `sleep 3000` 的 init 创建 6 分多钟后删除,21 秒删完,节点用量 0、placement 无分配。
   改前实测:init 顶层 `privileged` API 放行,但 containerd 报 "no privileged container allowed in sandbox",没跑起来。
 - 已知:失败的 init 成员记录停在 Creating、退出码只在胶囊状态原因里;打断时日志是 ERROR 带栈(预期路径,只是吵)。
-- 未解决:沙箱重建也等 init(`_rebuild_capsule`,sweep 里调用),可能卡住巡检;原生 sidecar 未做。
-  ⚠️ init 失败没有退避重试:kubezun 下 Pod 变 Failed,Deployment 立刻补新 Pod,会循环建胶囊。kubezoo 胶囊档接生产前要先做。
+- 后续见 §4.27。
+
+### 4.27 胶囊按 pod 的方式启动:init 退避重试、原生 sidecar、重建不占巡检(API 1.62,2026-11-01)
+
+- **init 失败按 restartPolicy 处理**:`Never` 还是首次失败就 Error(文字不变);`OnFailure`/`Always` 按 kubelet 的
+  退避(10 秒起翻倍,封顶 5 分钟)无限重试,胶囊停在 Creating,原因写进状态原因
+  ("Init container X failed with exit:N; trying again in M seconds"),成功后清掉。等待可被删除打断。
+  取消了单个 init 3600 秒的上限(pod 也没有)。失败的 init 成员记录现在是 Stopped,带退出码。
+- **原生 sidecar**:init 容器写 `restartPolicy: Always`。没加字段,存为 `restart_policy.Name = always`:普通 init 的
+  `always` 会被 API 转成 `on-failure`,所以 init 上这个值只表示 sidecar。启动:有 startupProbe 等它通过,没有就算启动,
+  失败按退避重来(`Never` 也是);之后一直跑。巡检和探针管它,但它不决定胶囊状态;主容器都不会再跑了就逆序停掉;
+  删除时先停主容器,再逆序停 sidecar。普通 init 带探针 400,同 k8s。
+- **资源**按 k8s 公式:`max(sum(主容器)+sum(sidecar), 每个 init 运行时的峰值(自身+它之前的 sidecar))`。
+- **不占操作线程池**:有 init 的胶囊和重建都走 `utils.spawn_worker`,每胶囊一个线程(同 kubelet 的 pod worker),数量受
+  placement 约束。否则 64 个线程池能被租户的胶囊占满。
+- **重建不占巡检**:`_rebuild_capsule` 原来在巡检线程里跑,要等 init 跑完。现在巡检把胶囊标 Rebuilding(kubezun 映射
+  Pending)后交给 worker,巡检跳过 Rebuilding。失败回到 Stopped,下一轮再试。删除可打断。
+- **zun-compute 重启**:Creating(task_state 是 creating)和 Rebuilding 的胶囊,原来没人管,一直卡住。现在启动时恢复:
+  有沙箱就重建再跑一遍,没有就失败并放回分配。没有 task_state 的是创建请求还在队列里,不碰。为此建好沙箱后立即存记录。
+- **顺手修的**:`always` 胶囊只要有 init,主容器的策略被改成 `on-failure:10`(API 循环里覆盖了共享变量),主容器正常退出
+  后不重启。
 
 ## 五、共享文件系统的信任边界
 

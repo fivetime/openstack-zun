@@ -13,6 +13,7 @@
 #    under the License.
 
 import contextlib
+import functools
 import itertools
 import math
 import os
@@ -185,7 +186,48 @@ class Manager(periodic_task.PeriodicTasks):
                        'current_status': current_status})
             self.container_start(context, container)
 
+    def _resume_capsules(self, context):
+        """Pick up the capsules this service was starting when it stopped.
+
+        ⚠️ Nothing else would: the thread running them is gone, the sweep
+        skips a capsule in Creating, and it would stay that way. A capsule
+        with no task state has not reached this service yet: its create may
+        still be in the queue.
+        """
+        try:
+            capsules = objects.Capsule.list_by_host(context, self.host)
+        except Exception:
+            # What it would cost is these capsules, not the service.
+            LOG.exception("Could not look for capsules to resume")
+            return
+        for capsule in capsules:
+            starting = (capsule.status == consts.CREATING and
+                        capsule.task_state == consts.CONTAINER_CREATING)
+            if not starting and capsule.status != consts.REBUILDING:
+                continue
+            try:
+                LOG.info("Capsule %s was starting when this service stopped",
+                         capsule.uuid)
+                on_done = functools.partial(self._capsule_resumed, context,
+                                            starting)
+                if not self.capsule_driver.resume_capsule(context, capsule,
+                                                          on_done):
+                    on_done(capsule, _("Capsule failed to create correctly"))
+            except Exception:
+                LOG.exception("Could not resume capsule %s", capsule.uuid)
+
+    def _capsule_resumed(self, context, was_starting, capsule, error):
+        if error is None:
+            if was_starting:
+                notifications.notify(context, capsule, 'create', 'end',
+                                     host=self.host)
+            return
+        self._fail_container(context, capsule, str(error), unset_host=True)
+        self.reportclient.delete_allocation_for_container(context,
+                                                          capsule.uuid)
+
     def init_containers(self, context):
+        self._resume_capsules(context)
         if not isinstance(self.driver, driver_module.ContainerDriver):
             # Capsule-only host: no container was ever started through the
             # Container API here, so there is nothing to reconcile.
@@ -461,7 +503,13 @@ class Manager(periodic_task.PeriodicTasks):
                 if run:
                     self._do_container_start(context, created_container)
 
-        utils.spawn_n(do_container_create)
+        # A create waits for the init containers to finish, which the tenant
+        # decides. Not on the pool, or those waits are all the pool does.
+        if (isinstance(container, objects.Capsule) and
+                container.init_containers):
+            utils.spawn_worker(do_container_create)
+        else:
+            utils.spawn_n(do_container_create)
 
     @contextlib.contextmanager
     def _update_task_state(self, context, container, task_state):
@@ -1703,7 +1751,8 @@ class Manager(periodic_task.PeriodicTasks):
                                  list(obj.containers) +
                                  list(obj.init_containers)]
             entry['allocation_basis'] = (
-                'max(sum(containers), max(init_containers))')
+                'max(sum(containers), max(init_containers)), '
+                'sidecars added to whatever runs beside them')
         if capsule is not None:
             entry['capsule_uuid'] = capsule.uuid
             entry['allocation_included_in_parent'] = True

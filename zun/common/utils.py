@@ -286,6 +286,33 @@ def spawn_n(func, *args, **kwargs):
     executor.submit(context_wrapper, *args, **kwargs)
 
 
+def spawn_worker(func, *args, **kwargs):
+    """Run func on a thread of its own, outside the operation pool.
+
+    For work that takes as long as a tenant's container does: a capsule
+    running its init containers, like kubelet's per-pod worker. Each of those
+    would hold a thread of the pool for as long as it ran, so a tenant could
+    stop a node's every other operation with a few capsules. These are
+    bounded by what placement lets the node hold instead.
+    """
+    _context = common_context.get_current()
+    if not monkey_patch.concurrency_mode_threading():
+        eventlet.spawn_n(func, *args, **kwargs)
+        return
+
+    @functools.wraps(func)
+    def context_wrapper():
+        if _context is not None:
+            _context.update_store()
+        try:
+            func(*args, **kwargs)
+        except Exception:
+            LOG.exception('Unhandled error in background task %s',
+                          getattr(func, '__qualname__', func))
+
+    threading.Thread(target=context_wrapper, daemon=True).start()
+
+
 def _executor_is_full(executor):
     # futurist keeps no public count of idle workers; nova reads the same.
     with executor._shutdown_lock:

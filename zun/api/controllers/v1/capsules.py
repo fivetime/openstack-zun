@@ -294,6 +294,14 @@ class CapsuleController(base.Controller):
                 policy.enforce(context, "capsule:create:privileged",
                                action="capsule:create:privileged")
                 break
+        for container_spec in init_containers_spec:
+            # As a pod spec: a plain init container is judged by its exit.
+            if (container_spec.get('restartPolicy') != 'Always' and
+                    any(container_spec.get(probe) for probe in (
+                        'livenessProbe', 'readinessProbe', 'startupProbe'))):
+                raise exception.Invalid(
+                    _("Only an init container with restartPolicy Always can "
+                      "have probes"))
 
         # Create the capsule Object
         new_capsule = objects.Capsule(context, **capsule_dict)
@@ -370,6 +378,7 @@ class CapsuleController(base.Controller):
         new_capsule.image_driver = CONF.sandbox_image_driver
 
         # calculate capsule cpu/ram
+        # As kubelet adds up a pod:
         # 1. sum all cpu/ram of regular containers
         for container_dict in containers_spec:
             if not container_dict.get('resources'):
@@ -379,16 +388,27 @@ class CapsuleController(base.Controller):
                 capsule_need_cpu += allocation['cpu']
             if allocation.get('memory'):
                 capsule_need_memory += allocation['memory']
-        # 2. take the maximum of each init container
+        # 2. a sidecar runs beside everything after it, regular containers
+        #    included; a plain init container, beside the sidecars before it,
+        #    and capsule takes the highest point of any of that
+        sidecar_cpu = 0
+        sidecar_memory = 0
+        peak_cpu = 0
+        peak_memory = 0
         for container_dict in init_containers_spec:
-            if not container_dict.get('resources'):
-                continue
-            allocation = container_dict['resources']['requests']
-            if allocation.get('cpu'):
-                capsule_need_cpu = max(capsule_need_cpu, allocation['cpu'])
-            if allocation.get('memory'):
-                capsule_need_memory = max(capsule_need_memory,
-                                          allocation['memory'])
+            allocation = ((container_dict.get('resources') or {})
+                          .get('requests') or {})
+            cpu = allocation.get('cpu') or 0
+            memory = allocation.get('memory') or 0
+            if container_dict.get('restartPolicy') == 'Always':
+                sidecar_cpu += cpu
+                sidecar_memory += memory
+                cpu = memory = 0
+            peak_cpu = max(peak_cpu, sidecar_cpu + cpu)
+            peak_memory = max(peak_memory, sidecar_memory + memory)
+        capsule_need_cpu = max(capsule_need_cpu + sidecar_cpu, peak_cpu)
+        capsule_need_memory = max(capsule_need_memory + sidecar_memory,
+                                  peak_memory)
 
         merged_containers_spec = init_containers_spec + containers_spec
         for container_spec in merged_containers_spec:
@@ -473,10 +493,18 @@ class CapsuleController(base.Controller):
             container_dict['capsule_id'] = new_capsule.id
             container_dict['restart_policy'] = container_restart_policy
             if container_spec in init_containers_spec:
-                if capsule_restart_policy == "always":
-                    container_restart_policy = {"MaximumRetryCount": "10",
-                                                "Name": "on-failure"}
-                    container_dict['restart_policy'] = container_restart_policy
+                # ⚠️ Into this container only. Assigned over the shared
+                # variable, as it was, it reached the main containers made
+                # after it: `always` on a capsule with an init container
+                # stopped restarting a main container after 10 failures, or
+                # after any clean exit.
+                if container_dict.pop('restartPolicy', None) == 'Always':
+                    # What makes it a sidecar: see _is_sidecar in the driver.
+                    container_dict['restart_policy'] = {
+                        "MaximumRetryCount": "0", "Name": "always"}
+                elif capsule_restart_policy == "always":
+                    container_dict['restart_policy'] = {
+                        "MaximumRetryCount": "10", "Name": "on-failure"}
                 utils.check_for_restart_policy(container_dict)
                 new_container = objects.CapsuleInitContainer(context,
                                                              **container_dict)

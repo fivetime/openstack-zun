@@ -904,13 +904,21 @@ capsule_volumes_list = {
     }
 }
 
+# The same as a container, plus what makes one a native sidecar. Always is the
+# only value a pod spec takes here too.
+capsule_init_containers_list = copy.deepcopy(capsule_containers_list)
+capsule_init_containers_list['items']['properties']['restartPolicy'] = {
+    'type': ['string'],
+    'enum': ['Always'],
+}
+
 capsule_spec = {
     'type': ['object'],
     "properties": {
         "containers": capsule_containers_list,
         # Held to the same fields as a main container. Unlisted, its fields
         # went into the record unchecked, privileged among them.
-        "initContainers": capsule_containers_list,
+        "initContainers": capsule_init_containers_list,
         "volumes": capsule_volumes_list,
         "restartPolicy": capsule_restart_policy,
     },

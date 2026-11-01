@@ -1,0 +1,26 @@
+---
+features:
+  - |
+    API 1.62: an init container of a capsule accepts ``restartPolicy: Always``,
+    which makes it a native sidecar as in a Kubernetes pod. It is started in
+    order, gated by its startup probe, keeps running beside the main
+    containers, is restarted when it exits and is stopped after them.
+upgrade:
+  - |
+    A failed init container of a capsule with restart policy ``Always`` or
+    ``OnFailure`` is now run again with back-off (10 seconds, doubling, 5
+    minutes at most) and the capsule stays ``Creating``. Before, the capsule
+    went to ``Error``. ``Never`` still fails at the first failure. An init
+    container no longer has a time limit, and one with probes that is not a
+    sidecar is refused with 400.
+fixes:
+  - |
+    Main containers of an ``Always`` capsule with an init container were given
+    ``on-failure`` with 10 retries instead of ``always``.
+  - |
+    Waiting for init containers no longer holds a thread of the operation
+    pool, and rebuilding a capsule whose sandbox died no longer holds up the
+    state sweep. Such a capsule is ``Rebuilding`` meanwhile.
+  - |
+    A capsule that was starting or rebuilding when zun-compute restarted is
+    picked up again instead of staying as it was.

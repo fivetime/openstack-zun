@@ -35,7 +35,6 @@ from oslo_utils import fileutils
 from oslo_utils import timeutils
 from oslo_utils import units
 from oslo_utils import uuidutils
-import tenacity
 
 from zun.common import consts
 from zun.common import context as zun_context
@@ -77,6 +76,38 @@ EXEC_REPLY_MARGIN = 15
 
 # The longest wait between looks at a running init container, in seconds.
 INIT_CONTAINER_POLL_MAX = 5
+
+# How long a failed init or sidecar container waits before it runs again,
+# kubelet's figures: 10 seconds, doubling, 5 minutes at most.
+INIT_BACKOFF_FIRST = 10
+INIT_BACKOFF_MAX = 300
+
+
+def _init_backoff(failures):
+    """Seconds to wait after this many failures, counted from 1."""
+    return min(INIT_BACKOFF_FIRST * 2 ** max(failures - 1, 0),
+               INIT_BACKOFF_MAX)
+
+
+def _is_sidecar(container):
+    """Whether this init container is a Kubernetes native sidecar.
+
+    Marked by restart policy, as in a pod spec. The API gives a plain init
+    container its capsule's policy with `always` turned into `on-failure`,
+    so nothing else among init containers carries this name, and no column
+    or migration is needed for it.
+    """
+    return (container.restart_policy or {}).get('Name') == 'always'
+
+
+def _sidecars_of(capsule):
+    # Read as _member_resources reads them: a list that cannot be loaded must
+    # not stop the sweep, the delete or the sandbox.
+    try:
+        return [m for m in getattr(capsule, 'init_containers', None) or []
+                if _is_sidecar(m)]
+    except Exception:
+        return []
 
 
 def _grpc_on_native_threads():
@@ -734,14 +765,13 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         """
         try:
             self._create_pod_sandbox(context, capsule, requested_networks)
+            # On the record now: init containers can take as long as they
+            # like, and a zun-compute restarted meanwhile finds the capsule
+            # to pick up by this.
+            capsule.save(context)
 
-            # TODO(hongbin): handle init containers
-            for container in capsule.init_containers:
-                self._stop_if_abandoned(capsule)
-                self._create_container(context, capsule, container,
-                                       requested_volumes)
-                self._wait_for_init_container(context, capsule, container)
-                container.save(context)
+            self._run_init_members(context, capsule,
+                                   lambda member: requested_volumes)
 
             for container in capsule.containers:
                 self._stop_if_abandoned(capsule)
@@ -1542,48 +1572,235 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 readonly=bool(getattr(volume, 'read_only', False))))
         return mounts
 
-    def _wait_for_init_container(self, context, capsule, container,
-                                 timeout=3600):
-        def retry_if_result_is_false(result):
-            return result is False
+    def _run_init_members(self, context, capsule, volumes_of):
+        """Run the init containers in order, the way kubelet starts a pod.
 
-        def check_init_container_stopped():
+        A plain init container has to exit successfully before the next
+        member starts. A sidecar only has to have started, and goes on
+        running beside everything after it.
+        """
+        sidecars = []
+        for member in capsule.init_containers:
             self._stop_if_abandoned(capsule)
-            status = self._show_container(context, container).status
-            if status == consts.STOPPED:
-                self._refuse_a_failed_init(container)
-                return True
-            elif status == consts.RUNNING:
-                return False
+            if _is_sidecar(member):
+                self._start_sidecar(context, capsule, member, volumes_of,
+                                    sidecars)
+                sidecars.append(member)
             else:
-                raise exception.ZunException(
-                    _("Container has unexpected status: %s") % status)
+                self._run_init_container(context, capsule, member,
+                                         volumes_of, sidecars)
+        if capsule.status_reason:
+            # What was said about a failure that has since been retried away.
+            capsule.status_reason = None
+            capsule.save(context)
 
-        # Capped: uncapped, the doubling had an init container that ran for
-        # two minutes noticed at 255 seconds, and a delete would be noticed
-        # no sooner.
-        r = tenacity.Retrying(
-            stop=tenacity.stop_after_delay(timeout),
-            wait=tenacity.wait_exponential(max=INIT_CONTAINER_POLL_MAX),
-            retry=tenacity.retry_if_result(retry_if_result_is_false))
-        # Not r.call(): deprecated in tenacity 7 and removed in 8. Not
-        # r(...) either: Retrying is only callable since 7, and 6 is still
-        # allowed. wraps() works across all of them.
-        r.wraps(check_init_container_stopped)()
+    def _run_init_container(self, context, capsule, member, volumes_of,
+                            sidecars):
+        """Run one init container until it succeeds, as restartPolicy says.
 
-    @staticmethod
-    def _refuse_a_failed_init(container):
-        """Stop the create at an init container that failed, as a pod does.
+        Never ends the create at the first failure. OnFailure and Always run
+        it again with kubelet's back-off, for as long as it takes: the capsule
+        stays Creating with the failure in its status reason, and a delete
+        interrupts the wait. ⚠️ Giving up instead reads as a failed pod to a
+        Deployment, which makes another one straight away, and that one fails
+        the same way.
 
         An exit that could not be read leaves the detail empty, and is not
         read as a failure: a runtime that could not be asked says nothing
         about the container.
         """
-        detail = container.status_detail or ''
-        if detail.startswith('exit:') and detail != 'exit:0':
-            raise exception.ZunException(
-                _("Init container %(name)s failed with %(detail)s")
-                % {'name': container.name, 'detail': detail})
+        failures = 0
+        while True:
+            # ⚠️ The exit of an earlier run -- a retry, or a sandbox rebuilt
+            # with exit:0 on the record -- is only cleared by seeing this one
+            # run, and a run over between two looks would be judged by it.
+            member.status_detail = None
+            member.exit_code = None
+            self._create_container(context, capsule, member,
+                                   volumes_of(member))
+            self._wait_for_init_container(context, capsule, member, sidecars)
+            member.save(context)
+            detail = member.status_detail or ''
+            if not detail.startswith('exit:') or detail == 'exit:0':
+                return
+            words = {'name': member.name, 'detail': detail}
+            # ⚠️ kubezun finds the exit code in this sentence: keep "Init
+            # container <name> failed with exit:<code>".
+            if not self._capsule_restarts(capsule):
+                raise exception.ZunException(
+                    _("Init container %(name)s failed with %(detail)s")
+                    % words)
+            failures += 1
+            self._wait_to_retry(
+                context, capsule, sidecars, _init_backoff(failures),
+                _("Init container %(name)s failed with %(detail)s") % words)
+            self._discard_for_retry(member)
+
+    def _start_sidecar(self, context, capsule, member, volumes_of, sidecars):
+        """Start a native sidecar, returning once it counts as started.
+
+        Started means its startup probe passed, or with no probe that it was
+        started. Whatever the capsule's restartPolicy, a sidecar that fails
+        here is run again rather than failing the capsule, as kubelet does.
+        """
+        healthcheck = dict(member.healthcheck or {})
+        # A rebuild starts it over; only the tally carries across.
+        healthcheck['k8s_probe_state'] = {'restarts': _restart_count(member)}
+        member.healthcheck = healthcheck
+        failures = 0
+        while True:
+            self._create_container(context, capsule, member,
+                                   volumes_of(member))
+            member.status = consts.RUNNING
+            member.status_detail = None
+            self._record_start(member)
+            member.save(context)
+            if self._sidecar_started(context, capsule, member, sidecars):
+                return
+            failures += 1
+            self._wait_to_retry(
+                context, capsule, sidecars, _init_backoff(failures),
+                _("Sidecar container %s did not start") % member.name)
+            self._discard_for_retry(member)
+
+    def _sidecar_started(self, context, capsule, member, sidecars):
+        """Run a sidecar's startup probe until it passes or gives up.
+
+        Not check_probes: that serves running capsules on its own clock, and
+        restarts under the capsule's lock, which this create already holds.
+        """
+        probe = ((member.healthcheck or {}).get('k8s_probes') or
+                 {}).get('startupProbe')
+        if not probe:
+            return True
+        state = dict(member.healthcheck.get('k8s_probe_state') or {})
+        while True:
+            self._stop_if_abandoned(capsule)
+            if self._show_container(context, member).status != consts.RUNNING:
+                return False
+            now = time.time()
+            if self._probe_due(state, 'startup', probe, member, now):
+                self._schedule_next(state, 'startup', probe, now)
+                if self._probe_passed(member, probe, state, 'startup'):
+                    state['startup_passed'] = True
+                    self._save_probe_state(context, member, state)
+                    return True
+                self._save_probe_state(context, member, state)
+                if self._probe_failed_enough(probe, state, 'startup'):
+                    return False
+            self._tend_sidecars(context, capsule, sidecars)
+            time.sleep(CONF.probe_check_interval)
+
+    def _wait_to_retry(self, context, capsule, sidecars, delay, why):
+        """Say why the capsule is still Creating, and wait out the back-off.
+
+        In short steps, so a delete does not have to wait for it.
+        """
+        capsule.status_reason = (_("%(why)s; trying again in %(delay)d "
+                                   "seconds") % {'why': why, 'delay': delay})
+        capsule.save(context)
+        LOG.info("Capsule %(uuid)s: %(reason)s",
+                 {'uuid': capsule.uuid, 'reason': capsule.status_reason})
+        while delay > 0:
+            self._stop_if_abandoned(capsule)
+            self._tend_sidecars(context, capsule, sidecars)
+            step = min(delay, INIT_CONTAINER_POLL_MAX)
+            time.sleep(step)
+            delay -= step
+        self._stop_if_abandoned(capsule)
+
+    def _discard_for_retry(self, member):
+        """Clear the way for a member's next attempt.
+
+        A CRI container runs once. The next one is told the next attempt
+        number, the same tally a restart keeps, so a pod reports it too.
+        """
+        healthcheck = dict(member.healthcheck or {})
+        healthcheck['k8s_probe_state'] = {
+            'restarts': _restart_count(member) + 1}
+        member.healthcheck = healthcheck
+        try:
+            self.runtime_stub.StopContainer(
+                api_pb2.StopContainerRequest(
+                    container_id=member.container_id, timeout=10))
+            self._remove_container(member.container_id)
+        except grpc.RpcError as e:
+            # Its next attempt has a name of its own, so this costs disk only.
+            LOG.warning("Could not remove container %(id)s before trying "
+                        "again: %(err)s",
+                        {'id': member.container_id, 'err': e})
+
+    def _tend_sidecars(self, context, capsule, sidecars):
+        """Restart a sidecar that exited while the capsule is starting.
+
+        The sweep restarts them once the capsule runs, but skips a capsule
+        in Creating, and the init container a sidecar serves is what needs it
+        now. The time of the last restart is kept with the tally for back-off.
+        """
+        for member in sidecars:
+            try:
+                self._show_container(context, member)
+                if member.status == consts.RUNNING:
+                    continue
+                state = (member.healthcheck or {}).get('k8s_probe_state') or {}
+                restarts = _restart_count(member)
+                last = state.get('last_restart')
+                if last and (time.time() - last < _init_backoff(restarts)):
+                    continue
+                LOG.info("Sidecar container %(id)s exited (%(detail)s) while "
+                         "capsule %(uuid)s starts; restarting it",
+                         {'id': member.uuid, 'detail': member.status_detail,
+                          'uuid': capsule.uuid})
+                if not self._restart_container(context, capsule, member):
+                    continue
+                healthcheck = dict(member.healthcheck or {})
+                healthcheck['k8s_probe_state'] = {
+                    'restarts': _restart_count(member),
+                    'last_restart': time.time()}
+                member.healthcheck = healthcheck
+                member.status = consts.RUNNING
+                member.status_detail = None
+                self._record_start(member)
+                member.save(context)
+            except Exception as e:
+                # Its own look at it next round; the init container this is
+                # waiting on is what decides the capsule.
+                LOG.warning("Could not look after sidecar container %(id)s: "
+                            "%(err)s", {'id': member.uuid, 'err': e})
+
+    def _capsule_restarts(self, capsule):
+        policy = capsule.restart_policy or {}
+        return policy.get('Name') in self.RESTARTING_POLICIES
+
+    def _wait_for_init_container(self, context, capsule, container,
+                                 sidecars=()):
+        """Wait for an init container to stop, however long that takes.
+
+        A pod puts no limit on this either. The wait holds no thread of the
+        operation pool, and a delete interrupts it.
+        """
+        # Capped: uncapped, the doubling had an init container that ran for
+        # two minutes noticed at 255 seconds, and a delete would be noticed
+        # no sooner.
+        delay = 1
+        while True:
+            self._stop_if_abandoned(capsule)
+            try:
+                status = self._show_container(context, container).status
+            except grpc.RpcError as e:
+                # containerd restarting: the container is still there, and
+                # failing the capsule for it would throw its work away.
+                LOG.warning("Could not read init container %(id)s: %(err)s",
+                            {'id': container.container_id, 'err': e})
+                status = consts.RUNNING
+            if status == consts.STOPPED:
+                return
+            if status != consts.RUNNING:
+                raise exception.ZunException(
+                    _("Container has unexpected status: %s") % status)
+            self._tend_sidecars(context, capsule, sidecars)
+            time.sleep(delay)
+            delay = min(delay * 2, INIT_CONTAINER_POLL_MAX)
 
     def _show_container(self, context, container):
         container_id = container.container_id
@@ -2244,8 +2461,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         ever learns the workload is gone.
         """
         for capsule in capsules:
-            if capsule.status in (consts.CREATING, consts.DELETING,
-                                  consts.DELETED):
+            if capsule.status in (consts.CREATING, consts.REBUILDING,
+                                  consts.DELETING, consts.DELETED):
                 # Mid-operation; the operation itself owns the status.
                 continue
 
@@ -2259,11 +2476,19 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             aggregate = members is not None
             if not aggregate:
                 members = [capsule]
+            mains = len(members)
+            # Looked after as the others are, but they do not decide the
+            # capsule's status: a sidecar between restarts is a running pod.
+            sidecars = _sidecars_of(capsule) if aggregate else []
 
             changed = False
             running = 0
             counted = 0
-            for container in members:
+            for index, container in enumerate(list(members) + sidecars):
+                if capsule.status == consts.REBUILDING:
+                    # A member's restart found the sandbox dead and handed
+                    # the capsule to a rebuild, which owns it from here.
+                    break
                 old_status = container.status
                 old_started = container.started_at
                 try:
@@ -2306,9 +2531,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     # the new run, which is what the accounting below sees.
                     pass
 
-                counted += 1
-                if container.status == consts.RUNNING:
-                    running += 1
+                if index < mains:
+                    counted += 1
+                    if container.status == consts.RUNNING:
+                        running += 1
                 if container.status != old_status:
                     LOG.info("Container %(id)s changed from %(old)s to "
                              "%(new)s",
@@ -2322,9 +2548,15 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     # be re-read and re-lost every sweep.
                     container.save(context)
 
+            if capsule.status == consts.REBUILDING:
+                continue
+
             if not counted or not aggregate:
                 # Nothing to roll up: a lone container already saved itself.
                 continue
+
+            if sidecars and self._mains_finished(members):
+                self._stop_sidecars(context, sidecars)
 
             # The capsule is only running while all of its containers are: a
             # capsule reported Running with a dead container inside it is the
@@ -2339,6 +2571,48 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             if changed:
                 capsule.save(context)
 
+    @staticmethod
+    def _mains_finished(members):
+        """Whether none of a capsule's main containers will run again."""
+        for member in members:
+            if member.status != consts.STOPPED:
+                return False
+            policy = member.restart_policy or {}
+            name = policy.get('Name')
+            if name in ('always', 'unless-stopped'):
+                return False
+            if name == 'on-failure':
+                code = member.exit_code
+                limit = int(policy.get('MaximumRetryCount') or 0)
+                if (code is not None and int(code) != 0 and
+                        (not limit or _restart_count(member) < limit)):
+                    return False
+        return True
+
+    def _stop_sidecars(self, context, sidecars):
+        """Stop sidecars in reverse order: what they served has finished.
+
+        A pod with a sidecar still completes, which is the point of native
+        sidecars. The owner's mark keeps the sweep from restarting them.
+        """
+        for member in reversed(sidecars):
+            if (member.status != consts.RUNNING or
+                    member.status_detail == self.STOPPED_BY_OWNER):
+                continue
+            LOG.info("Stopping sidecar container %s: the capsule's main "
+                     "containers have finished", member.uuid)
+            try:
+                self.runtime_stub.StopContainer(
+                    api_pb2.StopContainerRequest(
+                        container_id=member.container_id, timeout=10))
+            except grpc.RpcError as e:
+                LOG.warning("Could not stop sidecar container %(id)s: %(err)s",
+                            {'id': member.uuid, 'err': e})
+                continue
+            member.status = consts.STOPPED
+            member.status_detail = self.STOPPED_BY_OWNER
+            member.save(context)
+
     def check_probes(self, context, capsules):
         """Run any probe that is due.
 
@@ -2351,7 +2625,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         for capsule in capsules:
             if capsule.status != consts.RUNNING:
                 continue
-            for container in capsule.containers:
+            sidecars = _sidecars_of(capsule)
+            for container in list(capsule.containers) + sidecars:
                 if container.status != consts.RUNNING:
                     continue
                 try:
@@ -2643,13 +2918,16 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 # crashed. CreateContainer in a dead sandbox is refused, so
                 # restarting the one container would retry into the same
                 # refusal every sweep, forever.
-                try:
-                    self._rebuild_capsule(context, capsule)
-                except Exception as e:
-                    LOG.error("Could not rebuild capsule %(id)s after its "
-                              "sandbox died: %(err)s",
-                              {'id': capsule.uuid, 'err': e})
+                sidecars = _sidecars_of(capsule)
+                if container.uuid in [m.uuid for m in sidecars]:
+                    # Whether the pod comes back is its main containers' call
+                    # under its own policy. A sidecar always says yes, and
+                    # would rerun a pod that had finished.
                     return False
+                capsule.status = consts.REBUILDING
+                capsule.save(context)
+                self._rebuild_in_background(context, capsule.uuid)
+                return False
             elif not self._restart_container(context, capsule, container):
                 return False
             # The replacement is created and started; the record still
@@ -2674,6 +2952,64 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         except grpc.RpcError:
             return False
         return resp.status.state == api_pb2.SANDBOX_READY
+
+    def resume_capsule(self, context, capsule, on_done):
+        """Pick up a capsule a zun-compute restart caught starting.
+
+        Its thread died with the service. The sandbox on record is replaced
+        and everything run again, the way kubelet treats a sandbox it cannot
+        vouch for. Returns False when there is no sandbox to go by.
+        """
+        if not capsule.container_id:
+            self._undo_create(context, capsule)
+            return False
+        self._rebuild_in_background(context, capsule.uuid, on_done)
+        return True
+
+    def _rebuild_in_background(self, context, uuid, on_done=None):
+        """Hand a rebuild to a thread of its own.
+
+        ⚠️ Not on the sweep: a rebuild runs the init containers again, so it
+        takes as long as they do, and the sweep is every capsule on the node.
+        Started from the REBUILDING status it leaves on the record, so a
+        zun-compute restart finds it (resume_capsule) and the sweep skips it.
+        """
+        utils.spawn_worker(self._rebuild_under_lock, context, uuid, on_done)
+
+    def _rebuild_under_lock(self, context, uuid, on_done):
+        with lockutils.lock(uuid, lock_file_prefix=consts.NAME_PREFIX):
+            try:
+                # Its own copy: the sweep is still reading the one it holds.
+                capsule = objects.Capsule.get_by_uuid(context, uuid)
+            except exception.ContainerNotFound:
+                return
+            if (capsule.status not in (consts.REBUILDING, consts.CREATING)
+                    or self._being_deleted(capsule)):
+                return
+            try:
+                self._rebuild_capsule(context, capsule)
+            except exception.CapsuleCreateAbandoned:
+                # The delete queued behind this lock takes it from here.
+                LOG.info("Rebuild of capsule %s stopped for its delete", uuid)
+                return
+            except Exception as e:
+                LOG.error("Could not rebuild capsule %(id)s: %(err)s",
+                          {'id': uuid, 'err': e})
+                if on_done:
+                    self._undo_create(context, capsule)
+                    on_done(capsule, e)
+                else:
+                    # Still dead, and the sweep tries again from this.
+                    capsule.status = consts.STOPPED
+                    capsule.save(context)
+                return
+            if on_done:
+                on_done(capsule, None)
+
+    @staticmethod
+    def _being_deleted(capsule):
+        return (capsule.status in (consts.DELETING, consts.DELETED)
+                or capsule.task_state == consts.CONTAINER_DELETING)
 
     def _rebuild_capsule(self, context, capsule):
         """Rebuild a capsule whose sandbox itself died, keeping its address.
@@ -2723,16 +3059,15 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 % capsule.uuid)
         self._create_pod_sandbox(context, capsule, requested_networks)
         capsule.save(context)
-        for member in list(capsule.init_containers or []):
-            volumes = {member.uuid: objects.VolumeMapping.list_by_container(
+
+        def volumes_of(member):
+            return {member.uuid: objects.VolumeMapping.list_by_container(
                 context, member.uuid)}
-            self._stop_if_abandoned(capsule)
-            self._create_container(context, capsule, member, volumes)
-            self._wait_for_init_container(context, capsule, member)
-            member.save(context)
+
+        self._run_init_members(context, capsule, volumes_of)
         for member in list(capsule.containers or []):
-            volumes = {member.uuid: objects.VolumeMapping.list_by_container(
-                context, member.uuid)}
+            self._stop_if_abandoned(capsule)
+            volumes = volumes_of(member)
             healthcheck = dict(member.healthcheck or {})
             state = dict(healthcheck.get('k8s_probe_state') or {})
             state['restarts'] = _restart_count(member) + 1
@@ -2744,6 +3079,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             self._record_start(member)
             member.save(context)
         capsule.status = consts.RUNNING
+        capsule.task_state = None
+        if not capsule.started_at:
+            capsule.started_at = timeutils.utcnow()
         capsule.save(context)
 
     def _restart_for_probe(self, context, capsule, container):
@@ -4144,8 +4482,31 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         pod_id = capsule.container_id
         if not pod_id:
             return
+        if not force:
+            self._stop_in_pod_order(capsule)
         self._delete_sandbox(context, capsule, pod_id)
         self._delete_neutron_ports(context, capsule)
+
+    def _stop_in_pod_order(self, capsule):
+        """Stop main containers first and sidecars last, in reverse order.
+
+        A sidecar outlives what it serves. Only with sidecars: stopping the
+        sandbox stops everything at once, which is enough without them.
+        """
+        sidecars = _sidecars_of(capsule)
+        if not sidecars:
+            return
+        for member in list(capsule.containers or []) + sidecars[::-1]:
+            if not member.container_id:
+                continue
+            try:
+                self.runtime_stub.StopContainer(
+                    api_pb2.StopContainerRequest(
+                        container_id=member.container_id, timeout=10))
+            except grpc.RpcError as e:
+                # Removal is the goal, and the sandbox's stop follows anyway.
+                LOG.debug("Container %(id)s did not stop in order: %(err)s",
+                          {'id': member.container_id, 'err': e})
 
     def _delete_sandbox(self, context, owner, pod_id):
         """Stop and remove a sandbox, whether it held one container or many.

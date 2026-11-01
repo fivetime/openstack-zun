@@ -10,6 +10,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import json
 from unittest import mock
 from unittest.mock import patch
 
@@ -263,7 +264,7 @@ class TestCapsuleController(api_base.FunctionalTest):
             self, mock_neutron_get_network, mock_container_create):
         # The same fields as a main container: unlisted in the schema, these
         # went straight into the record, and the driver honours privileged.
-        for field in ('"privileged": true', '"restartPolicy": "Always"',
+        for field in ('"privileged": true', '"restartPolicy": "OnFailure"',
                       '"runtime": "runc"'):
             params = ('{"template": {"kind": "capsule", "spec": {'
                       ' "initContainers": [{"image": "test-init", %s}],'
@@ -274,6 +275,79 @@ class TestCapsuleController(api_base.FunctionalTest):
                                  expect_errors=True)
             self.assertEqual(400, response.status_int, field)
         self.assertFalse(mock_container_create.called)
+
+    def _post_with_init(self, init, containers=None, policy='Always'):
+        return self.post(
+            '/v1/capsules/',
+            params=json.dumps({'template': {
+                'kind': 'capsule',
+                'metadata': {'name': 'capsule-example'},
+                'spec': {'restartPolicy': policy,
+                         'initContainers': init,
+                         'containers': containers or [{'image': 'test'}]},
+            }}),
+            content_type='application/json', expect_errors=True)
+
+    @staticmethod
+    def _res(cpu, memory):
+        return {'requests': {'cpu': cpu, 'memory': memory}}
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_a_sidecar_is_recorded_by_its_restart_policy(
+            self, mock_neutron_get_network, mock_container_create):
+        response = self._post_with_init(
+            [{'image': 'plain'},
+             {'image': 'sidecar', 'restartPolicy': 'Always'}])
+        self.assertEqual(202, response.status_int)
+        capsule = objects.Capsule.list(self.context)[0]
+        by_image = {c.image: c.restart_policy
+                    for c in capsule.init_containers}
+        self.assertEqual({'MaximumRetryCount': '0', 'Name': 'always'},
+                         by_image['sidecar'])
+        self.assertEqual({'MaximumRetryCount': '10', 'Name': 'on-failure'},
+                         by_image['plain'])
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_an_init_container_keeps_its_policy_to_itself(
+            self, mock_neutron_get_network, mock_container_create):
+        # It reached the main container, whose `always` became on-failure:10.
+        self.assertEqual(202, self._post_with_init(
+            [{'image': 'plain'}]).status_int)
+        capsule = objects.Capsule.list(self.context)[0]
+        self.assertEqual({'MaximumRetryCount': '0', 'Name': 'always'},
+                         capsule.containers[0].restart_policy)
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_probes_are_for_sidecars(
+            self, mock_neutron_get_network, mock_container_create):
+        probe = {'exec': {'command': ['true']}}
+        response = self._post_with_init(
+            [{'image': 'plain', 'startupProbe': probe}])
+        self.assertEqual(400, response.status_int)
+        self.assertFalse(mock_container_create.called)
+        response = self._post_with_init(
+            [{'image': 'sidecar', 'restartPolicy': 'Always',
+              'startupProbe': probe}])
+        self.assertEqual(202, response.status_int)
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_a_sidecar_counts_as_kubernetes_counts_it(
+            self, mock_neutron_get_network, mock_container_create):
+        # The pod resources formula: sidecar 1/100 runs beside main 2/200,
+        # and beside the init container 4/1024 that starts after it.
+        response = self._post_with_init(
+            [{'image': 'sidecar', 'restartPolicy': 'Always',
+              'resources': self._res(1, 100)},
+             {'image': 'plain', 'resources': self._res(4, 1024)}],
+            [{'image': 'main', 'resources': self._res(2, 200)}])
+        self.assertEqual(202, response.status_int)
+        capsule = objects.Capsule.list(self.context)[0]
+        self.assertEqual(5, capsule.cpu)
+        self.assertEqual('1124', capsule.memory.rstrip('M'))
 
     @patch('zun.compute.api.API.container_create')
     @patch('zun.network.neutron.NeutronAPI.get_available_network')

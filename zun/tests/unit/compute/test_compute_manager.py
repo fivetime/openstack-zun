@@ -162,6 +162,7 @@ class TestManager(base.TestCase):
                                   calls.restore), \
                 mock.patch.object(mgr, 'container_delete', calls.delete), \
                 mock.patch.object(mgr, 'container_start', calls.start), \
+                mock.patch.object(mgr, '_resume_capsules'), \
                 mock.patch.object(manager.CONF.compute,
                                   'resume_container_state', True):
             mgr.init_containers(self.context)
@@ -777,7 +778,11 @@ class TestManager(base.TestCase):
         mock_init_container_list.return_value = [init_container]
         mock_pull.return_value = image, False
         mock_is_volume_available.return_value = True, False
-        mock_spawn_n.side_effect = lambda f, *x, **y: f(*x, **y)
+        # With an init container: a thread of its own, not one of the pool.
+        worker = mock.patch('zun.common.utils.spawn_worker',
+                            side_effect=lambda f, *x, **y: f(*x, **y))
+        worker.start()
+        self.addCleanup(worker.stop)
         capsule.status = 'Running'
         self.compute_manager._resource_tracker = FakeResourceTracker()
         networks = []

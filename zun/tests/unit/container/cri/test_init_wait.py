@@ -56,8 +56,13 @@ class InitWaitTest(base.TestCase):
                                           [{'network': 'net-1'}], {})
 
     def _exits(self, detail):
-        self.init.status_detail = detail
-        return mock.Mock(status=consts.STOPPED, status_detail=detail)
+        answer = mock.Mock(status=consts.STOPPED, status_detail=detail)
+
+        def show(context, container):
+            container.status_detail = detail
+            return answer
+        self.show.side_effect = show
+        return answer
 
     def test_a_delete_ends_the_wait_and_undoes_the_create(self):
         def running_then_deleted(context, container):
