@@ -1248,6 +1248,8 @@ kubezoo-deploy 反馈原生 sidecar 跑不起来且能被滥用,查下来是几�
 - **巡检交错了驱动**(`2e7fbab1` 之后):容器驱动是 docker、胶囊驱动是 cri 的节点(默认配置,生产就是),`sync_container_state`
   把胶囊交给 docker 驱动,docker 找不到这些 id,什么都不做。所以这种节点上 CRI 巡检从没跑过:退出不记录、重启策略不生效、
   沙箱死了不重建。生产实测 sidecar 被杀后不重启才发现。现在胶囊交给胶囊驱动。
+- **运行中的 init 记录是 Running**(kubezun 报的):原来一直 Creating,上层分不清"还在初始化"和"卡住",kubezun 的超时因此误判。
+  exec 改为按成员状态判断(胶囊 Creating/Stopped 时),可以进运行中的 init 和 sidecar,同 pod。
 - **顺手修的**:`_find_container` 把两种列表字段直接相加,带 init 的胶囊按 container 查日志/exec 都 500(kubezun 报的)。
   `always` 胶囊只要有 init,主容器的策略被改成 `on-failure:10`(API 循环里覆盖了共享变量),主容器正常退出
   后不重启。

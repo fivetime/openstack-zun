@@ -39,6 +39,7 @@ class InitWaitTest(base.TestCase):
                                  init_containers=[self.init])
         self.create_container = self._patch('_create_container')
         self._patch('_create_pod_sandbox')
+        self._patch('_record_start')
         self.undo = self._patch('_undo_create')
         self.show = self._patch('_show_container')
         sleep = mock.patch('tenacity.nap.time.sleep')

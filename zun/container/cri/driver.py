@@ -1618,6 +1618,12 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             member.exit_code = None
             self._create_container(context, capsule, member,
                                    volumes_of(member))
+            # As kubelet reports it. It is also how anyone above can tell a
+            # capsule that is initializing, for as long as that takes, from
+            # one that is stuck, and when the first container started.
+            member.status = consts.RUNNING
+            self._record_start(member)
+            member.save(context)
             self._wait_for_init_container(context, capsule, member, sidecars)
             member.save(context)
             detail = member.status_detail or ''

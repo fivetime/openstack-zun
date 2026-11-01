@@ -414,3 +414,18 @@ class ResumeTest(CapsuleStartBase):
         on_done, fresh = self._resume({'side_effect': err})
         self.undo.assert_called_once_with(self.context, fresh)
         on_done.assert_called_once_with(fresh, err)
+
+
+class RunningInitRecordTest(CapsuleStartBase):
+
+    def test_a_running_init_container_is_recorded_as_running(self):
+        # What says the sandbox is up and a pod is initializing rather than
+        # stuck, for as long as the init container takes.
+        saved = []
+        self.init.save.side_effect = lambda c: saved.append(self.init.status)
+        self.show.side_effect = lambda c, m: setattr(
+            m, 'status', consts.STOPPED) or setattr(
+            m, 'status_detail', 'exit:0') or m
+        self._create()
+        self.assertEqual(consts.RUNNING, saved[0])
+        self.assertEqual(consts.STOPPED, saved[-1])

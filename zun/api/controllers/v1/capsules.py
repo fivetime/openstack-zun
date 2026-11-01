@@ -730,9 +730,15 @@ class CapsuleController(base.Controller):
         """
         capsule = api_utils.get_resource('Capsule', capsule_ident)
         check_policy_on_capsule(capsule.as_dict(), "capsule:execute")
-        utils.validate_container_state(capsule, 'execute')
 
         target = self._find_container(capsule, container)
+        # By the member. An init container runs while its capsule is Creating
+        # and a sidecar can outlive a Stopped one, and as in a pod, that is
+        # when being let in is worth the most. Any other state of the capsule
+        # still decides: its sandbox is on its way out or gone.
+        if capsule.status not in (consts.CREATING, consts.STOPPED):
+            utils.validate_container_state(capsule, 'execute')
+        utils.validate_container_state(target, 'execute')
         command = kwargs.get('command')
         if not command:
             raise exception.Invalid(_('command is required'))

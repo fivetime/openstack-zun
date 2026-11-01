@@ -18,6 +18,7 @@ from oslo_utils import uuidutils
 from webtest.app import AppError
 
 from zun.api.controllers.v1 import capsules
+from zun.common import consts
 from zun.common import exception
 from zun.common import policies
 from zun import objects
@@ -875,3 +876,42 @@ class TestFindContainer(api_base.FunctionalTest):
         self.assertRaises(exception.Invalid,
                           capsules.CapsuleController._find_container,
                           self._capsule(), None)
+
+    def test_exec_goes_by_the_member_not_the_capsule(self):
+        # An init container runs while its capsule is Creating, and a pod
+        # lets you into it: that is how a stuck one gets looked at.
+        response, call = self._exec_into_init()
+        self.assertNotEqual(409, response.status_int)
+        call.assert_called_once()
+
+    def _exec_into_init(self):
+        capsule = self._capsule()
+        capsule.status = consts.CREATING
+        capsule.host = 'node-1'
+        self.init.status = consts.RUNNING
+        capsule.init_containers = [self.init]
+        with patch('zun.api.utils.get_resource', return_value=capsule), \
+                patch('zun.api.controllers.v1.capsules.'
+                      'check_policy_on_capsule'), \
+                patch('zun.compute.api.API.container_exec',
+                      return_value={'output': 'ok'}) as call:
+            response = self.post(
+                '/v1/capsules/%s/execute?container=%s&command=true&run=true'
+                % (capsule.uuid, self.init.uuid), expect_errors=True)
+        return response, call
+
+    def test_exec_into_a_member_that_has_stopped_is_refused(self):
+        capsule = self._capsule()
+        capsule.status = consts.RUNNING
+        capsule.host = 'node-1'
+        self.main.status = consts.STOPPED
+        capsule.containers = [self.main]
+        with patch('zun.api.utils.get_resource', return_value=capsule), \
+                patch('zun.api.controllers.v1.capsules.'
+                      'check_policy_on_capsule'), \
+                patch('zun.compute.api.API.container_exec') as call:
+            response = self.post(
+                '/v1/capsules/%s/execute?container=%s&command=true&run=true'
+                % (capsule.uuid, self.main.uuid), expect_errors=True)
+        self.assertEqual(409, response.status_int)
+        call.assert_not_called()
