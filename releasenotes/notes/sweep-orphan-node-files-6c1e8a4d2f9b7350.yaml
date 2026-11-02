@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    Compute nodes no longer keep the CNI lock, capsule log and capsule hosts
+    files of containers that no longer exist, including those left before
+    this release. A sweep every ``[compute] reclaim_node_resources_interval``
+    removes a file named after a uuid this host has no record of, once it has
+    gone an hour unwritten and two sweeps in a row found it unclaimed.

@@ -20,6 +20,7 @@ import os
 import threading
 import time
 
+from oslo_concurrency import lockutils
 from oslo_log import log as logging
 from oslo_service import periodic_task
 from oslo_utils import excutils
@@ -36,6 +37,7 @@ from zun.common.utils import wrap_container_event
 from zun.common.utils import wrap_exception
 from zun.compute import compute_node_tracker
 from zun.compute import container_actions
+from zun.compute import node_files
 from zun.compute import notifications
 import zun.conf
 from zun.container import driver as driver_module
@@ -63,6 +65,9 @@ LOG = logging.getLogger(__name__)
 #: is the other half. A tick that is not due returns immediately, so the
 #: only cost of a fine one is the asking.
 _REPORT_TICK = 5
+
+# Seconds a file has to go unwritten before a sweep looks at whose it is.
+ORPHAN_FILE_MIN_AGE = 3600
 
 
 def _names_a_registry(repository):
@@ -158,6 +163,7 @@ class Manager(periodic_task.PeriodicTasks):
         self._resource_tracker = None
         self._resource_tracker_lock = threading.Lock()
         self.reportclient = report.SchedulerReportClient()
+        self._unclaimed_files = set()
 
     def _get_driver(self, container):
         if (isinstance(container, objects.Capsule) or
@@ -2369,6 +2375,55 @@ class Manager(periodic_task.PeriodicTasks):
             return
 
         self._reclaim_orphan_mounts(volume_dir, live)
+
+    @periodic_task.periodic_task(
+        spacing=CONF.compute.reclaim_node_resources_interval)
+    @context.set_context
+    def reclaim_orphan_node_files(self, ctx):
+        """Remove lock, log and hosts files of containers that are gone.
+
+        ⚠️ Only what two sweeps in a row found unclaimed. The CNI daemon takes a
+        container's lock once more after the record has gone (see
+        _on_container_deleted), and a file unlinked under it would let the next
+        holder in beside it; the time between two sweeps is well past that.
+        """
+        try:
+            claimed = self._uuids_on_this_host(ctx)
+        except Exception as e:
+            # Unreadable reads as "nothing is claimed", which would remove the
+            # logs of every container on this node.
+            LOG.warning('Orphan file sweep skipped: could not list containers:'
+                        ' %s', str(e))
+            return
+
+        found = set()
+        for root, pattern in (
+                (lockutils.get_lock_path(CONF), node_files.LOCK),
+                (CONF.cri_log_root, node_files.LOG_FILE),
+                (CONF.cri_hosts_root, node_files.HOSTS_FILE)):
+            if root:
+                found |= node_files.unclaimed(root, pattern, claimed,
+                                              ORPHAN_FILE_MIN_AGE)
+        second_look = found & self._unclaimed_files
+        self._unclaimed_files = found - second_look
+        removed = node_files.remove(second_look)
+        if removed:
+            LOG.info('Removed %d files of containers that no longer exist',
+                     removed)
+
+    @staticmethod
+    def _uuids_on_this_host_of(capsules, containers):
+        claimed = {c.uuid for c in containers}
+        for capsule in capsules:
+            claimed.add(capsule.uuid)
+            claimed.update(m.uuid for m in capsule.containers or [])
+            claimed.update(m.uuid for m in capsule.init_containers or [])
+        return claimed
+
+    def _uuids_on_this_host(self, ctx):
+        return self._uuids_on_this_host_of(
+            objects.Capsule.list_by_host(ctx, self.host),
+            objects.Container.list_by_host(ctx, self.host))
 
     def _reclaim_orphan_mounts(self, volume_dir, live):
         try:
