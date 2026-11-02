@@ -118,6 +118,39 @@ def _capsule_uuid_of(context, child):
     return found[0].uuid if found else None
 
 
+def allocation_counts(obj):
+    """Whether what this object holds counts as held, for a reader.
+
+    Not whether it runs: a stopped container keeps its room on the node.
+    Left out are the first start, which nobody has had any use of yet, and
+    a first start that failed, whose create gave the allocation back though
+    the record keeps its host. A delete under way says nothing by itself, so
+    it goes by the same question.
+    """
+    if obj.status == consts.DELETED:
+        return False
+    if obj.status not in (consts.CREATING, consts.ERROR, consts.DELETING):
+        return True
+    members = [obj]
+    if _kind(obj) == 'capsule':
+        # A member started is enough: an init container is the workload
+        # already, however long it goes on failing.
+        members += _children(obj)
+    return any(m.started_at for m in members)
+
+
+def held(obj):
+    """What a meter should count this object as holding, or None.
+
+    Separate from cpu, memory and disk, which describe the object whatever
+    it holds: a reader of the notification still wants to know what was
+    asked for by something that never started.
+    """
+    if not allocation_counts(obj):
+        return None
+    return {'cpu': obj.cpu, 'memory': obj.memory, 'disk': obj.disk}
+
+
 def _payload(container, capsule_uuid=None, context=None):
     """The fields a meter is built from."""
     kind = _kind(container)
@@ -142,6 +175,8 @@ def _payload(container, capsule_uuid=None, context=None):
         'started_at': _stamp(container.started_at),
         'labels': container.labels,
     }
+    if kind in ('container', 'capsule'):
+        payload['held'] = held(container)
     if kind == 'capsule':
         payload['children'] = [c.uuid for c in _children(container)]
         payload['allocation_basis'] = CAPSULE_ALLOCATION_BASIS

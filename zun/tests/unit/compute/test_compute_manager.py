@@ -863,6 +863,32 @@ class TestManager(base.TestCase):
         mock_remove_usage.assert_called_once_with(self.context, container,
                                                   True)
 
+    def _held_on_delete(self, recorded_status, started_at=None):
+        container = Container(self.context, **utils.get_test_container())
+        container.status = consts.DELETING
+        record = Container(self.context, **utils.get_test_container())
+        record.status = recorded_status
+        record.started_at = started_at
+        mgr = self.compute_manager
+        with mock.patch.object(mgr, '_caught_up', return_value=True), \
+                mock.patch.object(mgr, '_fresh_record', return_value=record), \
+                mock.patch.object(mgr, '_do_container_delete',
+                                  return_value=(None, {})), \
+                mock.patch.object(manager.utils, 'spawn_n',
+                                  lambda f: f()), \
+                mock.patch.object(manager.notifications,
+                                  'notify') as notify:
+            mgr.container_delete(self.context, container)
+        return notify.call_args.kwargs['extra']['held']
+
+    def test_a_delete_counts_what_was_held_until_then(self):
+        held = self._held_on_delete(consts.STOPPED)
+        self.assertEqual(['cpu', 'disk', 'memory'], sorted(held))
+
+    def test_a_delete_of_what_gave_it_back_counts_nothing(self):
+        """The record, not the copy that says Deleting whatever it was."""
+        self.assertIsNone(self._held_on_delete(consts.ERROR))
+
     @mock.patch.object(FakeResourceTracker,
                        'remove_usage_from_container')
     @mock.patch.object(Container, 'destroy')

@@ -821,6 +821,12 @@ class Manager(periodic_task.PeriodicTasks):
         def do_it():
             if not self._caught_up(container):
                 return
+            # Before the work, and from the record: this copy says Deleting
+            # whatever it was, and afterwards Deleted. Something that never
+            # started, or gave its allocation back when it failed, has no
+            # last minute to count.
+            held = notifications.held(self._fresh_record(container) or
+                                      container)
             last, children = self._do_container_delete(
                 context, container, force)
             # Sent from here rather than inside, because the delete runs in
@@ -829,7 +835,8 @@ class Manager(periodic_task.PeriodicTasks):
             # learns the container finally went away.
             notifications.notify(
                 context, container, 'delete', 'end', host=self.host,
-                extra={'last_reading': last} if last else None,
+                extra=dict({'held': held},
+                           **({'last_reading': last} if last else {})),
                 children_extra={uuid: {'last_reading': reading}
                                 for uuid, reading in children.items()})
 
@@ -1747,8 +1754,7 @@ class Manager(periodic_task.PeriodicTasks):
                        if k.startswith('metering.')},
         }
         if capsule is None:
-            entry['allocation_counts'] = self._allocation_counts(
-                obj, container_type)
+            entry['allocation_counts'] = notifications.allocation_counts(obj)
         if container_type == 'capsule':
             entry['children'] = [c.uuid for c in
                                  list(obj.containers) +
@@ -1760,26 +1766,6 @@ class Manager(periodic_task.PeriodicTasks):
             entry['capsule_uuid'] = capsule.uuid
             entry['allocation_included_in_parent'] = True
         return entry
-
-    @staticmethod
-    def _allocation_counts(obj, container_type):
-        """Whether what this object holds counts as held, for a reader.
-
-        Not whether it runs: a stopped container keeps its room on the node.
-        Left out are the first start, which nobody has had any use of yet,
-        and a first start that failed, whose create gave the allocation back
-        though the record keeps its host.
-        """
-        if obj.status == consts.DELETED:
-            return False
-        if obj.status not in (consts.CREATING, consts.ERROR):
-            return True
-        members = [obj]
-        if container_type == 'capsule':
-            # A member started is enough: an init container is the workload
-            # already, however long it goes on failing.
-            members += list(obj.containers) + list(obj.init_containers)
-        return any(m.started_at for m in members)
 
     def _sample_kinds(self, context, kinds):
         readings = {}

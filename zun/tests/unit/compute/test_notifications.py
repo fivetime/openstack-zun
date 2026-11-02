@@ -405,3 +405,47 @@ class TestNothingWhenNothingListens(base.TestCase):
         mgr.driver.sample_counters.side_effect = RuntimeError('gone')
         with mock.patch.object(notifications, 'enabled', return_value=True):
             self.assertIsNone(mgr._last_reading({}, FakeContainer()))
+
+
+class TestWhatIsHeld(base.TestCase):
+    """What a meter counts, kept apart from what the object asked for."""
+
+    def _capsule(self, status, started=False):
+        from zun.common import consts
+        child = _fake('cc-1', consts.TYPE_CAPSULE_CONTAINER)
+        child.started_at = 'then' if started else None
+        capsule = _fake('cap-1', consts.TYPE_CAPSULE, containers=[child],
+                        init_containers=[])
+        capsule.status = status
+        capsule.started_at = None
+        return capsule
+
+    def test_a_stopped_one_holds_what_it_has(self):
+        container = FakeContainer()
+        container.status = 'Stopped'
+
+        self.assertEqual({'cpu': 1.0, 'memory': 512, 'disk': 10},
+                         notifications.held(container))
+
+    def test_a_first_start_holds_nothing_yet(self):
+        self.assertIsNone(notifications.held(self._capsule('Creating')))
+
+    def test_a_failed_first_start_gave_it_back(self):
+        self.assertIsNone(notifications.held(self._capsule('Error')))
+
+    def test_a_delete_under_way_goes_by_whether_it_ever_started(self):
+        self.assertIsNone(notifications.held(self._capsule('Deleting')))
+        self.assertIsNotNone(
+            notifications.held(self._capsule('Deleting', started=True)))
+
+    def test_a_member_started_is_enough(self):
+        self.assertIsNotNone(
+            notifications.held(self._capsule('Error', started=True)))
+
+    def test_only_what_is_billed_says_it(self):
+        from zun.common import consts
+        capsule = self._capsule('Running')
+
+        self.assertIn('held', notifications._payload(capsule))
+        self.assertNotIn('held', notifications._payload(
+            _fake('cc-1', consts.TYPE_CAPSULE_CONTAINER), capsule_uuid='c'))

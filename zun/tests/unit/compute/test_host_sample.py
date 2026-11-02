@@ -22,6 +22,7 @@ names its capsule and says its allocation is already counted there.
 import datetime
 from unittest import mock
 
+from zun.common import consts
 from zun.compute import manager
 from zun.container import driver as driver_module
 from zun.tests import base
@@ -51,7 +52,8 @@ class HostSampleTest(base.TestCase):
                                          'private': 'x'})
         self.child = _obj('cc-1')
         self.init = _obj('ci-1')
-        self.capsule = _obj('cap-1', containers=[self.child],
+        self.capsule = _obj('cap-1', container_type=consts.TYPE_CAPSULE,
+                            containers=[self.child],
                             init_containers=[self.init])
         p1 = mock.patch('zun.objects.Container.list_by_host',
                         return_value=[self.plain])

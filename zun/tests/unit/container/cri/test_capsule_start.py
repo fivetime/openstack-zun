@@ -429,3 +429,24 @@ class RunningInitRecordTest(CapsuleStartBase):
         self._create()
         self.assertEqual(consts.RUNNING, saved[0])
         self.assertEqual(consts.STOPPED, saved[-1])
+
+
+class DeleteDuringThePullTest(base.TestCase):
+    """A pull cannot be interrupted; what follows it can."""
+
+    def test_the_container_is_not_made_once_the_pull_returns(self):
+        drv = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        drv._abandoned = set()
+        drv.runtime_stub = mock.Mock()
+        capsule = mock.Mock(uuid='c-1')
+
+        def delete_arrives(context, container):
+            drv.abandon_create('c-1')
+
+        with mock.patch.object(drv, '_pull_image',
+                               side_effect=delete_arrives):
+            self.assertRaises(exception.CapsuleCreateAbandoned,
+                              drv._create_container, mock.Mock(), capsule,
+                              mock.Mock(), [])
+
+        drv.runtime_stub.CreateContainer.assert_not_called()

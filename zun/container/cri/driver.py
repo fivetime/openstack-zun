@@ -1343,6 +1343,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         """
         # pull image
         self._pull_image(context, container)
+        # A pull cannot be interrupted, and can be what a delete came in
+        # during. Starting the container now would run what nobody wants any
+        # more, on a capsule about to be billed for having started.
+        self._stop_if_abandoned(capsule)
 
         sandbox_config = self._get_sandbox_config(capsule)
         container_config = self._get_container_config(context, capsule, container,

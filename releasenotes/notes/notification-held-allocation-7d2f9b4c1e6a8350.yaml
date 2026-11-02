@@ -1,0 +1,13 @@
+---
+features:
+  - |
+    Container and capsule notifications now carry ``held``: the ``cpu``,
+    ``memory`` and ``disk`` the object counts as holding, or null when it
+    holds nothing that counts (a first start, a first start that failed).
+    The ``.end`` of a delete says what was held when the delete began.
+    Readers that bill from notifications should use it instead of ``cpu``,
+    ``memory`` and ``disk``, which describe the object whatever it holds.
+fixes:
+  - |
+    A capsule deleted while pulling an image is no longer started once the
+    pull returns.
