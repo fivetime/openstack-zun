@@ -1471,6 +1471,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
         lines = []
         partial = []
+        partial_stamp = b''
         for path in paths:
             try:
                 fd = open(path, 'rb')
@@ -1490,26 +1491,36 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     if (since is not None and stamp is not None and
                             stamp < since):
                         continue
-                    partial.append(text)
                     if is_partial:
+                        # The runtime ends every record with a newline, the
+                        # ones that split a line too: kept, it would come back
+                        # as two lines, the second with no timestamp.
+                        partial.append(text.rstrip(b'\n'))
+                        partial_stamp = raw.split(b' ', 1)[0]
                         continue
+                    partial.append(text)
                     line = b''.join(partial)
                     partial = []
                     if timestamps and stamp is not None:
                         line = raw.split(b' ', 1)[0] + b' ' + line
                     lines.append(line)
         if partial:
-            lines.append(b''.join(partial))
+            # The rest of it has not been written yet.
+            line = b''.join(partial) + b'\n'
+            if timestamps:
+                line = partial_stamp + b' ' + line
+            lines.append(line)
 
         if tail is not None and tail >= 0:
             lines = lines[-tail:] if tail else []
         return b''.join(lines)
 
     def rotate_logs(self):
-        """Move aside every log a running container has grown past the limit.
+        """Move aside every log that has grown past the limit.
 
-        A container that has stopped has no writer and cannot grow, so it is
-        left alone -- and the runtime refuses to reopen for one anyway.
+        Whether or not its container is running now: one that writes and dies
+        between two looks is never seen running, and it appends to the same
+        file each time it comes back. Only a running one has a writer to tell.
 
         Bounded between looks, not at every byte: a container can write past
         the limit for as long as the interval between two of these.
@@ -1523,33 +1534,63 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             return
         # Only now: the runtime has no way to ask for a container by its log
         # path, and on most looks nothing has reached the limit.
-        running = self.runtime_stub.ListContainers(
+        running, complete = self._running_by_log(root)
+        for uuid in wanted & set(running):
+            self._rotate_log(root, uuid, running[uuid])
+        idle = wanted - set(running)
+        if not complete or not idle:
+            # Not knowing whether it runs is not knowing it does not: moved
+            # aside with a writer and nobody to tell it, a file is written on
+            # with no name a later look would find.
+            return
+        moved = set()
+        for uuid in idle:
+            if self._push_log(root, uuid):
+                moved.add(uuid)
+        # One may have started since the listing, holding what was just moved.
+        # Starting after this point it opens the path afresh, which is fine.
+        running, _complete = self._running_by_log(root)
+        for uuid in moved & set(running):
+            self._reopen_log(root, uuid, running[uuid])
+
+    def _running_by_log(self, root):
+        """Running containers by the uuid in their log path, and if all known.
+        """
+        found = {}
+        complete = True
+        listed = self.runtime_stub.ListContainers(
             api_pb2.ListContainersRequest(filter=api_pb2.ContainerFilter(
                 state=api_pb2.ContainerStateValue(
                     state=api_pb2.CONTAINER_RUNNING))))
-        for item in running.containers:
-            if not wanted:
-                break
+        for item in listed.containers:
             try:
                 status = self.runtime_stub.ContainerStatus(
                     api_pb2.ContainerStatusRequest(
                         container_id=item.id)).status
             except grpc.RpcError as e:
+                complete = False
                 LOG.debug('No status for container %(id)s: %(err)s',
                           {'id': item.id, 'err': e})
                 continue
             uuid = logfiles.uuid_of(root, status.log_path)
-            if uuid in wanted:
-                wanted.discard(uuid)
-                self._rotate_log(root, uuid, item.id)
+            if uuid:
+                found[uuid] = item.id
+        return found, complete
 
-    def _rotate_log(self, root, uuid, container_id):
+    def _push_log(self, root, uuid):
         try:
             logfiles.push(root, uuid, CONF.cri_log_max_files)
+            return True
         except OSError as e:
             LOG.warning('Could not rotate the log of %(uuid)s: %(err)s',
                         {'uuid': uuid, 'err': e})
-            return
+            return False
+
+    def _rotate_log(self, root, uuid, container_id):
+        if self._push_log(root, uuid):
+            self._reopen_log(root, uuid, container_id)
+
+    def _reopen_log(self, root, uuid, container_id):
         try:
             self.runtime_stub.ReopenContainerLog(
                 api_pb2.ReopenContainerLogRequest(container_id=container_id))

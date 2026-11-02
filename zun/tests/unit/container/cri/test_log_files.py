@@ -164,11 +164,33 @@ class RotateTest(LogFilesBase):
         request = self.driver.runtime_stub.ListContainers.call_args[0][0]
         self.assertEqual(api_pb2.CONTAINER_RUNNING, request.filter.state.state)
 
-    def test_stopped_container_is_left_alone(self):
+    def test_stopped_container_is_moved_aside_with_nobody_to_tell(self):
+        # A crash loop writes between looks and is rarely seen running.
+        self._write('stopped.log', b'x' * self.limit)
+        self.driver.rotate_logs()
+        self.assertEqual(['stopped.log.1'], self._names())
+        self.driver.runtime_stub.ReopenContainerLog.assert_not_called()
+
+    def test_started_during_the_move_is_told_to_reopen(self):
+        self._write('stopped.log', b'x' * self.limit)
+        stub = self.driver.runtime_stub
+        now_running = mock.Mock(containers=[mock.Mock(id='id-9')])
+        stub.ListContainers.side_effect = [mock.Mock(containers=[]),
+                                           now_running]
+        stub.ContainerStatus.side_effect = lambda request: mock.Mock(
+            status=mock.Mock(log_path=logfiles.current(self.root, 'stopped')))
+        self.driver.rotate_logs()
+        stub.ReopenContainerLog.assert_called_once_with(
+            api_pb2.ReopenContainerLogRequest(container_id='id-9'))
+
+    def test_unknown_status_leaves_a_stopped_looking_one_alone(self):
+        # It might be running: moved with nobody telling it, the file would
+        # be written on under a name no later look finds.
+        self._running({'gone': 'id-0'})
+        self.driver.runtime_stub.ContainerStatus.side_effect = _Refused()
         self._write('stopped.log', b'x' * self.limit)
         self.driver.rotate_logs()
         self.assertEqual(['stopped.log'], self._names())
-        self.driver.runtime_stub.ReopenContainerLog.assert_not_called()
 
     def test_keeps_no_more_than_max_files(self):
         self._write('running.log', b'new' + b'x' * self.limit)
@@ -240,6 +262,35 @@ class ReadAcrossRotationTest(LogFilesBase):
     def test_between_rename_and_reopen_only_the_rotated_file_exists(self):
         self._write('u.log.1', _line('one'))
         self.assertEqual(b'one\n', self._show())
+
+    def _split(self, *records):
+        return b''.join(records)
+
+    def test_a_split_line_comes_back_as_one(self):
+        self._write('u.log', self._split(
+            b'2026-11-02T00:00:00.1Z stdout P 12 first \n',
+            b'2026-11-02T00:00:00.2Z stdout P middle \n',
+            b'2026-11-02T00:00:00.3Z stdout F last\n',
+            _line('next')))
+        self.assertEqual(b'12 first middle last\nnext\n', self._show())
+
+    def test_a_split_line_keeps_one_timestamp(self):
+        self._write('u.log', self._split(
+            b'2026-11-02T00:00:00.1Z stdout P first \n',
+            b'2026-11-02T00:00:00.2Z stdout F last\n'))
+        self.assertEqual(b'2026-11-02T00:00:00.2Z first last\n',
+                         self._show(timestamps=True))
+
+    def test_a_line_split_across_a_rotation_is_rejoined(self):
+        self._write('u.log.1', b'2026-11-02T00:00:00.1Z stdout P first \n')
+        self._write('u.log', b'2026-11-02T00:00:00.2Z stdout F last\n')
+        self.assertEqual(b'first last\n', self._show())
+
+    def test_a_line_still_being_written_is_stamped_and_terminated(self):
+        # Everything a follower gets must carry a timestamp to place it by.
+        self._write('u.log', b'2026-11-02T00:00:00.1Z stdout P first\n')
+        self.assertEqual(b'2026-11-02T00:00:00.1Z first\n',
+                         self._show(timestamps=True))
 
     def test_no_file_is_empty_output(self):
         self.assertEqual(b'', self._show())
