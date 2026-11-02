@@ -214,8 +214,30 @@ Interdependencies to other options:
     cfg.StrOpt('cri_log_root',
                default='/var/log/zun/capsules',
                help='Directory the runtime writes capsule container logs to. '
-                    'Nothing prunes it, so on a busy compute node give it a '
-                    'filesystem that can be rotated independently.'),
+                    'A container\'s files are removed with it, and rotated '
+                    'while it runs by cri_log_max_size.'),
+    cfg.IntOpt('cri_log_max_size',
+               default=10,
+               min=0,
+               help='MiB a capsule container\'s log may reach before it is '
+                    'moved aside and a new file started; 0 never rotates. '
+                    'What a container may keep is this times '
+                    'cri_log_max_files, and every file kept is read back for '
+                    'a logs request, so raising either makes each such '
+                    'request larger. A container can write past it for up to '
+                    'cri_log_rotate_interval.'),
+    cfg.IntOpt('cri_log_max_files',
+               default=2,
+               min=2,
+               help='Log files kept per capsule container, counting the one '
+                    'being written. Not below 2: the runtime is still writing '
+                    'to the old file until it has reopened the new one.'),
+    cfg.IntOpt('cri_log_rotate_interval',
+               default=10,
+               min=1,
+               help='Seconds between looks at the size of capsule container '
+                    'logs. A look that finds nothing costs one directory '
+                    'listing.'),
     cfg.StrOpt('cri_sandbox_cgroup_parent',
                default='zun.slice',
                help='Cgroup slice each capsule sandbox is placed under, one '

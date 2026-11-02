@@ -2302,6 +2302,24 @@ class Manager(periodic_task.PeriodicTasks):
                             '%(err)s',
                             {'drv': type(drv).__name__, 'err': e})
 
+    @periodic_task.periodic_task(spacing=_REPORT_TICK, run_immediately=False)
+    @context.set_context
+    def rotate_container_logs(self, ctx):
+        """Keep a running container's log from growing without bound.
+
+        The interval is checked here rather than given to the decorator, for
+        the reason at the top of this class.
+        """
+        rotate = getattr(self.capsule_driver, 'rotate_logs', None)
+        if rotate is None:
+            return
+        if not self._due('log_rotation', CONF.cri_log_rotate_interval):
+            return
+        try:
+            rotate()
+        except Exception as e:
+            LOG.warning('Log rotation skipped: %s', str(e))
+
     @periodic_task.periodic_task(spacing=60)
     @context.set_context
     def reclaim_stale_networks(self, ctx):

@@ -1305,3 +1305,22 @@ Zun→Kata direct-volume 通道,见 DESIGN §8.2 P3)。
 
 改了 capsule schema / driver 加载 / CRI 版本,需要证明 API 契约没破:
 `zun-tempest-plugin` 的 `test_capsules.py` 是最贴近我们用法的一组。
+
+### 4.28 胶囊容器的日志:随容器删除,运行中轮转(2026-11-02)
+
+**实测**:测试床 node-04/06 的 `cri_log_root` 下共 858 个日志对不上任何现存记录(129 MB),最早 8 月,
+单个最大 22.7 MB。没有任何东西删它们或轮转它们:containerd 只写 CRI 告诉它的路径,删容器时只清自己的目录
+(`internal/cri/server/container_remove.go`),这两件事在 K8s 节点上归 kubelet,而这里没有 kubelet。
+⇒ **租户打印的内容在租户删掉容器后仍永久留在节点上**,这是数据保留问题,不只是磁盘问题。
+
+- **删除**:`delete_capsule` 和 `delete` 在 sandbox 删完后删 `<uuid>.log*`。删不掉只告警,不让删除失败。
+  删除失败且未 force 时保留(记录还在,日志还要能读);force 失败时也删,因为记录一走就再没有东西能叫出这些文件。
+- **轮转**:周期任务 `rotate_container_logs`。超过 `cri_log_max_size`(默认 10 MiB)就改名、调
+  `ReopenContainerLog`;拒绝时改回原名。只碰运行中的容器。保留 `cri_log_max_files` 个(默认 2,含正在写的)。
+- **读取**:`show_logs` 从旧到新读所有保留的文件,否则刚轮转完 `--tail` 几乎拿不到东西。
+  ⚠️ 所以 size×files 就是单次 logs 请求的上限,这也是默认只留 2 个、而不是 kubelet 的 5 个的原因。
+
+**没有做到的**:
+- 上限不是硬的:两次检查(`cri_log_rotate_interval`,默认 10 秒)之间写多少都写得进去。
+- 轮转和删除没有共用锁。删除恰好落在改名和 reopen 之间时,可能留下一个文件。
+- 存量和"记录没了但节点上文件还在"的情况不清扫。CNI 的 0 字节锁文件(`lock_path` 下)是另一回事,也没动。

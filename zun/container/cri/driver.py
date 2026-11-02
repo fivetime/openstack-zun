@@ -47,6 +47,7 @@ from zun.container import exec_output
 from zun.container import orphan
 from zun.container.cri import commit as cri_commit
 from zun.container.cri import hostio
+from zun.container.cri import logfiles
 from zun.container.cri import resources as cri_resources
 from zun.criapi import api_pb2
 from zun.criapi import api_pb2_grpc
@@ -1447,15 +1448,19 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         A partial line (P) is a line the runtime split because it was longer
         than its buffer; joining those back is what stops a long log line from
         arriving as several.
+
+        Every file still kept is read, oldest first: asking for the last
+        lines just after a rotation should not answer with almost nothing.
         """
-        path = self._container_log_file(container)
-        if not os.path.exists(path):
+        paths = logfiles.oldest_first(CONF.cri_log_root, container.uuid)
+        if not paths:
             # A container that has not started yet has no file, and empty
             # output says that better than an error would. Logged because the
             # other way to reach this is a request that landed on the wrong
             # node, which otherwise looks exactly like a container that printed
             # nothing.
-            LOG.info("No log file %s for container %s", path, container.uuid)
+            LOG.info("No log file in %s for container %s",
+                     CONF.cri_log_root, container.uuid)
             return b''
 
         try:
@@ -1466,26 +1471,33 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
         lines = []
         partial = []
-        with open(path, 'rb') as fd:
-            for raw in fd:
-                parsed = self._parse_log_line(raw)
-                if parsed is None:
-                    continue
-                stamp, stream, is_partial, text = parsed
-                if stream == 'stdout' and not stdout:
-                    continue
-                if stream == 'stderr' and not stderr:
-                    continue
-                if since is not None and stamp is not None and stamp < since:
-                    continue
-                partial.append(text)
-                if is_partial:
-                    continue
-                line = b''.join(partial)
-                partial = []
-                if timestamps and stamp is not None:
-                    line = raw.split(b' ', 1)[0] + b' ' + line
-                lines.append(line)
+        for path in paths:
+            try:
+                fd = open(path, 'rb')
+            except FileNotFoundError:
+                # Rotated out, or deleted, since the listing above.
+                continue
+            with fd:
+                for raw in fd:
+                    parsed = self._parse_log_line(raw)
+                    if parsed is None:
+                        continue
+                    stamp, stream, is_partial, text = parsed
+                    if stream == 'stdout' and not stdout:
+                        continue
+                    if stream == 'stderr' and not stderr:
+                        continue
+                    if (since is not None and stamp is not None and
+                            stamp < since):
+                        continue
+                    partial.append(text)
+                    if is_partial:
+                        continue
+                    line = b''.join(partial)
+                    partial = []
+                    if timestamps and stamp is not None:
+                        line = raw.split(b' ', 1)[0] + b' ' + line
+                    lines.append(line)
         if partial:
             lines.append(b''.join(partial))
 
@@ -1493,9 +1505,60 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             lines = lines[-tail:] if tail else []
         return b''.join(lines)
 
-    @staticmethod
-    def _container_log_file(container):
-        return os.path.join(CONF.cri_log_root, '%s.log' % container.uuid)
+    def rotate_logs(self):
+        """Move aside every log a running container has grown past the limit.
+
+        A container that has stopped has no writer and cannot grow, so it is
+        left alone -- and the runtime refuses to reopen for one anyway.
+
+        Bounded between looks, not at every byte: a container can write past
+        the limit for as long as the interval between two of these.
+        """
+        limit = CONF.cri_log_max_size * units.Mi
+        if limit <= 0:
+            return
+        root = CONF.cri_log_root
+        wanted = logfiles.oversized(root, limit)
+        if not wanted:
+            return
+        # Only now: the runtime has no way to ask for a container by its log
+        # path, and on most looks nothing has reached the limit.
+        running = self.runtime_stub.ListContainers(
+            api_pb2.ListContainersRequest(filter=api_pb2.ContainerFilter(
+                state=api_pb2.ContainerStateValue(
+                    state=api_pb2.CONTAINER_RUNNING))))
+        for item in running.containers:
+            if not wanted:
+                break
+            try:
+                status = self.runtime_stub.ContainerStatus(
+                    api_pb2.ContainerStatusRequest(
+                        container_id=item.id)).status
+            except grpc.RpcError as e:
+                LOG.debug('No status for container %(id)s: %(err)s',
+                          {'id': item.id, 'err': e})
+                continue
+            uuid = logfiles.uuid_of(root, status.log_path)
+            if uuid in wanted:
+                wanted.discard(uuid)
+                self._rotate_log(root, uuid, item.id)
+
+    def _rotate_log(self, root, uuid, container_id):
+        try:
+            logfiles.push(root, uuid, CONF.cri_log_max_files)
+        except OSError as e:
+            LOG.warning('Could not rotate the log of %(uuid)s: %(err)s',
+                        {'uuid': uuid, 'err': e})
+            return
+        try:
+            self.runtime_stub.ReopenContainerLog(
+                api_pb2.ReopenContainerLogRequest(container_id=container_id))
+        except grpc.RpcError as e:
+            # Still writing to what was just renamed, so it goes back under
+            # the name a reader looks for; the next look tries again.
+            LOG.warning('The runtime would not reopen the log of %(uuid)s: '
+                        '%(err)s', {'uuid': uuid, 'err': e})
+            logfiles.pop(root, uuid)
 
     @staticmethod
     def _parse_log_line(raw):
@@ -3298,6 +3361,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # what can be removed rather than leaving both.
             self._remove_container(container.container_id)
         self._delete_neutron_ports(context, container)
+        logfiles.remove(CONF.cri_log_root, container.uuid)
 
     def start(self, context, container):
         if not container.container_id:
@@ -4541,12 +4605,36 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
 
     def delete_capsule(self, context, capsule, force):
         pod_id = capsule.container_id
-        if not pod_id:
+        try:
+            if pod_id:
+                if not force:
+                    self._stop_in_pod_order(capsule)
+                self._delete_sandbox(context, capsule, pod_id)
+                self._delete_neutron_ports(context, capsule)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                # A forced delete removes the record even so, and with it the
+                # only thing that could ever name these files again. Otherwise
+                # the capsule stays, its logs stay readable, and the retry
+                # gets here.
+                if force:
+                    self._remove_member_logs(capsule)
+        self._remove_member_logs(capsule)
+
+    @staticmethod
+    def _remove_member_logs(capsule):
+        # After the sandbox: nothing is writing to them now. Read as
+        # _sidecars_of reads its list, and for the same reason.
+        try:
+            members = (list(getattr(capsule, 'containers', None) or []) +
+                       list(getattr(capsule, 'init_containers', None) or []))
+        except Exception as e:
+            LOG.warning('Could not list the containers of %(uuid)s, so their '
+                        'logs stay: %(err)s',
+                        {'uuid': capsule.uuid, 'err': e})
             return
-        if not force:
-            self._stop_in_pod_order(capsule)
-        self._delete_sandbox(context, capsule, pod_id)
-        self._delete_neutron_ports(context, capsule)
+        for member in members:
+            logfiles.remove(CONF.cri_log_root, member.uuid)
 
     def _stop_in_pod_order(self, capsule):
         """Stop main containers first and sidecars last, in reverse order.
