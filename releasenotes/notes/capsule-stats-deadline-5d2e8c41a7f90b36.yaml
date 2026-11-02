@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Reading a capsule's stats now waits ``[compute] stats_rpc_timeout`` for
+    its node, as every other reading does, not the global
+    ``rpc_response_timeout``. A node that does not answer, for instance one
+    restarting, holds an API worker for that much less.

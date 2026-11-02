@@ -253,7 +253,9 @@ class API(rpc_service.API):
 
     @check_container_host
     def capsule_stats(self, context, capsule):
-        return self._call(capsule.host, 'capsule_stats', capsule=capsule)
+        return self._call_bounded(
+            capsule.host, 'capsule_stats',
+            zun.conf.CONF.compute.stats_rpc_timeout, capsule=capsule)
 
     @check_container_host
     def capsule_extend_volume(self, context, capsule, volume_id, requested_gib):

@@ -23,6 +23,7 @@ from unittest import mock
 
 from zun.compute import api as compute_api
 from zun.compute import manager
+from zun.compute import rpcapi
 from zun.container import driver
 from zun.tests import base
 
@@ -177,3 +178,32 @@ class FanOutTest(base.TestCase):
 
         self.assertEqual(({}, {}), (found, failed))
         self.api.rpcapi.container_sizes.assert_not_called()
+
+
+class CapsuleStatsDeadlineTest(base.TestCase):
+    """A capsule's reading waits as long as every other reading does.
+
+    It waited out the global rpc_response_timeout, so a node restarting took
+    an API worker for a minute per capsule asked about; an API of two workers
+    answered nothing at all until they came back.
+    """
+
+    def test_it_is_asked_with_the_reading_deadline(self):
+        self.config(stats_rpc_timeout=7, group='compute')
+        for patcher in (
+                mock.patch.object(rpcapi.objects.ZunService, 'list_by_binary',
+                                  return_value=[mock.Mock(host='h')]),
+                mock.patch.object(rpcapi.servicegroup, 'ServiceGroup')):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        api = rpcapi.API.__new__(rpcapi.API)
+        api._client = mock.Mock()
+        api._context = None
+        capsule = mock.Mock(host='h')
+
+        api.capsule_stats(None, capsule)
+
+        api._client.prepare.assert_called_once_with(server='h', timeout=7)
+        call = api._client.prepare.return_value.call
+        self.assertEqual('capsule_stats', call.call_args.args[1])
+        self.assertIs(capsule, call.call_args.kwargs['capsule'])
