@@ -1,0 +1,9 @@
+---
+security:
+  - |
+    A capsule's containers no longer read the compute node's name and
+    addresses from ``/etc/hosts``, which the runtime copied from the node.
+    Each capsule now gets a file of its own, in the new option
+    ``cri_hosts_root``, listing its own addresses, and removed with it. The
+    directory must be the same path for zun-compute and the runtime. Capsules
+    already running keep what they have until they are rebuilt.

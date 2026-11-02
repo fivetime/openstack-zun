@@ -47,6 +47,7 @@ from zun.container import exec_output
 from zun.container import orphan
 from zun.container.cri import commit as cri_commit
 from zun.container.cri import hostio
+from zun.container.cri import hostsfile
 from zun.container.cri import logfiles
 from zun.container.cri import resources as cri_resources
 from zun.criapi import api_pb2
@@ -1419,6 +1420,8 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         oom_score_adj = _asked(container, 'oom_score_adj')
         if oom_score_adj is not None:
             linux_config.resources.oom_score_adj = int(oom_score_adj)
+        self._add_hosts_mount(capsule, mounts,
+                              linux_config.security_context.readonly_rootfs)
 
         # The attempt number is what distinguishes one incarnation of a
         # container from the next, both in the runtime's own naming and in what
@@ -1688,6 +1691,20 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         return api_pb2.Mount(container_path=CONF.probe_helper_mount,
                              host_path=CONF.probe_helper_path,
                              readonly=True)
+
+    @staticmethod
+    def _add_hosts_mount(subject, mounts, readonly):
+        # A volume asked for at the path is what was asked for. Readonly as
+        # the runtime's own mount of it would be.
+        if any(m.container_path == hostsfile.CONTAINER_PATH for m in mounts):
+            return
+        # A failure is raised rather than passed over: going on would give
+        # this container the node's own file.
+        path = hostsfile.write(
+            CONF.cri_hosts_root, subject.uuid, _sandbox_hostname(subject),
+            hostsfile.own_addresses(subject.addresses))
+        mounts.append(api_pb2.Mount(container_path=hostsfile.CONTAINER_PATH,
+                                    host_path=path, readonly=readonly))
 
     def _get_mounts(self, context, volmaps):
         mounts = []
@@ -3417,6 +3434,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             self._remove_container(container.container_id)
         self._delete_neutron_ports(context, container)
         logfiles.remove(CONF.cri_log_root, container.uuid)
+        hostsfile.remove(CONF.cri_hosts_root, container.uuid)
 
     def start(self, context, container):
         if not container.container_id:
@@ -4673,7 +4691,11 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 # the capsule stays, its logs stay readable, and the retry
                 # gets here.
                 if force:
-                    self._remove_member_logs(capsule)
+                    self._remove_files_of(capsule)
+        self._remove_files_of(capsule)
+
+    def _remove_files_of(self, capsule):
+        hostsfile.remove(CONF.cri_hosts_root, capsule.uuid)
         self._remove_member_logs(capsule)
 
     @staticmethod

@@ -238,6 +238,11 @@ Interdependencies to other options:
                help='Seconds between looks at the size of capsule container '
                     'logs. A look that finds nothing costs one directory '
                     'listing.'),
+    cfg.StrOpt('cri_hosts_root',
+               default='/var/lib/zun/capsule-hosts',
+               help='Directory of the /etc/hosts file each capsule\'s '
+                    'containers are given, removed with the capsule. It has '
+                    'to be the same path for this service and the runtime.'),
     cfg.StrOpt('cri_sandbox_cgroup_parent',
                default='zun.slice',
                help='Cgroup slice each capsule sandbox is placed under, one '
