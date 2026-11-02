@@ -1327,3 +1327,15 @@ Zun→Kata direct-volume 通道,见 DESIGN §8.2 P3)。
 - 容器恰好处于启动中(已打开日志,但 CRI 状态还不是 RUNNING)时被移开,它会继续写那个已改名的文件,直到下次重启。窗口是毫秒级,没有做自愈。
 - 轮转和删除没有共用锁。删除恰好落在改名和 reopen 之间时,可能留下一个文件。
 - 存量和"记录没了但节点上文件还在"的情况不清扫。CNI 的 0 字节锁文件(`lock_path` 下)是另一回事,也没动。
+
+### 4.29 胶囊不再把节点名告诉租户(2026-11-02)
+
+**实测**:capsule 里 `/etc/hostname` 是 `incus-node-04`,`HOSTNAME` 环境变量读码同样如此。sandbox 的 hostname 留空时,
+containerd 不是生成一个,而是写节点自己的主机名(`internal/cri/server/podsandbox/sandbox_run_linux.go:268-276`、
+`container_create.go:723-730`)。这段的旧注释把它说成"运行时生成一个",是错的。⇒ 租户知道自己在哪台物理机上。
+
+- **兜底**:没要求主机名时用 UUID 前 12 位(Docker 默认的形状)。capsule 和 Container API 都走这里。
+- **`spec.hostname`**:capsule 模板新增,按主机名校验(最多 63 字符,字母、数字、`-`、`.`,首尾是字母或数字),不合法 400。
+  字段此前被静默忽略(`capsule_spec` 的 `additionalProperties: True`),所以没有加微版本:旧调用方不受影响。
+
+**没有做到的**:已经在跑的 capsule,其 sandbox 的 `/etc/hostname` 不变,要重建才生效。`/etc/hosts` 没有查。

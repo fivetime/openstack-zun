@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import re
 import shlex
 
 from neutronclient.common import exceptions as n_exc
@@ -50,6 +51,13 @@ LOG = logging.getLogger(__name__)
 def check_policy_on_capsule(capsule, action):
     context = pecan.request.context
     policy.enforce(context, action, capsule, action=action)
+
+
+# What a capsule's spec.hostname may be. Dots are in because a pod's name may
+# hold them and a pod's hostname is its name. 63 is the kernel's limit, and the
+# column's.
+CAPSULE_HOSTNAME = re.compile(
+    r'^(?=.{1,63}$)[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$')
 
 
 def _validate_security_context(sc):
@@ -304,6 +312,13 @@ class CapsuleController(base.Controller):
                       "have probes"))
 
         # Create the capsule Object
+        hostname = spec_content.get('hostname')
+        if hostname is not None and not CAPSULE_HOSTNAME.match(str(hostname)):
+            raise exception.InvalidValue(_(
+                "spec.hostname %s is not a hostname: at most 63 letters, "
+                "digits, hyphens and dots, starting and ending with a letter "
+                "or digit") % hostname)
+
         new_capsule = objects.Capsule(context, **capsule_dict)
         new_capsule.project_id = context.project_id
         new_capsule.user_id = context.user_id
@@ -346,6 +361,9 @@ class CapsuleController(base.Controller):
         requested_networks_info = template_json.get('nets', [])
         requested_networks = \
             utils.build_requested_networks(context, requested_networks_info)
+
+        if hostname:
+            new_capsule.hostname = hostname
 
         if metadata_info:
             new_capsule.name = metadata_info.get('name', None)

@@ -80,6 +80,36 @@ class TestCheckCapsuleTemplate(api_base.FunctionalTest):
 
 
 class TestCapsuleController(api_base.FunctionalTest):
+    def _post_with_hostname(self, hostname):
+        return self.post('/v1/capsules/', params=json.dumps({
+            'template': {
+                'kind': 'capsule',
+                'spec': {'hostname': hostname, 'containers': [{
+                    'name': 'c', 'image': 'test',
+                    'resources': {'requests': {'cpu': 1, 'memory': 1024}},
+                }]},
+                'metadata': {'name': 'with-a-hostname'},
+            }}), content_type='application/json', expect_errors=True)
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_create_capsule_keeps_its_hostname(self, mock_network,
+                                               mock_create):
+        response = self._post_with_hostname('web-0.sub')
+        self.assertEqual(202, response.status_int)
+        stored = objects.Capsule.get_by_uuid(self.context,
+                                             response.json['uuid'])
+        self.assertEqual('web-0.sub', stored.hostname)
+
+    @patch('zun.compute.api.API.container_create')
+    @patch('zun.network.neutron.NeutronAPI.get_available_network')
+    def test_create_capsule_refuses_what_is_not_a_hostname(self, mock_network,
+                                                           mock_create):
+        for bad in ('-web', 'web-', 'has space', 'x' * 64, 'a/b', ''):
+            response = self._post_with_hostname(bad)
+            self.assertEqual(400, response.status_int, bad)
+        self.assertFalse(mock_create.called)
+
     @patch('zun.compute.api.API.container_create')
     @patch('zun.network.neutron.NeutronAPI.get_available_network')
     def test_create_capsule(self, mock_neutron_get_network,

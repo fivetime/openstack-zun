@@ -50,6 +50,17 @@ class TestCarried(base.TestCase):
         self.assertFalse(sc.readonly_rootfs)
         self.assertEqual([], list(sc.supplemental_groups))
 
+    def test_a_sandbox_is_never_left_to_name_itself(self):
+        # Empty is not "generate one": the runtime writes the node's hostname.
+        capsule = mock.Mock(uuid='8c65aabd-d9cc-4492-8cb0-050b3b391441',
+                            hostname=None)
+        self.assertEqual('8c65aabdd9cc',
+                         cri_driver._sandbox_hostname(capsule))
+
+    def test_a_sandbox_gets_the_hostname_asked_for(self):
+        capsule = mock.Mock(uuid='c-1', hostname='web-0')
+        self.assertEqual('web-0', cri_driver._sandbox_hostname(capsule))
+
     def test_dns_options_reach_the_sandbox(self):
         drv = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
         capsule = mock.Mock(uuid='c-1', hostname=None)

@@ -584,6 +584,21 @@ def _dns_searches(subject):
             or _annotation_list(subject, DNS_SEARCHES_ANNOTATION))
 
 
+def _sandbox_hostname(subject):
+    """The name a sandbox is told to call itself, which is never empty.
+
+    ⚠️ Empty does not make the runtime generate a name. It writes the node's own
+    hostname to the sandbox's /etc/hostname and to HOSTNAME in every container
+    (containerd internal/cri/server/podsandbox/sandbox_run_linux.go and
+    container_create.go), which is right for a kubelet's hostNetwork pod and
+    here tells a tenant which machine it is on. Measured: /etc/hostname held
+    incus-node-04. With nothing asked for, it gets what docker gives a
+    container, the start of its own id.
+    """
+    return (getattr(subject, 'hostname', None) or
+            subject.uuid.replace('-', '')[:12])
+
+
 def _dns_servers(subject):
     return (_own_list(subject, 'dns')
             or _annotation_list(subject, DNS_SERVERS_ANNOTATION))
@@ -963,10 +978,9 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             ),
             # The name the workload calls itself by, which is not the name
             # anything else calls it: a container that asked for one and got
-            # the runtime's generated id instead has no error to go on, and
-            # whatever it registers itself as is wrong. Left empty when
-            # nothing asked, which is what makes the runtime generate one.
-            hostname=getattr(capsule, 'hostname', None) or '',
+            # something else has no error to go on, and whatever it registers
+            # itself as is wrong.
+            hostname=_sandbox_hostname(capsule),
             # Without a log directory the runtime discards a container's output
             # entirely: there is no stream to attach to after the fact and
             # nothing on disk, so the logs API has nothing to serve.
