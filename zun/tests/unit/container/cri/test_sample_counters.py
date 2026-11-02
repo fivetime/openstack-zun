@@ -20,7 +20,10 @@ the traffic they used.
 
 from unittest import mock
 
+import grpc
+
 from zun.container.cri import driver as cri_driver
+from zun.criapi import api_pb2
 from zun.tests import base
 
 
@@ -177,6 +180,8 @@ class SandboxNetworksTest(base.TestCase):
         self.driver.runtime_stub.ListPodSandboxStats.side_effect = \
             cri_driver.grpc.RpcError()
 
+        self.driver.runtime_stub.ListPodSandbox.side_effect = (
+            grpc.RpcError())
         self.assertEqual({}, self.driver._sandbox_networks())
 
 
@@ -325,3 +330,113 @@ class SandboxWithoutItsOwnAccountTest(base.TestCase):
 
         self.assertEqual(150, reading['cpu']['total_ns'])
         self.assertEqual('containers', reading['cpu']['basis'])
+
+
+class OneSandboxThatCannotBeReadTest(base.TestCase):
+    """One sandbox must not cost the host every other sandbox's figures.
+
+    containerd answers ListPodSandboxStats for all or none, and cannot load
+    the cgroup of a runc sandbox whose parent is a systemd slice: "failed to
+    load sandbox cgroup ...: cgroups: invalid group path". Measured on
+    production: one runc capsule left every capsule on its node unread. Its
+    containers can still be read, one level down.
+    """
+
+    class _Refused(grpc.RpcError):
+        pass
+
+    def setUp(self):
+        super(OneSandboxThatCannotBeReadTest, self).setUp()
+        self.driver = cri_driver.CriDriver.__new__(cri_driver.CriDriver)
+        self.stub = self.driver.runtime_stub = mock.Mock()
+        self.stub.ListPodSandboxStats.side_effect = self._sandbox_stats
+        self.stub.ListContainerStats.side_effect = self._container_stats
+        self.stub.ListPodSandbox.return_value = (
+            api_pb2.ListPodSandboxResponse(items=[
+                api_pb2.PodSandbox(id='kata', state=api_pb2.SANDBOX_READY),
+                api_pb2.PodSandbox(id='runc', state=api_pb2.SANDBOX_READY),
+                api_pb2.PodSandbox(id='dead',
+                                   state=api_pb2.SANDBOX_NOTREADY)]))
+
+    def _sandbox_stats(self, request):
+        if request.filter.id != 'kata':
+            raise self._Refused()
+        linux = api_pb2.LinuxPodSandboxStats(
+            cpu=api_pb2.CpuUsage(
+                timestamp=1792186233123456789,
+                usage_core_nano_seconds=api_pb2.UInt64Value(value=777)),
+            memory=api_pb2.MemoryUsage(
+                working_set_bytes=api_pb2.UInt64Value(value=8192)),
+            network=api_pb2.NetworkUsage(
+                default_interface=api_pb2.NetworkInterfaceUsage(
+                    name='eth0',
+                    rx_bytes=api_pb2.UInt64Value(value=11),
+                    tx_bytes=api_pb2.UInt64Value(value=22))))
+        return api_pb2.ListPodSandboxStatsResponse(stats=[
+            api_pb2.PodSandboxStats(
+                attributes=api_pb2.PodSandboxAttributes(id='kata'),
+                linux=linux)])
+
+    def _container_stats(self, request):
+        if request.filter.pod_sandbox_id != 'runc':
+            return api_pb2.ListContainerStatsResponse()
+        return api_pb2.ListContainerStatsResponse(stats=[
+            api_pb2.ContainerStats(
+                attributes=api_pb2.ContainerAttributes(id='exited')),
+            self._stat('one', 100, 2048), self._stat('two', 200, 1024)])
+
+    @staticmethod
+    def _stat(container_id, cpu_ns, memory):
+        return api_pb2.ContainerStats(
+            attributes=api_pb2.ContainerAttributes(id=container_id),
+            cpu=api_pb2.CpuUsage(
+                timestamp=1792186233123456789,
+                usage_core_nano_seconds=api_pb2.UInt64Value(value=cpu_ns)),
+            memory=api_pb2.MemoryUsage(
+                working_set_bytes=api_pb2.UInt64Value(value=memory)))
+
+    def _sample(self):
+        return self.driver.sample_capsules({}, [
+            mock.Mock(uuid='cap-kata', container_id='kata'),
+            mock.Mock(uuid='cap-runc', container_id='runc'),
+            mock.Mock(uuid='cap-dead', container_id='dead')])
+
+    def test_the_others_are_still_read_from_their_sandboxes(self):
+        reading = self._sample()['cap-kata']
+
+        self.assertEqual(777, reading['cpu']['total_ns'])
+        self.assertEqual('sandbox', reading['cpu']['basis'])
+        self.assertEqual(11, reading['networks']['eth0']['rx_bytes'])
+
+    def test_it_is_read_from_its_containers_that_run(self):
+        reading = self._sample()['cap-runc']
+
+        self.assertEqual(300, reading['cpu']['total_ns'])
+        self.assertEqual('containers', reading['cpu']['basis'])
+        self.assertEqual(3072, reading['memory']['usage'])
+        self.assertTrue(reading['timestamp'])
+        self.assertNotIn('networks', reading)
+
+    def test_a_dead_sandbox_is_absent_not_zero(self):
+        self.assertNotIn('cap-dead', self._sample())
+
+    def test_a_runtime_that_answers_nothing_loses_only_the_reading(self):
+        self.stub.ListPodSandbox.side_effect = self._Refused()
+
+        self.assertEqual({}, self._sample())
+
+    def test_a_sandbox_with_no_level_answering_costs_only_itself(self):
+        self.stub.ListContainerStats.side_effect = self._Refused()
+
+        found = self._sample()
+
+        self.assertEqual(['cap-kata'], list(found))
+
+    def test_the_network_figures_of_the_others_are_kept_too(self):
+        self.stub.ListContainers.return_value = (
+            api_pb2.ListContainersResponse(containers=[
+                api_pb2.Container(id='in-kata', pod_sandbox_id='kata')]))
+
+        networks = self.driver._sandbox_networks()
+
+        self.assertEqual(11, networks['in-kata']['eth0']['rx_bytes'])

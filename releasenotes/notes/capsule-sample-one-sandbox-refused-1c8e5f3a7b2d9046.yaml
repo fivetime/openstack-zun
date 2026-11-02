@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    One sandbox that the runtime cannot read no longer leaves every capsule on
+    the host without a reading. containerd refuses ``ListPodSandboxStats`` as a
+    whole when it cannot load one sandbox's cgroup, as with a runc sandbox whose
+    cgroup parent is a systemd slice. Each sandbox is then asked about alone,
+    and one that still refuses is read from its running containers, without
+    network figures.

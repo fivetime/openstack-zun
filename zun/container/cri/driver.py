@@ -292,6 +292,11 @@ def _sandbox_or_containers(linux, group, field, accounted):
     return sum(values), 'containers'
 
 
+def _latest_cpu_time(containers):
+    """When a sandbox's containers were last read: 0 if none of them was."""
+    return max((c.cpu.timestamp for c in containers), default=0)
+
+
 def _found_out_once(method):
     @functools.wraps(method)
     def locked(self):
@@ -4073,8 +4078,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         if not wanted:
             return {}
         try:
-            sandboxes = self.runtime_stub.ListPodSandboxStats(
-                api_pb2.ListPodSandboxStatsRequest()).stats
+            sandboxes = self._sandbox_stats()
         except grpc.RpcError as exc:
             LOG.warning('Could not sample the capsules on this host: %s',
                         exc)
@@ -4093,7 +4097,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 continue
             stamp = driver.reading_time(
                 linux.cpu.timestamp if linux.HasField('cpu')
-                else linux.containers[0].cpu.timestamp)
+                else _latest_cpu_time(linux.containers))
             if stamp is None:
                 # A stopped sandbox: zeros and no time are not a reading.
                 continue
@@ -4120,6 +4124,54 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                     'tx_packets': None}}
             found[uuid] = reading
         return found
+
+    def _sandbox_stats(self):
+        """The statistics of every sandbox that has any to give.
+
+        The runtime answers for all of them in one call, or for none:
+        containerd refuses the whole call when it cannot load one sandbox's
+        cgroup, as it cannot for a runc sandbox whose parent is a systemd
+        slice. One tenant's sandbox must not leave the node unread, so then
+        each is asked about alone, and one that still refuses is read from
+        its containers, which the runtime can answer for.
+        """
+        try:
+            return list(self.runtime_stub.ListPodSandboxStats(
+                api_pb2.ListPodSandboxStatsRequest()).stats)
+        except grpc.RpcError as exc:
+            LOG.debug('Reading the sandboxes one by one: %s', exc)
+        stats = []
+        for sandbox in self.runtime_stub.ListPodSandbox(
+                api_pb2.ListPodSandboxRequest()).items:
+            if sandbox.state != api_pb2.SANDBOX_READY:
+                continue
+            try:
+                stats.extend(self.runtime_stub.ListPodSandboxStats(
+                    api_pb2.ListPodSandboxStatsRequest(
+                        filter=api_pb2.PodSandboxStatsFilter(
+                            id=sandbox.id))).stats)
+            except grpc.RpcError:
+                try:
+                    stats.append(
+                        self._sandbox_stats_of_containers(sandbox.id))
+                except grpc.RpcError as exc:
+                    LOG.debug('Could not read sandbox %(id)s: %(err)s',
+                              {'id': sandbox.id, 'err': exc})
+        return stats
+
+    def _sandbox_stats_of_containers(self, sandbox_id):
+        """A sandbox's statistics, as far as its containers can tell.
+
+        No network figures: they are kept at the level that refused.
+        """
+        containers = self.runtime_stub.ListContainerStats(
+            api_pb2.ListContainerStatsRequest(
+                filter=api_pb2.ContainerStatsFilter(
+                    pod_sandbox_id=sandbox_id))).stats
+        return api_pb2.PodSandboxStats(
+            attributes=api_pb2.PodSandboxAttributes(id=sandbox_id),
+            linux=api_pb2.LinuxPodSandboxStats(
+                containers=[c for c in containers if c.cpu.timestamp]))
 
     def sample_counters(self, context, containers):
         """One reading for every container asked about, in two calls.
@@ -4195,8 +4247,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
         with zeros.
         """
         try:
-            sandboxes = self.runtime_stub.ListPodSandboxStats(
-                api_pb2.ListPodSandboxStatsRequest()).stats
+            sandboxes = self._sandbox_stats()
         except grpc.RpcError as exc:
             LOG.debug('No network figures for this host: %s', exc)
             return {}
