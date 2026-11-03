@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    Deleting the capsule or container that holds the last volume without a
+    Cinder volume in its project no longer fails after its sandbox and port
+    are gone. Those mappings were counted by a NULL ``cinder_volume_id``, so
+    the last one in a project was removed a second time, and the local file
+    driver raised ``FileNotFoundError``. That left a record and a Placement
+    allocation behind, even with ``force``, until the delete was repeated.
+    The local file driver also accepts a directory that is already gone.

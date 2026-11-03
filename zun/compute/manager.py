@@ -754,10 +754,17 @@ class Manager(periodic_task.PeriodicTasks):
                                                           container.uuid)
         auto_remove_volmaps = []
         for volmap in volmaps:
-            db_volmaps = objects.VolumeMapping.list_by_cinder_volume(
-                context, volmap.cinder_volume_id)
+            # Asked before the detach, which takes this mapping away. Only a
+            # Cinder volume outlives its mappings: anything else is gone with
+            # the detach, and has no id to count by -- a NULL matches every
+            # such mapping in the project, so the last of them was removed a
+            # second time, and the delete failed on what was already gone.
+            last_of_cinder_volume = (
+                volmap.cinder_volume_id and
+                len(objects.VolumeMapping.list_by_cinder_volume(
+                    context, volmap.cinder_volume_id)) == 1)
             self._detach_volume(context, container, volmap, reraise=reraise)
-            if volmap.auto_remove and len(db_volmaps) == 1:
+            if volmap.auto_remove and last_of_cinder_volume:
                 self._get_driver(container).delete_volume(context, volmap)
                 auto_remove_volmaps.append(volmap)
         self._wait_for_volumes_deleted(context, auto_remove_volmaps, container)

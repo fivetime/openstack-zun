@@ -140,7 +140,12 @@ class Local(VolumeDriver):
 
     def _remove_local_file(self, volmap):
         mountpoint = mount.get_mountpoint(volmap.volume.uuid)
-        shutil.rmtree(mountpoint)
+        # Already gone is what was asked for. Failing on it keeps the mapping,
+        # so every retry fails the same way and the record can never go.
+        try:
+            shutil.rmtree(mountpoint)
+        except FileNotFoundError:
+            LOG.debug('Local volume directory %s is already gone', mountpoint)
 
     @validate_volume_provider(supported_providers)
     def detach(self, context, volmap):
