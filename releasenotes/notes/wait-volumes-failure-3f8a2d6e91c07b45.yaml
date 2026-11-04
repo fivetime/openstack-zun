@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    A capsule or container whose volume cannot be read, for instance because
+    its provider is not in ``[volume] driver_list``, now goes to ``Error`` with
+    the reason, as it does when its volumes time out. It used to stay in
+    ``Creating`` with no reason given.

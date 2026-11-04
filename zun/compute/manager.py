@@ -393,6 +393,8 @@ class Manager(periodic_task.PeriodicTasks):
             poll_interval=1):
         driver = self._get_driver(container)
         start_time = time.time()
+        msg = _("Volumes did not reach available status after "
+                "%d seconds") % (timeout)
         try:
             volmaps = itertools.chain.from_iterable(requested_volumes.values())
             volmap = next(volmaps)
@@ -406,6 +408,15 @@ class Manager(periodic_task.PeriodicTasks):
                 time.sleep(poll_interval)
         except StopIteration:
             return
+        except Exception as e:
+            # This runs in a background task nobody watches. Left to end it,
+            # the record stays in Creating for good, with no reason given.
+            LOG.exception("Could not read the volumes of container %s",
+                          container.uuid)
+            # Ours is written to be read; another library's may name what a
+            # tenant has no business reading.
+            msg = (str(e) if isinstance(e, exception.ZunException)
+                   else _("Could not read the status of a volume"))
         volmaps = itertools.chain.from_iterable(requested_volumes.values())
         for volmap in volmaps:
             if volmap.auto_remove:
@@ -413,8 +424,6 @@ class Manager(periodic_task.PeriodicTasks):
                     driver.delete_volume(context, volmap)
                 except Exception:
                     LOG.exception("Failed to delete volume")
-        msg = _("Volumes did not reach available status after "
-                "%d seconds") % (timeout)
         self._fail_container(context, container, msg, unset_host=True)
         raise exception.Conflict(msg)
 
