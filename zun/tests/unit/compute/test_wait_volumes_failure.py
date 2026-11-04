@@ -88,3 +88,59 @@ class WaitForVolumesFailureTest(base.DbTestCase):
         self._wait()
 
         self.assertEqual(consts.CREATING, self.container.status)
+
+
+class AttachCapsuleVolumesFailureTest(base.DbTestCase):
+    """A capsule whose volume is refused at attach is what goes to Error.
+
+    The failure used to be recorded on the member being attached. The capsule
+    is what a tenant reads and what the create is waiting on, and it stayed
+    in Creating for good.
+    """
+
+    def setUp(self):
+        super().setUp()
+        zun.conf.CONF.set_override('container_driver', 'fake')
+        # Left false, the NFS driver refuses to mount: the real refusal.
+        zun.conf.CONF.set_override('driver_list', ['nfs'], group='volume')
+        with mock.patch(
+                'zun.scheduler.client.report.SchedulerReportClient'):
+            self.manager = manager.Manager()
+        p = mock.patch.object(self.manager, '_get_driver',
+                              return_value=container_driver.BaseDriver())
+        p.start()
+        self.addCleanup(p.stop)
+        for cls in (objects.Capsule, objects.CapsuleContainer):
+            p = mock.patch.object(cls, 'save')
+            p.start()
+            self.addCleanup(p.stop)
+        self.member = objects.CapsuleContainer(
+            self.context, **utils.get_test_container(
+                uuid='5d8c1a2b-3f4e-4a6b-8c9d-0e1f2a3b4c5d'))
+        self.member.status = consts.CREATING
+        self.capsule = objects.Capsule(
+            self.context, **utils.get_test_container())
+        self.capsule.status = consts.CREATING
+        self.capsule.containers = [self.member]
+        self.capsule.init_containers = []
+        self.volmap = mock.Mock(volume_provider='nfs', connection_info=None)
+        self.volmap.volume.contents = '{"export": "nfs.invalid:/x"}'
+
+    def test_refused_volume_fails_the_capsule(self):
+        self.assertRaises(
+            exception.ZunException, self.manager._attach_volumes,
+            self.context, self.capsule, {self.member.uuid: [self.volmap]})
+
+        self.assertEqual(consts.ERROR, self.capsule.status)
+        self.assertIn('dedicated to capsules', self.capsule.status_reason)
+
+    def test_unexpected_error_does_not_reach_the_tenant(self):
+        with mock.patch.object(
+                self.manager, '_attach_volume',
+                side_effect=RuntimeError('http://10.0.0.1:8776 refused')):
+            self.assertRaises(
+                RuntimeError, self.manager._attach_volumes,
+                self.context, self.capsule, {self.member.uuid: [self.volmap]})
+
+        self.assertEqual(consts.ERROR, self.capsule.status)
+        self.assertNotIn('10.0.0.1', self.capsule.status_reason)

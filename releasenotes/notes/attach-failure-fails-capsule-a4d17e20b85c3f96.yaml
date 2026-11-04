@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    A capsule whose volume fails to attach, for instance an NFS volume on a
+    node that does not set ``[volume] host_dedicated_to_capsules``, now goes
+    to ``Error`` with the reason. The failure used to be recorded only on the
+    member container, and the capsule stayed in ``Creating``.

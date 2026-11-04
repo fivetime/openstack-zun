@@ -387,6 +387,16 @@ class Manager(periodic_task.PeriodicTasks):
             container.host = None
         container.save(context)
 
+    @staticmethod
+    def _reason_for(error):
+        """What a tenant reads about a volume that failed a create.
+
+        Ours is written to be read; another library's may name what a tenant
+        has no business reading, and the log has it.
+        """
+        return (str(error) if isinstance(error, exception.ZunException)
+                else _("A volume of this container could not be prepared"))
+
     def _wait_for_volumes_available(
             self, context, requested_volumes, container,
             timeout=CONF.volume.timeout_wait_volume_available,
@@ -413,10 +423,7 @@ class Manager(periodic_task.PeriodicTasks):
             # the record stays in Creating for good, with no reason given.
             LOG.exception("Could not read the volumes of container %s",
                           container.uuid)
-            # Ours is written to be read; another library's may name what a
-            # tenant has no business reading.
-            msg = (str(e) if isinstance(e, exception.ZunException)
-                   else _("Could not read the status of a volume"))
+            msg = self._reason_for(e)
         volmaps = itertools.chain.from_iterable(requested_volumes.values())
         for volmap in volmaps:
             if volmap.auto_remove:
@@ -684,10 +691,18 @@ class Manager(periodic_task.PeriodicTasks):
                                   container.uuid)
 
     def _attach_volumes_for_capsule(self, context, capsule, requested_volumes):
-        for c in (capsule.init_containers or []):
-            self._attach_volumes(context, c, requested_volumes)
-        for c in (capsule.containers or []):
-            self._attach_volumes(context, c, requested_volumes)
+        try:
+            for c in (capsule.init_containers or []):
+                self._attach_volumes(context, c, requested_volumes)
+            for c in (capsule.containers or []):
+                self._attach_volumes(context, c, requested_volumes)
+        except Exception as e:
+            # The member has been marked, but the capsule is what a tenant
+            # reads and what the create waits on: left alone it stays in
+            # Creating for good.
+            with excutils.save_and_reraise_exception():
+                self._fail_container(context, capsule, self._reason_for(e),
+                                     unset_host=True)
 
     def _attach_volumes(self, context, container, requested_volumes):
         if isinstance(container, objects.Capsule):
