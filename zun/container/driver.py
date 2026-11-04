@@ -215,7 +215,7 @@ class BaseDriver(object):
         driver = self.volume_drivers.get(driver_name)
         if not driver:
             msg = _("The volume provider '%s' is not supported") % driver_name
-            raise exception.ZunException(msg)
+            raise exception.VolumeNotPrepared(msg)
 
         return driver
 

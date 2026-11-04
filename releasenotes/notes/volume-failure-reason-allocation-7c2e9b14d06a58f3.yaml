@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    A volume that cannot be prepared no longer puts the failed command, the
+    node's paths or the tool's output in ``status_reason``. A tenant now reads
+    only text written for them, and a failed NFS mount says
+    ``The NFS export could not be mounted``. The details stay in the log.
+  - |
+    A create that fails while waiting for volumes, attaching them or checking
+    disk quota now releases its placement allocation at once. It used to wait
+    for the periodic sweep, which does not run on a host shared with nova, so
+    there the allocation stayed until an operator removed it.

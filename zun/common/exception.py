@@ -543,6 +543,16 @@ class PortInUse(Invalid):
     message = _("Port %(port)s is still in use.")
 
 
+class VolumeNotPrepared(ZunException):
+    """A volume failed for a reason written for whoever owns the volume.
+
+    The only volume failure a create repeats to the tenant: any other may
+    carry a command line, a node path or a storage address, and the log has
+    it.
+    """
+    message = _("A volume of this container could not be prepared")
+
+
 class VolumeNotUsable(Invalid):
     message = _("Volume %(volume)s not usable for the container.")
 

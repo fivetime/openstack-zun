@@ -59,7 +59,7 @@ def validate_volume_provider(supported_providers):
             provider = volume.volume_provider
             if provider not in supported_providers:
                 msg = _("The volume provider '%s' is not supported") % provider
-                raise exception.ZunException(msg)
+                raise exception.VolumeNotPrepared(msg)
 
             return function(self, context, volume, **kwargs)
 
@@ -305,7 +305,7 @@ class NFS(VolumeDriver):
         opts = self._options(volmap)
         export = opts.get('export')
         if not export:
-            raise exception.ZunException(_(
+            raise exception.VolumeNotPrepared(_(
                 'an nfs volume names no export to mount'))
 
         # ⚠️ Both checks refuse rather than warn, and both default to
@@ -337,10 +337,18 @@ class NFS(VolumeDriver):
                 # nosuid,nodev: the tenant controls every byte of this
                 # filesystem, and it is mounted on the host. A setuid binary
                 # or a device node in it must mean nothing here.
-                utils.execute('timeout', self.MOUNT_TIMEOUT,
-                              'mount', '-t', 'nfs',
-                              '-o', 'rw,nosuid,nodev',
-                              export, path, run_as_root=True)
+                try:
+                    utils.execute('timeout', self.MOUNT_TIMEOUT,
+                                  'mount', '-t', 'nfs',
+                                  '-o', 'rw,nosuid,nodev',
+                                  export, path, run_as_root=True)
+                except exception.CommandError:
+                    # The tool's words name this node's paths; the log has
+                    # them, and the tenant can act on this much.
+                    LOG.exception('Could not mount the export of volume %s',
+                                  volmap.volume.uuid)
+                    raise exception.VolumeNotPrepared(_(
+                        'The NFS export could not be mounted'))
             self._apply_fs_group(opts, path)
 
     @staticmethod
@@ -361,7 +369,7 @@ class NFS(VolumeDriver):
         declared rather than assumed.
         """
         if not CONF.volume.host_dedicated_to_capsules:
-            raise exception.ZunException(_(
+            raise exception.VolumeNotPrepared(_(
                 'This node does not declare itself dedicated to capsules, so '
                 'it will not mount a shared filesystem: the file server '
                 'authorises the node, and anything else running here with the '
@@ -393,7 +401,7 @@ class NFS(VolumeDriver):
             if '/' in target and not target.endswith('/32'):
                 wide.append(target)
         if wide:
-            raise exception.ZunException(_(
+            raise exception.VolumeNotPrepared(_(
                 'Share %(share)s is reachable from more than single hosts '
                 '(%(rules)s), which is wider than the access this platform '
                 'grants and withdraws per node. Refusing to mount it rather '

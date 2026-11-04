@@ -144,3 +144,176 @@ class AttachCapsuleVolumesFailureTest(base.DbTestCase):
 
         self.assertEqual(consts.ERROR, self.capsule.status)
         self.assertNotIn('10.0.0.1', self.capsule.status_reason)
+
+    def test_failed_command_does_not_reach_the_tenant(self):
+        # What a mount of a share leaves in the exception: the command line,
+        # the node's path, and on some backends a pool or monitor address.
+        with mock.patch.object(
+                self.manager, '_attach_volume',
+                side_effect=exception.CommandError(
+                    cmd='mount -t nfs 10.0.0.1:/x /var/lib/zun/mnt/abc',
+                    error='mount.nfs: access denied')):
+            self.assertRaises(
+                exception.CommandError, self.manager._attach_volumes,
+                self.context, self.capsule, {self.member.uuid: [self.volmap]})
+
+        for record in (self.capsule, self.member):
+            self.assertEqual(consts.ERROR, record.status)
+            self.assertNotIn('10.0.0.1', record.status_reason)
+            self.assertNotIn('/var/lib/zun', record.status_reason)
+
+    def test_failure_built_on_a_command_does_not_reach_the_tenant(self):
+        with mock.patch.object(
+                self.manager, '_attach_volume',
+                side_effect=exception.MountException(
+                    'Devpath: /dev/rbd0, Error: mon 10.0.0.1 refused')):
+            self.assertRaises(
+                exception.MountException, self.manager._attach_volumes,
+                self.context, self.capsule, {self.member.uuid: [self.volmap]})
+
+        self.assertNotIn('10.0.0.1', self.capsule.status_reason)
+        self.assertNotIn('/dev/rbd0', self.member.status_reason)
+
+    def test_refused_volume_tells_the_member_too(self):
+        self.assertRaises(
+            exception.ZunException, self.manager._attach_volumes,
+            self.context, self.capsule, {self.member.uuid: [self.volmap]})
+
+        self.assertIn('dedicated to capsules', self.member.status_reason)
+
+    def test_manila_refusal_does_not_reach_the_tenant(self):
+        # Manila's words are not ours to repeat, though we raised them: what
+        # it said about a share may be more than the tenant may read.
+        with mock.patch.object(
+                self.manager, '_attach_volume',
+                side_effect=exception.ZunException(
+                    'manila refused access_list on share kzvol-fake: 404 '
+                    '{"itemNotFound": {}}')):
+            self.assertRaises(
+                exception.ZunException, self.manager._attach_volumes,
+                self.context, self.capsule, {self.member.uuid: [self.volmap]})
+
+        for record in (self.capsule, self.member):
+            self.assertNotIn('manila', record.status_reason)
+
+
+class NfsMountFailureTest(base.DbTestCase):
+    """A real mount failure, through the real driver."""
+
+    def setUp(self):
+        super().setUp()
+        zun.conf.CONF.set_override('container_driver', 'fake')
+        zun.conf.CONF.set_override('driver_list', ['nfs'], group='volume')
+        zun.conf.CONF.set_override('host_dedicated_to_capsules', True,
+                                   group='volume')
+        with mock.patch(
+                'zun.scheduler.client.report.SchedulerReportClient'):
+            self.manager = manager.Manager()
+        p = mock.patch.object(self.manager, '_get_driver',
+                              return_value=container_driver.BaseDriver())
+        p.start()
+        self.addCleanup(p.stop)
+        for cls in (objects.Capsule, objects.CapsuleContainer):
+            p = mock.patch.object(cls, 'save')
+            p.start()
+            self.addCleanup(p.stop)
+        self.member = objects.CapsuleContainer(
+            self.context, **utils.get_test_container(
+                uuid='5d8c1a2b-3f4e-4a6b-8c9d-0e1f2a3b4c5d'))
+        self.capsule = objects.Capsule(
+            self.context, **utils.get_test_container())
+        self.capsule.containers = [self.member]
+        self.capsule.init_containers = []
+        self.volmap = mock.Mock(volume_provider='nfs', connection_info=None)
+        self.volmap.volume.uuid = 'b7a3f1c2-6d4e-4f8a-9b1c-2d3e4f5a6b7c'
+        self.volmap.volume.contents = '{"export": "nfs.invalid:/x"}'
+
+    def test_reason_says_the_mount_failed_and_nothing_else(self):
+        with mock.patch('zun.common.utils.execute',
+                        side_effect=exception.CommandError(
+                            cmd='timeout 60 mount nfs.invalid:/x '
+                                '/var/lib/zun/mnt/abc',
+                            error='mount.nfs: Failed to resolve server')), \
+                mock.patch('oslo_utils.fileutils.ensure_tree'), \
+                mock.patch('os.path.ismount', return_value=False):
+            self.assertRaises(
+                exception.VolumeNotPrepared, self.manager._attach_volumes,
+                self.context, self.capsule, {self.member.uuid: [self.volmap]})
+
+        for record in (self.capsule, self.member):
+            self.assertEqual(consts.ERROR, record.status)
+            self.assertIn('NFS export', record.status_reason)
+            self.assertNotIn('/var/lib/zun', record.status_reason)
+            self.assertNotIn('mount.nfs', record.status_reason)
+
+
+class ReleaseAllocationOnFailureTest(base.DbTestCase):
+    """A record that has lost its host holds no claim on that host.
+
+    Wait, attach and the disk check all come before the claim's own error
+    handling, so their failures kept the allocation. The periodic sweep only
+    collects it later, and does not run at all on a host shared with nova.
+    """
+
+    def setUp(self):
+        super().setUp()
+        zun.conf.CONF.set_override('container_driver', 'fake')
+        with mock.patch(
+                'zun.scheduler.client.report.SchedulerReportClient'):
+            self.manager = manager.Manager()
+        self.released = self.manager.reportclient.\
+            delete_allocation_for_container
+        p = mock.patch.object(self.manager, '_detach_volumes')
+        p.start()
+        self.addCleanup(p.stop)
+        for cls in (objects.Capsule, objects.Container,
+                    objects.CapsuleContainer):
+            p = mock.patch.object(cls, 'save')
+            p.start()
+            self.addCleanup(p.stop)
+        self.capsule = objects.Capsule(
+            self.context, **utils.get_test_container())
+        self.capsule.auto_remove = False
+
+    def test_attach_failure_releases_the_capsule_allocation(self):
+        member = objects.CapsuleContainer(
+            self.context, **utils.get_test_container(
+                uuid='5d8c1a2b-3f4e-4a6b-8c9d-0e1f2a3b4c5d'))
+        member.auto_remove = False
+        self.capsule.containers = [member]
+        self.capsule.init_containers = []
+        with mock.patch.object(self.manager, '_attach_volume',
+                               side_effect=RuntimeError('boom')):
+            self.assertRaises(
+                RuntimeError, self.manager._attach_volumes, self.context,
+                self.capsule, {member.uuid: [mock.Mock(connection_info=None)]})
+
+        # Placement knows the capsule; a member has no allocation of its own.
+        self.released.assert_called_once_with(self.context, self.capsule.uuid)
+
+    def test_keeping_the_host_keeps_the_allocation(self):
+        self.manager._fail_container(self.context, self.capsule, 'x',
+                                     unset_host=False)
+
+        self.released.assert_not_called()
+
+    def test_failed_release_does_not_hide_the_failure(self):
+        self.released.side_effect = RuntimeError('placement is down')
+
+        self.manager._fail_container(self.context, self.capsule, 'the reason',
+                                     unset_host=True)
+
+        self.assertEqual(consts.ERROR, self.capsule.status)
+        self.assertEqual('the reason', self.capsule.status_reason)
+        self.assertIsNone(self.capsule.host)
+
+    def test_auto_remove_container_releases_too(self):
+        container = objects.Container(
+            self.context, **utils.get_test_container())
+        container.auto_remove = True
+
+        self.manager._fail_container(self.context, container, 'x',
+                                     unset_host=True)
+
+        self.assertEqual(consts.DELETED, container.status)
+        self.released.assert_called_once_with(self.context, container.uuid)

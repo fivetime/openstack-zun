@@ -229,8 +229,6 @@ class Manager(periodic_task.PeriodicTasks):
                                      host=self.host)
             return
         self._fail_container(context, capsule, str(error), unset_host=True)
-        self.reportclient.delete_allocation_for_container(context,
-                                                          capsule.uuid)
 
     def init_containers(self, context):
         self._resume_capsules(context)
@@ -362,6 +360,9 @@ class Manager(periodic_task.PeriodicTasks):
         except Exception as e:
             LOG.exception("Failed to detach volumes: %s", str(e))
 
+        if unset_host:
+            self._release_allocation(context, container)
+
         if container.auto_remove:
             # docker removes an auto-remove container that failed to
             # start, and the tenant has already read the error from the
@@ -387,15 +388,36 @@ class Manager(periodic_task.PeriodicTasks):
             container.host = None
         container.save(context)
 
+    def _release_allocation(self, context, container):
+        """Give back the claim of a record that has lost its host.
+
+        Waiting for volumes, attaching them and the disk check all run before
+        the claim's own error handling, so nothing else releases theirs. The
+        periodic sweep would, later, and not at all on a host shared with
+        nova, where the allocation then stays until an operator removes it.
+        """
+        if isinstance(container, (objects.CapsuleContainer,
+                                  objects.CapsuleInitContainer)):
+            # Placement knows the capsule, not its members.
+            return
+        try:
+            self.reportclient.delete_allocation_for_container(
+                context, container.uuid)
+        except Exception:
+            # Never let cleanup mask the failure being recorded.
+            LOG.exception("Could not release the placement allocation of %s",
+                          container.uuid)
+
     @staticmethod
     def _reason_for(error):
         """What a tenant reads about a volume that failed a create.
 
-        Ours is written to be read; another library's may name what a tenant
-        has no business reading, and the log has it.
+        Only what was written for them. Being a ZunException says nothing:
+        CommandError is one, and carries the command line, the node's path
+        and whatever the tool printed.
         """
-        return (str(error) if isinstance(error, exception.ZunException)
-                else _("A volume of this container could not be prepared"))
+        return (str(error) if isinstance(error, exception.VolumeNotPrepared)
+                else exception.VolumeNotPrepared.message)
 
     def _wait_for_volumes_available(
             self, context, requested_volumes, container,
@@ -658,8 +680,6 @@ class Manager(periodic_task.PeriodicTasks):
                                            host=self.host)
                 self._fail_container(context, container, str(e),
                                      unset_host=True)
-                self.reportclient.delete_allocation_for_container(
-                    context, container.uuid)
         except Exception as e:
             # ⚠️ Every OTHER failure has to give the claim back too, and this
             # branch did not exist. The claim is written to placement before
@@ -728,7 +748,7 @@ class Manager(periodic_task.PeriodicTasks):
                 self._refresh_attached_volumes(requested_volumes, volmap)
         except Exception as e:
             with excutils.save_and_reraise_exception():
-                self._fail_container(context, container, str(e),
+                self._fail_container(context, container, self._reason_for(e),
                                      unset_host=True)
 
     def _attach_volume(self, context, container, volmap):
