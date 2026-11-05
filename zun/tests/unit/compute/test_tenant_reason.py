@@ -108,6 +108,48 @@ class ForTenantTest(test_base.BaseTestCase):
                          reasons.for_tenant(error, self.FALLBACK))
 
 
+class WhatKubezunReadsTest(test_base.BaseTestCase):
+    """kubezun decides from these words whether a pod is worth trying again.
+
+    pkg/zun/status.go: SandboxFailed retries on the first two and gives up on
+    the third, VolumeFailed retries on the exact volume sentence. Changing one
+    turns a pod that would have started into one that fails, or into one that
+    waits forever: change kubezun first.
+    """
+
+    FALLBACK = 'The container could not be created'
+
+    def _reason(self, text):
+        return reasons.for_tenant(RuntimeError(text), self.FALLBACK)
+
+    def test_sandbox_that_may_start_next_time(self):
+        for text in (
+                'details = "failed to start sandbox "d540": failed to create '
+                'shim task: prepare vm: File exists"',
+                'details = "failed to setup network for sandbox "d540": '
+                'plugin type="zun" failed: 10.0.0.1 refused"'):
+            reason = self._reason(text)
+            self.assertIn('failed to start sandbox', reason)
+            self.assertNotIn('d540', reason)
+            self.assertNotIn('10.0.0.1', reason)
+
+    def test_runtime_nothing_offers_is_not_a_sandbox_to_retry(self):
+        # What containerd says for it also speaks of the sandbox.
+        reason = self._reason(
+            'details = "failed to start sandbox "d540": failed to get sandbox '
+            'runtime: no runtime for "nope" is configured"')
+        self.assertIn('no runtime for', reason)
+        self.assertNotIn('failed to start sandbox', reason)
+        self.assertNotIn('nope', reason)
+
+    def test_failed_init_container_sentence(self):
+        self.assertEqual(
+            'Init container a failed with exit:3',
+            reasons.for_tenant(
+                exception.InitContainerFailed(name='a', detail='exit:3'),
+                self.FALLBACK))
+
+
 class ManagerReasonsTest(base.DbTestCase):
     """Each failing step of a real manager records a reason a tenant may read.
     """
@@ -188,6 +230,14 @@ class ManagerReasonsTest(base.DbTestCase):
 
         self.assertEqual('Init container setup failed with exit:3',
                          self.capsule.status_reason)
+
+    def test_refusal_about_a_volume_does_not_pass(self):
+        # kubezun retries on the volume sentence, and cinder's words on an
+        # Invalid are not ours to repeat.
+        reason = self.manager._reason_for(
+            exception.Invalid('Invalid volume: backend 10.0.0.1 is down'))
+
+        self.assertEqual(exception.VolumeNotPrepared.message, reason)
 
     def test_resumed_capsule_that_failed(self):
         self.manager._capsule_resumed(

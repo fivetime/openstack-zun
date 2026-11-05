@@ -29,6 +29,12 @@ NOT_STARTED = _('The container could not be started')
 NOT_DELETED = _('The container could not be deleted')
 NOT_REBUILT = _('The container could not be rebuilt')
 NO_ROOM = _('The node chosen for this container did not have enough room')
+# ⚠️ kubezun reads these two: "failed to start sandbox" is worth trying again
+# and "no runtime for" is not (pkg/zun/status.go, SandboxFailed). They are the
+# runtime's own words on purpose, so a kubezun that matches those still works.
+SANDBOX_NOT_STARTED = _('The runtime failed to start sandbox for this '
+                        'container')
+NO_RUNTIME = _('This node has no runtime for this container')
 IMAGE_NOT_PULLED = _('The image could not be pulled')
 IMAGE_NOT_FOUND = _('The image could not be pulled: it was not found')
 IMAGE_DENIED = _('The image could not be pulled: access was denied')
@@ -44,6 +50,9 @@ _WRITTEN_FOR_THE_TENANT = (exception.VolumeNotPrepared,
                            exception.InitContainerFailed,
                            exception.CapsuleCreateAbandoned)
 
+_NO_RUNTIME = re.compile(r'no runtime for')
+_SANDBOX = re.compile(r'failed to start sandbox'
+                      r'|failed to setup network for sandbox')
 _PULL = re.compile(r'failed to pull|error on pulling image|pull access denied'
                    r'|manifest unknown', re.I)
 _DENIED = re.compile(r'denied|unauthori[sz]ed|forbidden', re.I)
@@ -76,6 +85,12 @@ def for_tenant(error, fallback):
     if isinstance(error, exception.ImageNotFound):
         return IMAGE_NOT_FOUND
     text = str(error)
+    # In this order: a runtime nothing offers is also reported as a sandbox
+    # that failed to start, and only that one is not worth trying again.
+    if _NO_RUNTIME.search(text):
+        return NO_RUNTIME
+    if _SANDBOX.search(text):
+        return SANDBOX_NOT_STARTED
     if _PULL.search(text):
         return _of_a_pull(text)
     if _COMMAND_MISSING.search(text):

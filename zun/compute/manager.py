@@ -425,8 +425,12 @@ class Manager(periodic_task.PeriodicTasks):
 
     @staticmethod
     def _reason_for(error):
-        """What a tenant reads about a volume that failed a create."""
-        return reasons.for_tenant(error, exception.VolumeNotPrepared.message)
+        """What a tenant reads about a volume that failed a create.
+
+        ⚠️ kubezun retries on the fallback (pkg/zun/status.go, VolumeFailed).
+        """
+        return (str(error) if isinstance(error, exception.VolumeNotPrepared)
+                else exception.VolumeNotPrepared.message)
 
     def _wait_for_volumes_available(
             self, context, requested_volumes, container,
