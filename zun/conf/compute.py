@@ -149,9 +149,9 @@ Possible values:
              'reports full while running almost nothing. A negative value '
              'disables the sweep; zero does not -- oslo reads zero as "use '
              'the default interval", so it sweeps more often, not less. The '
-             'sweep never runs when host_shared_with_nova is set, whatever '
-             'this is: nova\'s allocations sit on the same resource provider '
-             'and cannot be told apart from stale ones.'),
+             'sweep touches only allocations marked as this service\'s when '
+             'host_shared_with_nova is set: nova\'s allocations sit on the '
+             'same resource provider.'),
     cfg.StrOpt(
         'reclaim_orphan_containers',
         default='all',

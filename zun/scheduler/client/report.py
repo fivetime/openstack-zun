@@ -25,7 +25,6 @@ import os_traits
 from oslo_log import log as logging
 from oslo_middleware import request_id
 from oslo_utils import excutils
-from oslo_utils import versionutils
 import retrying
 
 from zun.common import clients
@@ -42,6 +41,10 @@ LOG = logging.getLogger(__name__)
 WARN_EVERY = 10
 RESHAPER_VERSION = '1.30'
 CONSUMER_GENERATION_VERSION = '1.28'
+CONSUMER_TYPE_VERSION = '1.38'
+# What this service's claims are marked with. Nova marks its own, so on a host
+# shared with it this is how one is told from the other.
+ZUN_CONSUMER_TYPE = 'ZUN'
 INTREE_AC_VERSION = '1.31'
 ALLOW_RESERVED_EQUAL_TOTAL_INVENTORY_VERSION = '1.26'
 POST_RPS_RETURNS_PAYLOAD_API_VERSION = '1.20'
@@ -1435,6 +1438,19 @@ class SchedulerReportClient(object):
 
         return resp.json()
 
+    def get_consumer_type(self, context, consumer):
+        """The type a consumer's allocations were written with.
+
+        :raises: ConsumerAllocationRetrievalFailed if placement cannot say.
+        """
+        resp = self.get('/allocations/%s' % consumer,
+                        version=CONSUMER_TYPE_VERSION,
+                        global_request_id=context.global_id)
+        if not resp:
+            raise exception.ConsumerAllocationRetrievalFailed(
+                consumer_uuid=consumer, error=resp.text)
+        return resp.json().get('consumer_type')
+
     def get_allocations_for_consumer_by_provider(self, context, rp_uuid,
                                                  consumer):
         """Return allocations for a consumer and a resource provider.
@@ -1542,17 +1558,14 @@ class SchedulerReportClient(object):
         payload['project_id'] = project_id
         payload['user_id'] = user_id
 
-        if (versionutils.convert_version_to_tuple(
-                allocation_request_version) >=
-                versionutils.convert_version_to_tuple(
-                    CONSUMER_GENERATION_VERSION)):
-            payload['consumer_generation'] = consumer_generation
+        payload['consumer_generation'] = consumer_generation
+        payload['consumer_type'] = ZUN_CONSUMER_TYPE
 
         r = self._put_allocations(
             context,
             consumer_uuid,
             payload,
-            version=allocation_request_version)
+            version=CONSUMER_TYPE_VERSION)
         if r.status_code != 204:
             err = r.json()['errors'][0]
             if err['code'] == 'placement.concurrent_update':

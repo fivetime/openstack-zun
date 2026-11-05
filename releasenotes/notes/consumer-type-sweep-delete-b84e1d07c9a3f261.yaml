@@ -1,0 +1,16 @@
+---
+upgrade:
+  - |
+    Claims are now written with placement microversion 1.38, so zun needs a
+    placement that supports it.
+fixes:
+  - |
+    Allocations are now marked with the consumer type ``ZUN``. The sweep given
+    by ``[compute] reclaim_allocations_interval`` now runs on a host with
+    ``[compute] host_shared_with_nova`` set too, and there collects only
+    allocations marked as zun's. Allocations written before this change are
+    not marked, and stay for an operator to remove.
+  - |
+    Once its container is gone, a delete no longer stops because placement
+    failed, which left a record that no retry could remove. The usage is
+    worked out again on the next update and the sweep collects the allocation.

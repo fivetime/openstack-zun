@@ -969,14 +969,18 @@ class Manager(periodic_task.PeriodicTasks):
 
             self._detach_volumes(context, container, reraise=reraise)
 
-        # Remove the claimed resource
-        rt = self._get_resource_tracker()
-        rt.remove_usage_from_container(context, container, True)
-        self.reportclient.delete_allocation_for_container(context,
-                                                          container.uuid)
-        # only destroy the container in the db if the
-        # delete_allocation_for_instance doesn't raise and therefore
-        # allocation is successfully deleted in placement
+        # The container is gone by now, so nothing below may keep its record:
+        # a record with nothing behind it cannot be deleted by any retry the
+        # tenant has, and it counts against their quota. What is not given
+        # back here is not lost. The usage is worked out again from the
+        # database on every update, and the sweep collects the allocation.
+        try:
+            rt = self._get_resource_tracker()
+            rt.remove_usage_from_container(context, container, True)
+        except Exception:
+            LOG.exception("Could not remove the usage of %s; the next update "
+                          "of this node will", container.uuid)
+        self._release_allocation(context, container)
         container.destroy(context)
         return last, children
 
@@ -2553,21 +2557,13 @@ class Manager(periodic_task.PeriodicTasks):
         an unreadable database would take live containers' resources away from
         them.
 
-        It does not run at all when the host is shared with nova. There the
-        resource provider carries nova's allocations too, and this cannot tell
-        one of its own leaked consumers from a running instance: both are
-        absent from zun's database, and deleting an instance's allocation is a
-        far worse outcome than leaving a leak. Making it safe there needs
-        allocations tagged at the point they are written (placement's
-        consumer_type, microversion 1.38) so the sweep can recognise its own;
-        until then a shared host is swept by the operator, not by this.
+        On a host shared with nova the provider carries nova's allocations
+        too, absent from this database just as a leaked one is. There only a
+        consumer placement says is ours is touched: anything written before
+        claims were marked, or that it cannot say about, is left alone, since
+        taking an instance's allocation is far worse than leaving a leak.
         """
-        if CONF.compute.host_shared_with_nova:
-            LOG.debug('Allocation reclaim does not run on a host shared with '
-                      'nova: nova\'s allocations live on the same resource '
-                      'provider and cannot be told apart from stale ones.')
-            return
-
+        shared = CONF.compute.host_shared_with_nova
         rt = self._get_resource_tracker()
         rp_uuid = getattr(rt, 'rp_uuid', None)
         if not rp_uuid:
@@ -2601,6 +2597,8 @@ class Manager(periodic_task.PeriodicTasks):
         for consumer in allocations:
             if consumer in live:
                 continue
+            if shared and not self._is_our_consumer(ctx, consumer):
+                continue
             LOG.info("Reclaiming placement allocation of %s: no such "
                      "container on this node", consumer)
             try:
@@ -2609,6 +2607,15 @@ class Manager(periodic_task.PeriodicTasks):
             except Exception as e:
                 LOG.warning("Could not reclaim allocation %s: %s",
                             consumer, str(e))
+
+    def _is_our_consumer(self, ctx, consumer):
+        try:
+            return (self.reportclient.get_consumer_type(ctx, consumer) ==
+                    report.ZUN_CONSUMER_TYPE)
+        except Exception as e:
+            LOG.warning("Allocation %s left alone: could not read whose it "
+                        "is: %s", consumer, str(e))
+            return False
 
     @periodic_task.periodic_task(spacing=CONF.sync_container_state_interval,
                                  run_immediately=True)

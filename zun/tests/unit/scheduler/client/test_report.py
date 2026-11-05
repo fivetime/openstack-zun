@@ -295,8 +295,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             for rp_uuid, alloc in alloc_req['allocations'].items()}}
         expected_payload['project_id'] = project_id
         expected_payload['user_id'] = user_id
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.12', json=expected_payload,
+            expected_url, microversion='1.38', json=expected_payload,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -341,8 +344,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             # older microversion to be used
             'project_id': project_id,
             'user_id': user_id}
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.12', json=expected_payload,
+            expected_url, microversion='1.38', json=expected_payload,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -409,8 +415,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             'consumer_generation': None,
             'project_id': project_id,
             'user_id': user_id}
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.28', json=mock.ANY,
+            expected_url, microversion='1.38', json=mock.ANY,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -491,8 +500,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             'consumer_generation': None,
             'project_id': project_id,
             'user_id': user_id}
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.28', json=mock.ANY,
+            expected_url, microversion='1.38', json=mock.ANY,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -580,8 +592,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             'consumer_generation': 1,
             'project_id': project_id,
             'user_id': user_id}
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.28', json=mock.ANY,
+            expected_url, microversion='1.38', json=mock.ANY,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -681,8 +696,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             'consumer_generation': 1,
             'project_id': project_id,
             'user_id': user_id}
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.28', json=mock.ANY,
+            expected_url, microversion='1.38', json=mock.ANY,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -773,8 +791,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             'consumer_generation': 1,
             'project_id': project_id,
             'user_id': user_id}
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.28', json=mock.ANY,
+            expected_url, microversion='1.38', json=mock.ANY,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -878,8 +899,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             'consumer_generation': 1,
             'project_id': project_id,
             'user_id': user_id}
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.28', json=mock.ANY,
+            expected_url, microversion='1.38', json=mock.ANY,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -937,13 +961,16 @@ class TestPutAllocations(SchedulerReportClientTestCase):
         # We should have exactly two calls to the placement API that look
         # identical since we're retrying the same HTTP request
         expected_calls = [
-            mock.call(expected_url, microversion='1.28', json=expected_payload,
+            mock.call(expected_url, microversion='1.38', json=expected_payload,
                       endpoint_filter=mock.ANY,
                       logger=mock.ANY,
                       headers={'X-Openstack-Request-Id':
                                self.context.global_id})] * 2
         self.assertEqual(len(expected_calls),
                          self.ks_adap_mock.put.call_count)
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_has_calls(expected_calls)
 
         self.assertTrue(res)
@@ -990,8 +1017,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
         expected_payload['project_id'] = project_id
         expected_payload['user_id'] = user_id
         expected_payload['consumer_generation'] = None
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.28', json=expected_payload,
+            expected_url, microversion='1.38', json=expected_payload,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})
@@ -1040,8 +1070,11 @@ class TestPutAllocations(SchedulerReportClientTestCase):
             'project_id': project_id,
             'user_id': user_id,
             'consumer_generation': None}
+        expected_payload['consumer_type'] = 'ZUN'
+        expected_payload['consumer_generation'] = (
+            expected_payload.get('consumer_generation'))
         self.ks_adap_mock.put.assert_called_once_with(
-            expected_url, microversion='1.28', json=expected_payload,
+            expected_url, microversion='1.38', json=expected_payload,
             endpoint_filter=mock.ANY,
             logger=mock.ANY,
             headers={'X-Openstack-Request-Id': self.context.global_id})

@@ -933,6 +933,11 @@ class AllocationUpdateFailed(ZunException):
                 'Error: %(error)s')
 
 
+class AllocationDeleteFailed(ZunException):
+    message = _("Failed to delete allocations for consumer "
+                "%(consumer_uuid)s. Error: %(error)s")
+
+
 class ConsumerAllocationRetrievalFailed(ZunException):
     message = _("Failed to retrieve allocations for consumer "
                 "%(consumer_uuid)s: %(error)s")
