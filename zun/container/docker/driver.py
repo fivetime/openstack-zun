@@ -87,8 +87,10 @@ def handle_not_found(e, context, container, do_not_raise=False):
     if container.auto_remove:
         container.status = consts.DELETED
     else:
+        LOG.warning('Container %(uuid)s is gone: %(error)s',
+                    {'uuid': container.uuid, 'error': e})
         container.status = consts.ERROR
-        container.status_reason = str(e)
+        container.status_reason = _('The container is missing from the node')
     container.save(context)
     if do_not_raise:
         return
@@ -1250,8 +1252,7 @@ class DockerDriver(driver.BaseDriver, driver.ContainerDriver,
         if container.uuid not in self._unwired:
             self._unwired.add(container.uuid)
             return
-        reason = ('the container is running but not wired: host '
-                  'interface(s) %s are gone' % ', '.join(missing))
+        reason = _('the container is running but not wired to its network')
         if container.status_reason != reason:
             container.status_reason = reason
             container.save()

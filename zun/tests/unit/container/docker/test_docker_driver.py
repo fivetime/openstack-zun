@@ -634,7 +634,7 @@ class TestDockerDriver(base.DriverTestCase):
 
     def test_show_fail_container_status_error(self):
         with mock.patch.object(errors.APIError, '__str__',
-                               return_value='404 Not Found') as mock_init:
+                               return_value='404 Not Found'):
             self.mock_docker.inspect_container = mock.Mock(
                 side_effect=errors.APIError('Error', '', ''))
             mock_container = mock.MagicMock(auto_remove=False)
@@ -643,7 +643,7 @@ class TestDockerDriver(base.DriverTestCase):
                 mock_container.container_id)
             self.assertEqual(result_container.status,
                              consts.ERROR)
-            self.assertEqual(2, mock_init.call_count)
+            self.assertNotIn('404', result_container.status_reason)
 
     def test_show_container_status_error_stop(self):
         self.mock_docker.inspect_container = mock.Mock(

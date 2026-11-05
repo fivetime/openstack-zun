@@ -39,6 +39,7 @@ from zun.compute import compute_node_tracker
 from zun.compute import container_actions
 from zun.compute import node_files
 from zun.compute import notifications
+from zun.compute import reasons
 import zun.conf
 from zun.container import driver as driver_module
 from zun.container import exec_output
@@ -228,7 +229,9 @@ class Manager(periodic_task.PeriodicTasks):
                 notifications.notify(context, capsule, 'create', 'end',
                                      host=self.host)
             return
-        self._fail_container(context, capsule, str(error), unset_host=True)
+        self._fail_container(
+            context, capsule, reasons.for_tenant(error, reasons.NOT_CREATED),
+            unset_host=True)
 
     def init_containers(self, context):
         self._resume_capsules(context)
@@ -387,6 +390,18 @@ class Manager(periodic_task.PeriodicTasks):
         if unset_host:
             container.host = None
         container.save(context)
+        if isinstance(container, objects.Capsule):
+            self._fail_unfinished_members(context, container, error)
+
+    @staticmethod
+    def _fail_unfinished_members(context, capsule, error):
+        """Nothing is left to finish a member the capsule was starting."""
+        for member in itertools.chain(capsule.init_containers or [],
+                                      capsule.containers or []):
+            if member.status == consts.CREATING:
+                member.status = consts.ERROR
+                member.status_reason = error
+                member.save(context)
 
     def _release_allocation(self, context, container):
         """Give back the claim of a record that has lost its host.
@@ -410,14 +425,8 @@ class Manager(periodic_task.PeriodicTasks):
 
     @staticmethod
     def _reason_for(error):
-        """What a tenant reads about a volume that failed a create.
-
-        Only what was written for them. Being a ZunException says nothing:
-        CommandError is one, and carries the command line, the node's path
-        and whatever the tool printed.
-        """
-        return (str(error) if isinstance(error, exception.VolumeNotPrepared)
-                else exception.VolumeNotPrepared.message)
+        """What a tenant reads about a volume that failed a create."""
+        return reasons.for_tenant(error, exception.VolumeNotPrepared.message)
 
     def _wait_for_volumes_available(
             self, context, requested_volumes, container,
@@ -601,17 +610,23 @@ class Manager(periodic_task.PeriodicTasks):
                 except exception.ImageNotFound as e:
                     with excutils.save_and_reraise_exception():
                         LOG.error(str(e))
-                        self._fail_container(context, container, str(e))
+                        self._fail_container(
+                            context, container,
+                            reasons.for_tenant(e, reasons.IMAGE_NOT_PULLED))
                 except exception.DockerError as e:
                     with excutils.save_and_reraise_exception():
                         LOG.error("Error occurred while calling Docker image "
                                   "API: %s", str(e))
-                        self._fail_container(context, container, str(e))
+                        self._fail_container(
+                            context, container,
+                            reasons.for_tenant(e, reasons.IMAGE_NOT_PULLED))
                 except Exception as e:
                     with excutils.save_and_reraise_exception():
                         LOG.exception("Unexpected exception: %s",
                                       str(e))
-                        self._fail_container(context, container, str(e))
+                        self._fail_container(
+                            context, container,
+                            reasons.for_tenant(e, reasons.IMAGE_NOT_PULLED))
             else:
                 # This driver pulls images itself while creating the container
                 # (the CRI driver does so per container), so there is nothing
@@ -646,14 +661,18 @@ class Manager(periodic_task.PeriodicTasks):
                 with excutils.save_and_reraise_exception():
                     LOG.error("Error occurred while calling Docker create "
                               "API: %s", str(e))
-                    self._fail_container(context, container, str(e),
-                                         unset_host=True)
+                    self._fail_container(
+                        context, container,
+                        reasons.for_tenant(e, reasons.NOT_CREATED),
+                        unset_host=True)
             except Exception as e:
                 with excutils.save_and_reraise_exception():
                     LOG.exception("Unexpected exception: %s",
                                   str(e))
-                    self._fail_container(context, container, str(e),
-                                         unset_host=True)
+                    self._fail_container(
+                        context, container,
+                        reasons.for_tenant(e, reasons.NOT_CREATED),
+                        unset_host=True)
 
     @wrap_container_event(prefix='compute')
     def _do_container_create(self, context, container, requested_networks,
@@ -678,8 +697,10 @@ class Manager(periodic_task.PeriodicTasks):
                               str(e))
                 notifications.notify_error(context, container, 'create', e,
                                            host=self.host)
-                self._fail_container(context, container, str(e),
-                                     unset_host=True)
+                self._fail_container(
+                    context, container,
+                    reasons.for_tenant(e, reasons.NOT_CREATED),
+                    unset_host=True)
         except Exception as e:
             # ⚠️ Every OTHER failure has to give the claim back too, and this
             # branch did not exist. The claim is written to placement before
@@ -856,12 +877,16 @@ class Manager(periodic_task.PeriodicTasks):
                 with excutils.save_and_reraise_exception():
                     LOG.error("Error occurred while calling Docker start "
                               "API: %s", str(e))
-                    self._fail_container(context, container, str(e))
+                    self._fail_container(
+                        context, container,
+                        reasons.for_tenant(e, reasons.NOT_STARTED))
             except Exception as e:
                 with excutils.save_and_reraise_exception():
                     LOG.exception("Unexpected exception: %s",
                                   str(e))
-                    self._fail_container(context, container, str(e))
+                    self._fail_container(
+                        context, container,
+                        reasons.for_tenant(e, reasons.NOT_STARTED))
 
     @translate_exception
     def container_delete(self, context, container, force=False):
@@ -930,13 +955,17 @@ class Manager(periodic_task.PeriodicTasks):
                               "delete API: %s", str(e))
                     notifications.notify_error(context, container, 'delete',
                                                e, host=self.host)
-                    self._fail_container(context, container, str(e))
+                    self._fail_container(
+                        context, container,
+                        reasons.for_tenant(e, reasons.NOT_DELETED))
             except Exception as e:
                 with excutils.save_and_reraise_exception(reraise=reraise):
                     LOG.exception("Unexpected exception: %s", str(e))
                     notifications.notify_error(context, container, 'delete',
                                                e, host=self.host)
-                    self._fail_container(context, container, str(e))
+                    self._fail_container(
+                        context, container,
+                        reasons.for_tenant(e, reasons.NOT_DELETED))
 
             self._detach_volumes(context, container, reraise=reraise)
 
@@ -1183,7 +1212,9 @@ class Manager(periodic_task.PeriodicTasks):
                 network_info = self._get_network_info(context, container)
             except Exception as e:
                 with excutils.save_and_reraise_exception():
-                    self._fail_container(context, container, str(e))
+                    self._fail_container(
+                        context, container,
+                        reasons.for_tenant(e, reasons.NOT_REBUILT))
             # NOTE(hongbin): capsule shouldn't reach here
             if self.driver.check_container_exist(container):
                 for addr in container.addresses.values():
@@ -1199,8 +1230,9 @@ class Manager(periodic_task.PeriodicTasks):
                                   "reason of failure is: %s",
                                   container.uuid,
                                   str(e))
-                        self._fail_container(context, container,
-                                             str(e))
+                        self._fail_container(
+                            context, container,
+                            reasons.for_tenant(e, reasons.NOT_REBUILT))
 
             try:
                 created_container = self._do_container_create_base(
@@ -1212,7 +1244,9 @@ class Manager(periodic_task.PeriodicTasks):
                 with excutils.save_and_reraise_exception():
                     LOG.error("Rebuild container:%s failed, "
                               "reason of failure is: %s", container.uuid, e)
-                    self._fail_container(context, container, str(e))
+                    self._fail_container(
+                        context, container,
+                        reasons.for_tenant(e, reasons.NOT_REBUILT))
 
             LOG.info("rebuild container: %s success", created_container.uuid)
             if run:

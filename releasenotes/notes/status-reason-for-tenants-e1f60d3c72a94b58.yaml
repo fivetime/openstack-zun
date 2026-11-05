@@ -1,0 +1,13 @@
+---
+security:
+  - |
+    A failed create, start, delete or rebuild no longer records the runtime's
+    error in ``status_reason``. The error could name the node's DNS resolver,
+    paths and internal API addresses, and on kata a backtrace. A tenant now
+    reads a sentence written for them, which says when the image was not
+    found, was denied or its registry was unreachable, and when the command
+    was not found or could not be run. The error itself is in the log.
+fixes:
+  - |
+    Members of a capsule that fails while they are still ``Creating`` now go
+    to ``Error`` with the capsule's reason, and no longer stay in ``Creating``.

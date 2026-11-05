@@ -24,6 +24,7 @@ from zun.common import consts
 from zun.common import exception
 from zun.compute import claims
 from zun.compute import manager
+from zun.compute import reasons
 import zun.conf
 from zun import objects
 from zun.objects.container import Container
@@ -369,7 +370,7 @@ class TestManager(base.TestCase):
                           self.compute_manager._do_container_create,
                           self.context, container, networks, volumes)
         mock_fail.assert_called_once_with(self.context,
-                                          container, "Pull Failed")
+                                          container, reasons.IMAGE_NOT_PULLED)
         mock_event_start.assert_called_once()
         mock_event_finish.assert_called_once()
         self.assertEqual(
@@ -394,7 +395,7 @@ class TestManager(base.TestCase):
                           self.compute_manager._do_container_create,
                           self.context, container, networks, volumes)
         mock_fail.assert_called_once_with(self.context,
-                                          container, "Image Not Found")
+                                          container, reasons.IMAGE_NOT_FOUND)
         mock_event_start.assert_called_once()
         mock_event_finish.assert_called_once()
         self.assertEqual(
@@ -421,7 +422,7 @@ class TestManager(base.TestCase):
             self.compute_manager._do_container_create,
             self.context, container, networks, volumes)
         mock_fail.assert_called_once_with(self.context,
-                                          container, "Image Not Found")
+                                          container, reasons.IMAGE_NOT_PULLED)
         mock_event_start.assert_called_once()
         mock_event_finish.assert_called_once()
         self.assertEqual(
@@ -451,7 +452,7 @@ class TestManager(base.TestCase):
                           self.compute_manager._do_container_create,
                           self.context, container, networks, volumes)
         mock_fail.assert_called_once_with(
-            self.context, container, "Creation Failed", unset_host=True)
+            self.context, container, reasons.NOT_CREATED, unset_host=True)
         mock_event_start.assert_called_once()
         mock_event_finish.assert_called_once()
         self.assertEqual(
@@ -607,7 +608,7 @@ class TestManager(base.TestCase):
             limits=None, run=True)
         mock_save.assert_called_with(self.context)
         self.assertEqual('Error', container.status)
-        self.assertEqual('Image Not Found', container.status_reason)
+        self.assertEqual(reasons.IMAGE_NOT_FOUND, container.status_reason)
         mock_pull.assert_called_once_with(self.context, 'test', 'latest',
                                           'ifnotpresent', 'docker',
                                           registry=None)
@@ -657,7 +658,7 @@ class TestManager(base.TestCase):
             limits=None, run=True)
         mock_save.assert_called_with(self.context)
         self.assertEqual('Error', container.status)
-        self.assertEqual('Image Not Found', container.status_reason)
+        self.assertEqual(reasons.IMAGE_NOT_PULLED, container.status_reason)
         mock_pull.assert_called_once_with(self.context, 'test', 'latest',
                                           'ifnotpresent', 'docker',
                                           registry=None)
@@ -707,7 +708,7 @@ class TestManager(base.TestCase):
             limits=None, run=True)
         mock_save.assert_called_with(self.context)
         self.assertEqual('Error', container.status)
-        self.assertEqual('Docker Error occurred', container.status_reason)
+        self.assertEqual(reasons.IMAGE_NOT_PULLED, container.status_reason)
         mock_pull.assert_called_once_with(self.context, 'test', 'latest',
                                           'ifnotpresent', 'docker',
                                           registry=None)
@@ -759,7 +760,7 @@ class TestManager(base.TestCase):
             limits=None, run=True)
         mock_save.assert_called_with(self.context)
         self.assertEqual('Error', container.status)
-        self.assertEqual('Docker Error occurred', container.status_reason)
+        self.assertEqual(reasons.NOT_CREATED, container.status_reason)
         mock_pull.assert_any_call(self.context, container.image, '',
                                   'always', 'glance', registry=None)
         mock_create.assert_called_once_with(
@@ -906,7 +907,7 @@ class TestManager(base.TestCase):
                           self.context, container, False)
         mock_save.assert_called_with(self.context)
         mock_fail.assert_called_with(self.context,
-                                     container, 'Docker Error occurred')
+                                     container, reasons.NOT_DELETED)
         mock_destroy.assert_not_called()
         mock_remove_usage.assert_not_called()
 
@@ -930,7 +931,7 @@ class TestManager(base.TestCase):
                                                   True)
         mock_save.assert_called_with(self.context)
         mock_fail.assert_called_with(self.context,
-                                     container, 'Docker Error occurred')
+                                     container, reasons.NOT_DELETED)
         mock_destroy.assert_called_once_with(self.context)
         mock_remove_usage.assert_called_once_with(self.context, container,
                                                   True)
@@ -1008,7 +1009,7 @@ class TestManager(base.TestCase):
                           self.compute_manager._do_container_rebuild,
                           self.context, container, True)
         mock_fail.assert_called_with(self.context,
-                                     container, str(fake_exc))
+                                     container, reasons.NOT_REBUILT)
         mock_event_start.assert_called_once()
         mock_event_finish.assert_called_once()
         mock_action_finish.assert_called_once()
@@ -1127,7 +1128,7 @@ class TestManager(base.TestCase):
                           self.context, container)
         mock_save.assert_called_with(self.context)
         mock_fail.assert_called_with(self.context,
-                                     container, 'Docker Error occurred')
+                                     container, reasons.NOT_STARTED)
         mock_event_start.assert_called_once()
         mock_event_finish.assert_called_once()
         self.assertEqual(

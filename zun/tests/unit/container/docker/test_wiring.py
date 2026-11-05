@@ -121,7 +121,7 @@ class TestTheRunningWatch(WiringTest):
         self.driver._watch_wiring(container)
 
         self.assertIn('not wired', container.status_reason)
-        self.assertIn(TAP, container.status_reason)
+        self.assertNotIn(TAP, container.status_reason)
         container.save.assert_called_once()
 
     def test_the_reason_is_not_rewritten_every_sweep(self):

@@ -1777,9 +1777,7 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
             # ⚠️ kubezun finds the exit code in this sentence: keep "Init
             # container <name> failed with exit:<code>".
             if not self._capsule_restarts(capsule):
-                raise exception.ZunException(
-                    _("Init container %(name)s failed with %(detail)s")
-                    % words)
+                raise exception.InitContainerFailed(**words)
             failures += 1
             self._wait_to_retry(
                 context, capsule, sidecars, _init_backoff(failures),

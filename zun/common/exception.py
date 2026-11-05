@@ -553,6 +553,10 @@ class VolumeNotPrepared(ZunException):
     message = _("A volume of this container could not be prepared")
 
 
+class InitContainerFailed(ZunException):
+    message = _("Init container %(name)s failed with %(detail)s")
+
+
 class VolumeNotUsable(Invalid):
     message = _("Volume %(volume)s not usable for the container.")
 
