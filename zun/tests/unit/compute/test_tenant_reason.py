@@ -205,6 +205,23 @@ class ManagerReasonsTest(base.DbTestCase):
             RuntimeError, self.manager._do_container_create_base,
             self.context, self.capsule, [], {})
 
+    def test_a_member_started_before_the_failure_went_with_the_sandbox(self):
+        self.member.status = consts.RUNNING
+
+        self.manager._fail_container(self.context, self.capsule, 'why',
+                                     unset_host=True)
+
+        self.assertEqual(consts.ERROR, self.member.status)
+        self.assertEqual('why', self.member.status_reason)
+
+    def test_a_capsule_keeping_its_host_keeps_its_running_members(self):
+        self.member.status = consts.RUNNING
+
+        self.manager._fail_container(self.context, self.capsule, 'why',
+                                     unset_host=False)
+
+        self.assertEqual(consts.RUNNING, self.member.status)
+
     def test_create_failure_says_nothing_of_the_node(self):
         self._failed_create(PULL_NO_HOST)
 

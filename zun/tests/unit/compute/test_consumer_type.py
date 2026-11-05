@@ -96,8 +96,12 @@ class SweepOnSharedHostTest(base.DbTestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def test_only_ours_is_collected(self):
+    def _sweep_twice(self):
         self.manager.reclaim_stale_allocations(self.context)
+        self.manager.reclaim_stale_allocations(self.context)
+
+    def test_only_ours_is_collected(self):
+        self._sweep_twice()
 
         self.report.delete_allocation_for_container.assert_called_once_with(
             mock.ANY, OURS)
@@ -106,11 +110,36 @@ class SweepOnSharedHostTest(base.DbTestCase):
         zun.conf.CONF.set_override('host_shared_with_nova', False,
                                    group='compute')
 
-        self.manager.reclaim_stale_allocations(self.context)
+        self._sweep_twice()
 
         self.report.get_consumer_type.assert_not_called()
         self.assertEqual(
             4, self.report.delete_allocation_for_container.call_count)
+
+    def test_one_sweep_takes_nothing(self):
+        """A capsule being scheduled is claimed before it has a host."""
+        self.manager.reclaim_stale_allocations(self.context)
+
+        self.report.delete_allocation_for_container.assert_not_called()
+
+    def test_a_consumer_that_found_its_host_is_kept(self):
+        self.manager.reclaim_stale_allocations(self.context)
+        capsule = mock.Mock(uuid=OURS, containers=[])
+        with mock.patch.object(objects.Capsule, 'list_by_host',
+                               return_value=[capsule]):
+            self.manager.reclaim_stale_allocations(self.context)
+
+        self.report.delete_allocation_for_container.assert_not_called()
+
+    def test_a_failed_release_is_tried_again(self):
+        self.report.delete_allocation_for_container.side_effect = [
+            exception.AllocationDeleteFailed(consumer_uuid=OURS, error='x'),
+            None]
+        self._sweep_twice()
+        self.manager.reclaim_stale_allocations(self.context)
+
+        self.assertEqual(
+            2, self.report.delete_allocation_for_container.call_count)
 
 
 class DeleteAfterTheSandboxIsGoneTest(base.DbTestCase):

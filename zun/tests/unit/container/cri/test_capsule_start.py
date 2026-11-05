@@ -431,6 +431,24 @@ class RunningInitRecordTest(CapsuleStartBase):
         self.assertEqual(consts.STOPPED, saved[-1])
 
 
+class MemberStartRecordTest(CapsuleStartBase):
+    """kubezun reads started_at to tell a member that ran."""
+
+    def test_the_start_is_recorded_before_the_next_member(self):
+        record = self._patch('_record_start')
+        first = mock.Mock(status=consts.CREATING)
+        second = mock.Mock(status=consts.CREATING)
+        self.capsule.containers = [first, second]
+        self.capsule.init_containers = []
+        create = self._patch('_create_container')
+        create.side_effect = [None, RuntimeError('image')]
+
+        self.assertRaises(RuntimeError, self._create)
+
+        self.assertEqual(consts.RUNNING, first.status)
+        record.assert_called_once_with(first)
+
+
 class DeleteDuringThePullTest(base.TestCase):
     """A pull cannot be interrupted; what follows it can."""
 

@@ -800,6 +800,10 @@ class CriDriver(driver.BaseDriver, driver.ContainerDriver,
                 self._create_container(context, capsule, container,
                                        requested_volumes)
                 container.status = consts.RUNNING
+                # On the record before the next member can fail: kubezun
+                # reads a started_at to tell a member that ran, which a
+                # restartPolicy of Never must not run again.
+                self._record_start(container)
                 container.save(context)
         except Exception:
             with excutils.save_and_reraise_exception():

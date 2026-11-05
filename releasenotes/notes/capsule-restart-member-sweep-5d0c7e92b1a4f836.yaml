@@ -1,0 +1,13 @@
+---
+fixes:
+  - |
+    A capsule that fails after one of its members started no longer leaves that
+    member at ``Running``, and the member's ``started_at`` is recorded when it
+    starts rather than at the next state sync.
+  - |
+    A capsule delete under way when ``zun-compute`` stops is finished when it
+    starts again. It used to be recorded as a stopped capsule that kept its
+    allocation.
+  - |
+    The allocation sweep takes only what two sweeps in a row found unclaimed,
+    so a capsule being scheduled, which has a claim and no host yet, keeps it.

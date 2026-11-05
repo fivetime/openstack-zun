@@ -165,6 +165,7 @@ class Manager(periodic_task.PeriodicTasks):
         self._resource_tracker_lock = threading.Lock()
         self.reportclient = report.SchedulerReportClient()
         self._unclaimed_files = set()
+        self._stale_allocations = set()
 
     def _get_driver(self, container):
         if (isinstance(container, objects.Capsule) or
@@ -208,6 +209,9 @@ class Manager(periodic_task.PeriodicTasks):
             LOG.exception("Could not look for capsules to resume")
             return
         for capsule in capsules:
+            if self._being_deleted(capsule):
+                self._resume_capsule_delete(context, capsule)
+                continue
             starting = (capsule.status == consts.CREATING and
                         capsule.task_state == consts.CONTAINER_CREATING)
             if not starting and capsule.status != consts.REBUILDING:
@@ -222,6 +226,22 @@ class Manager(periodic_task.PeriodicTasks):
                     on_done(capsule, _("Capsule failed to create correctly"))
             except Exception:
                 LOG.exception("Could not resume capsule %s", capsule.uuid)
+
+    def _resume_capsule_delete(self, context, capsule):
+        """Finish a delete this service had accepted when it stopped.
+
+        ⚠️ The caller has its 204 and will not ask again. Left alone, the sweep
+        finds the sandbox gone and records a stopped capsule, which holds its
+        allocation and is billed for it until someone notices.
+        """
+        try:
+            LOG.info("Capsule %s was being deleted when this service stopped",
+                     capsule.uuid)
+            capsule.task_state = None
+            self.container_delete(context, capsule, force=True)
+        except Exception:
+            LOG.exception("Could not resume the delete of capsule %s",
+                          capsule.uuid)
 
     def _capsule_resumed(self, context, was_starting, capsule, error):
         if error is None:
@@ -391,14 +411,25 @@ class Manager(periodic_task.PeriodicTasks):
             container.host = None
         container.save(context)
         if isinstance(container, objects.Capsule):
-            self._fail_unfinished_members(context, container, error)
+            self._fail_unfinished_members(context, container, error,
+                                          lost_sandbox=unset_host)
 
     @staticmethod
-    def _fail_unfinished_members(context, capsule, error):
-        """Nothing is left to finish a member the capsule was starting."""
+    def _fail_unfinished_members(context, capsule, error, lost_sandbox=False):
+        """Nothing is left to finish a member the capsule was starting.
+
+        ⚠️ A capsule that lost its host lost its sandbox too, with the members
+        that had already started in it: the driver removes what it made on its
+        way out. Nothing reads a member of a hostless capsule again, so one
+        left at Running would say so until the capsule is deleted, with no
+        allocation behind it.
+        """
+        unfinished = {consts.CREATING}
+        if lost_sandbox:
+            unfinished.add(consts.RUNNING)
         for member in itertools.chain(capsule.init_containers or [],
                                       capsule.containers or []):
-            if member.status == consts.CREATING:
+            if member.status in unfinished:
                 member.status = consts.ERROR
                 member.status_reason = error
                 member.save(context)
@@ -2566,6 +2597,11 @@ class Manager(periodic_task.PeriodicTasks):
         consumer placement says is ours is touched: anything written before
         claims were marked, or that it cannot say about, is left alone, since
         taking an instance's allocation is far worse than leaving a leak.
+
+        ⚠️ Only what two sweeps in a row found. The API claims first and writes
+        the host on the record after, so a capsule being scheduled has an
+        allocation here and is not yet on this node's list. Taking it would
+        leave a running capsule holding nothing.
         """
         shared = CONF.compute.host_shared_with_nova
         rt = self._get_resource_tracker()
@@ -2598,11 +2634,13 @@ class Manager(periodic_task.PeriodicTasks):
                         "node's containers: %s", str(e))
             return
 
-        for consumer in allocations:
-            if consumer in live:
-                continue
-            if shared and not self._is_our_consumer(ctx, consumer):
-                continue
+        stale = {consumer for consumer in allocations
+                 if consumer not in live and
+                 (not shared or self._is_our_consumer(ctx, consumer))}
+        second_look = stale & self._stale_allocations
+        # A release that fails below is found again by the next sweep.
+        self._stale_allocations = stale
+        for consumer in second_look:
             LOG.info("Reclaiming placement allocation of %s: no such "
                      "container on this node", consumer)
             try:

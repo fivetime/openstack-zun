@@ -46,6 +46,7 @@ class CreateCleanupTest(base.TestCase):
         self.create_sandbox = self._patch('_create_pod_sandbox',
                                           side_effect=sandbox_up)
         self.create_container = self._patch('_create_container')
+        self._patch('_record_start')
         self.delete_sandbox = self._patch('_delete_sandbox')
         self.delete_ports = self._patch('_delete_neutron_ports')
 
