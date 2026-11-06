@@ -29,7 +29,9 @@ from oslo_log import log as logging
 from zun.common import clients
 from zun.common import exception
 from zun.common.i18n import _
+import zun.conf
 
+CONF = zun.conf.CONF
 LOG = logging.getLogger(__name__)
 
 # The oldest microversion that carries everything used here. Access rules and
@@ -43,10 +45,15 @@ def _session(context):
 
 def _endpoint(context):
     sess = _session(context)
+    # The interface and region come from [manila_client], as they do for
+    # every other service this code calls: a compute node often reaches only
+    # the internal endpoints.
     for service_type in ('sharev2', 'shared-file-system'):
         try:
-            ep = sess.get_endpoint(service_type=service_type,
-                                   interface='public')
+            ep = sess.get_endpoint(
+                service_type=service_type,
+                interface=CONF.manila_client.endpoint_type,
+                region_name=CONF.manila_client.region_name)
             if ep:
                 return ep.rstrip('/')
         except Exception:

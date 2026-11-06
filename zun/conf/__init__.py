@@ -25,6 +25,7 @@ from zun.conf import docker
 from zun.conf import glance_client
 from zun.conf import image_driver
 from zun.conf import keystone
+from zun.conf import manila_client
 from zun.conf import netconf
 from zun.conf import network
 from zun.conf import neutron
@@ -65,6 +66,7 @@ pci.register_opts(CONF)
 quota.register_opts(CONF)
 volume.register_opts(CONF)
 cinder_client.register_opts(CONF)
+manila_client.register_opts(CONF)
 netconf.register_opts(CONF)
 availability_zone.register_opts(CONF)
 utils.register_opts(CONF)

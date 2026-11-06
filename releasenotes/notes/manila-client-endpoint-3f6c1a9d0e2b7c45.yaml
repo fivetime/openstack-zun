@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    New ``[manila_client] endpoint_type`` and ``region_name`` options choose
+    the Manila endpoint the NFS volume driver calls, as the options of the
+    same name do for the other services. ``endpoint_type`` defaults to
+    ``publicURL``, which is what the driver always used.
+fixes:
+  - |
+    A compute node that cannot reach Manila's public endpoint can now mount NFS
+    volumes: set ``[manila_client] endpoint_type = internalURL``.
